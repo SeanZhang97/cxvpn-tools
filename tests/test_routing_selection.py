@@ -146,6 +146,117 @@ class RoutingSelectionTests(unittest.TestCase):
         save.assert_called_once()
 
     @mock.patch('api.cfgmod.save')
+    def test_api_persists_smart_auto_policy(self, save):
+        current = routing.normalize_config(provider_config())
+        instance = Api.__new__(Api)
+        instance._lock = threading.Lock()
+        instance._routing_lock = threading.Lock()
+        instance.cfg = {'routing': current}
+        instance.routing = mock.Mock()
+        instance.routing.status.return_value = {'running': False}
+        instance.log = mock.Mock()
+        policy = {
+            'enabled': True,
+            'stages': [
+                {'region': 'JP', 'preferred_keywords': ['高速专线']},
+                {'region': 'US', 'preferred_keywords': ['高速专线']},
+            ],
+            'fallback': 'reject',
+            'latency_tolerance': 20,
+        }
+
+        result = instance.save_proxy_preference(
+            'alpha', 'auto', '', None, policy)
+
+        self.assertTrue(result['ok'])
+        stored = instance.cfg['routing']['proxy_providers'][0]
+        self.assertTrue(stored['auto_policy']['enabled'])
+        self.assertEqual(
+            [item['region'] for item in stored['auto_policy']['stages']],
+            ['JP', 'US'])
+        self.assertEqual(instance.cfg['routing']['default_outbound'],
+                         'proxy:alpha')
+        save.assert_called_once()
+
+    @mock.patch('api.cfgmod.save')
+    def test_api_persists_failure_only_preferred_node(self, save):
+        current = routing.normalize_config(provider_config())
+        instance = Api.__new__(Api)
+        instance._lock = threading.Lock()
+        instance._routing_lock = threading.Lock()
+        instance.cfg = {'routing': current}
+        instance.routing = mock.Mock()
+        instance.routing.status.return_value = {'running': False}
+        instance.log = mock.Mock()
+        provider = current['proxy_providers'][0]
+        policy = {
+            'enabled': True,
+            'stages': [{
+                'region': 'JP', 'selection_mode': 'failure',
+                'preferred_node': '日本东京 08｜高速专线',
+                'preferred_keywords': ['高速专线'],
+            }],
+            'fallback': 'reject',
+            'latency_tolerance': 20,
+            'latency_tolerance_unit': 'percent',
+        }
+
+        with tempfile.TemporaryDirectory() as root, mock.patch.dict(
+                os.environ, {'LOCALAPPDATA': root}):
+            subscription_store.persist_node_snapshot(provider, [{
+                'name': '日本东京 08｜高速专线',
+                'display_name': '日本东京 08｜高速专线',
+                'type': 'vless', 'delay': 86, 'alive': True,
+                'tested': True, 'tested_at': 1,
+            }])
+            result = instance.save_proxy_preference(
+                'alpha', 'auto', '', None, policy)
+
+        self.assertTrue(result['ok'])
+        stored = instance.cfg['routing']['proxy_providers'][0]['auto_policy']
+        self.assertEqual(stored['stages'][0]['selection_mode'], 'failure')
+        self.assertEqual(stored['stages'][0]['preferred_node'],
+                         '日本东京 08｜高速专线')
+        self.assertEqual(stored['latency_tolerance_unit'], 'percent')
+        save.assert_called_once()
+
+    @mock.patch('api.cfgmod.save')
+    def test_running_smart_policy_change_reuses_apply_transaction(self, save):
+        current = routing.normalize_config(provider_config())
+        instance = Api.__new__(Api)
+        instance._lock = threading.Lock()
+        instance._routing_lock = threading.Lock()
+        instance.cfg = {'routing': current}
+        instance.routing = mock.Mock()
+        instance.routing.status.return_value = {'running': True}
+        instance.log = mock.Mock()
+        policy = {
+            'enabled': True,
+            'stages': [{'region': 'JP', 'preferred_keywords': ['高速专线']}],
+            'fallback': 'reject',
+            'latency_tolerance': 20,
+        }
+        expected = routing.normalize_config({
+            **current,
+            'proxy_providers': [{
+                **current['proxy_providers'][0], 'auto_policy': policy,
+            }],
+        })
+
+        with mock.patch.object(
+                instance, '_apply_routing_locked', return_value={
+                    'ok': True, 'config': expected, 'status': {'running': True},
+                }) as apply_locked:
+            result = instance.save_proxy_preference(
+                'alpha', 'auto', '', None, policy)
+
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['requires_apply'])
+        self.assertIn('立即应用', result['msg'])
+        apply_locked.assert_called_once()
+        save.assert_not_called()
+
+    @mock.patch('api.cfgmod.save')
     def test_api_saves_preview_provider_without_changing_route_when_selecting_node(
             self, save):
         current = routing.normalize_config({

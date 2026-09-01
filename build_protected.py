@@ -7,11 +7,11 @@
 
 流程:
 1. Nuitka --module 把 api.py 与 core/*.py(除包 __init__)编译为 .pyd;
-2. 生成 CXVPN管理器-protected.spec(独立文件名, 不与 build.py 的 spec 冲突):
+2. 生成 CX VPN TOOLS-protected.spec(独立文件名, 不与 build.py 的 spec 冲突):
    - 依赖分析仍基于 .py 源码, 第三方/标准库收集与 build.py 完全一致;
    - 打包输出时把业务模块的 pyc 全部替换为第 1 步的 .pyd, 产物内不留业务源码;
    - spec 内断言校验, 残留源码或 .pyd 缺失时直接中止, 绝不静默产出裸包。
-3. 产物与 build.py 相同: dist/CXVPN管理器/(onedir 便携目录), 打包前后
+3. 产物与 build.py 相同: dist/CX VPN TOOLS/(onedir 便携目录), 打包前后
    自动备份/恢复用户配置。
 
 唯一仍以字节码随包的业务文件是入口 main.py(PyInstaller 入口必须是真实脚本),
@@ -36,12 +36,20 @@ import PyInstaller.__main__
 from build_runtime import build_routing_service
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+APP_NAME = 'CX VPN TOOLS'
+LEGACY_APP_NAME = 'CXVPN管理器'
 DIST_DIR = os.path.join(BASE, 'dist')
-DIST_CFG = os.path.join(DIST_DIR, 'CXVPN管理器', 'config.json')
+DIST_ROOT = os.path.join(DIST_DIR, APP_NAME)
+DIST_CFG = os.path.join(DIST_ROOT, 'config.json')
+LEGACY_DIST_CFG = os.path.join(
+    DIST_DIR, LEGACY_APP_NAME, 'config.json')
+RULE_PACK_FILES = ('local-direct-v1.txt', 'cn-direct-v1.txt')
+SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
+DIST_RULE_PACK_DIR = os.path.join(DIST_ROOT, 'rule-packs')
 WORK = os.path.join(BASE, 'build_tmp')
 NUITKA_OUT = os.path.join(WORK, 'nuitka_out')
 PYD_STAGE = os.path.join(WORK, 'pyd_stage')
-SPEC_PATH = os.path.join(BASE, 'CXVPN管理器-protected.spec')
+SPEC_PATH = os.path.join(BASE, APP_NAME + '-protected.spec')
 
 # 参与编译的业务模块: api + core 下除 __init__ 外全部 .py
 PROTECT_SRC = [os.path.join(BASE, 'api.py')] + sorted(
@@ -135,19 +143,20 @@ assert got == set(STAGED), '打包中止: 业务 .pyd 未被完整收集, 缺 %s
     sorted(set(STAGED) - got)
 
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='CXVPN管理器',
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=@@APP_NAME@@,
           debug=False, bootloader_ignore_signals=False, strip=False,
           upx=True, console=False, disable_windowed_traceback=False,
           argv_emulation=False, target_arch=None, codesign_identity=None,
           entitlements_file=None, icon=[@@ICON@@])
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True,
-               upx_exclude=[], name='CXVPN管理器')
+               upx_exclude=[], name=@@APP_NAME@@)
 '''
 
 
 def write_spec(staged):
     spec = (_SPEC_TEMPLATE
             .replace('@@BASE@@', repr(BASE))
+            .replace('@@APP_NAME@@', repr(APP_NAME))
             .replace('@@STAGED@@', repr(staged))
             .replace('@@MAIN_SRC@@', repr(os.path.join(BASE, 'main.py')))
             .replace('@@UI_SRC@@', repr(os.path.join(BASE, 'ui')))
@@ -163,7 +172,7 @@ def verify_artifacts(staged):
 
     main.py 例外: PyInstaller 入口脚本必然以字节码内嵌 exe, 属预期。
     """
-    dist_root = os.path.join(DIST_DIR, 'CXVPN管理器')
+    dist_root = DIST_ROOT
     internal = os.path.join(dist_root, '_internal')
     for mod in sorted(staged):
         tail = mod.rsplit('.', 1)[-1]
@@ -176,7 +185,7 @@ def verify_artifacts(staged):
     from PyInstaller.archive.readers import CArchiveReader
     import zipfile
     protect = set(staged)
-    arch = CArchiveReader(os.path.join(dist_root, 'CXVPN管理器.exe'))
+    arch = CArchiveReader(os.path.join(dist_root, APP_NAME + '.exe'))
     pyz = arch.open_embedded_archive('PYZ.pyz')
     in_exe = protect & set(pyz.toc)
     assert not in_exe, 'exe 内嵌 PYZ 残留业务模块: %s' % sorted(in_exe)
@@ -189,10 +198,19 @@ def verify_artifacts(staged):
 def main():
     build_routing_service()
     saved_cfg = None
-    if os.path.exists(DIST_CFG):
+    source_cfg = next(
+        (path for path in (DIST_CFG, LEGACY_DIST_CFG)
+         if os.path.exists(path)), None)
+    if source_cfg:
         saved_cfg = os.path.join(WORK, 'config.json.keep')
         os.makedirs(WORK, exist_ok=True)
-        shutil.copy2(DIST_CFG, saved_cfg)
+        shutil.copy2(source_cfg, saved_cfg)
+    saved_rule_packs = {}
+    for filename in RULE_PACK_FILES:
+        path = os.path.join(DIST_RULE_PACK_DIR, filename)
+        if os.path.isfile(path):
+            with open(path, 'rb') as stream:
+                saved_rule_packs[filename] = stream.read()
     try:
         staged = compile_business_code()
         write_spec(staged)
@@ -202,10 +220,21 @@ def main():
         verify_artifacts(staged)
     finally:
         if saved_cfg and os.path.exists(saved_cfg):
+            os.makedirs(DIST_ROOT, exist_ok=True)
             shutil.copy2(saved_cfg, DIST_CFG)
             print('[build-protected] 已恢复用户配置 config.json')
+        os.makedirs(DIST_RULE_PACK_DIR, exist_ok=True)
+        for filename in RULE_PACK_FILES:
+            target = os.path.join(DIST_RULE_PACK_DIR, filename)
+            if filename in saved_rule_packs:
+                with open(target, 'wb') as stream:
+                    stream.write(saved_rule_packs[filename])
+            else:
+                shutil.copy2(
+                    os.path.join(SOURCE_RULE_PACK_DIR, filename), target)
+        print('[build-protected] 已部署并保留用户规则包 rule-packs')
     print('[build-protected] 完成: %s'
-          % os.path.join(DIST_DIR, 'CXVPN管理器'))
+          % DIST_ROOT)
 
 
 if __name__ == '__main__':

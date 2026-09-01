@@ -38,6 +38,7 @@ const api = () => window.pywebview.api;
 window.addEventListener('pywebviewready', async () => {
   try {
     CFG = await api().get_config();
+    applyLightweightMode();
     bind();
     fillForms();
     showConfiguredVpnPreview();
@@ -51,6 +52,17 @@ window.addEventListener('pywebviewready', async () => {
   } catch (e) {
     console.error(e);
     toast({ ok: false, msg: `界面初始化失败：${friendlyError(e)}` });
+  }
+});
+
+window.addEventListener('cxvpn:desktop-action', async () => {
+  try {
+    CFG = await api().get_config();
+    fillForms();
+    applyLightweightMode();
+    await window.RoutingWorkspace?.refresh?.(true);
+  } catch (error) {
+    toast({ ok: false, msg: `桌面快捷操作已执行，但界面同步失败：${friendlyError(error)}` });
   }
 });
 
@@ -133,6 +145,12 @@ function bindNavigationAndOverview() {
   $('ov-startup').onchange = () => saveStartupToggle($('ov-startup'));
   $('ov-tray').onchange = () => saveToggle(
     $('ov-tray'), 'close_to_tray', '关闭窗口后将驻留系统托盘', '关闭窗口时将直接退出程序');
+  $('ov-hotkeys').onchange = () => saveToggle(
+    $('ov-hotkeys'), 'global_hotkeys_enabled',
+    '全局快捷键已启用：Ctrl+Alt+P/M/C', '全局快捷键已关闭');
+  $('ov-lightweight').onchange = () => saveToggle(
+    $('ov-lightweight'), 'lightweight_mode',
+    '已开启轻量模式', '已恢复完整视觉效果');
 
   $('btn-refresh-ip').onclick = () => void refreshIpInfo(true);
   document.querySelectorAll('.ip-copy').forEach(button => {
@@ -494,10 +512,12 @@ function bindVerificationFlows() {
 async function goToPage(page) {
   const item = document.querySelector(`#nav [data-page="${page}"]`);
   const panel = $(`page-${page}`);
-  if (!item || !panel) return;
+  if (!panel) return;
+  const activePage = item ? page : page === 'routing' ? 'proxy' : page;
   document.querySelectorAll('#nav [data-page]').forEach(candidate => {
-    candidate.classList.toggle('active', candidate === item);
-    if (candidate === item) candidate.setAttribute('aria-current', 'page');
+    const selected = candidate.dataset.page === activePage;
+    candidate.classList.toggle('active', selected);
+    if (selected) candidate.setAttribute('aria-current', 'page');
     else candidate.removeAttribute('aria-current');
   });
   document.querySelectorAll('.page').forEach(candidate => candidate.classList.remove('active'));
@@ -510,7 +530,7 @@ async function goToPage(page) {
     if (vpnListReady) renderVpnList(VPN_LIST);
   }
   if (page === 'browser') await refreshBrState();
-  if (page === 'logs') await updateLogs();
+  if (page === 'logs' && window.RoutingActivityWorkspace?.runtimeLogsVisible?.()) await updateLogs();
 }
 
 async function saveToggle(input, key, enabledMessage, disabledMessage) {
@@ -522,9 +542,12 @@ async function saveToggle(input, key, enabledMessage, disabledMessage) {
     const result = await api().save_config(CFG);
     if (result === false) throw new Error('后端未保存配置');
     toast({ ok: true, msg: next ? enabledMessage : disabledMessage });
+    if (key === 'lightweight_mode') applyLightweightMode();
+    if (key === 'global_hotkeys_enabled') await loadDesktopSettings();
   } catch (e) {
     CFG[key] = previous;
     input.checked = previous;
+    if (key === 'lightweight_mode') applyLightweightMode();
     toast({ ok: false, msg: `保存失败，已恢复原设置：${friendlyError(e)}` });
   } finally {
     input.disabled = false;
@@ -540,12 +563,24 @@ async function loadDesktopSettings() {
       CFG.close_to_tray = state.close_to_tray;
       $('ov-tray').checked = state.close_to_tray;
     }
+    CFG.global_hotkeys_enabled = !!state.global_hotkeys_enabled;
+    CFG.lightweight_mode = !!state.lightweight_mode;
+    $('ov-hotkeys').checked = CFG.global_hotkeys_enabled;
+    $('ov-hotkeys').title = (CFG.global_hotkeys_enabled && !state.global_hotkeys_active)
+      ? '快捷键可能被其它程序占用；关闭冲突程序后重新关闭并开启此项'
+      : '';
+    $('ov-lightweight').checked = CFG.lightweight_mode;
+    applyLightweightMode();
     input.disabled = false;
   } catch (e) {
     input.checked = false;
     input.disabled = true;
     input.title = `无法读取开机自启状态：${friendlyError(e)}`;
   }
+}
+
+function applyLightweightMode() {
+  document.body.classList.toggle('lightweight-mode', !!CFG?.lightweight_mode);
 }
 
 async function saveStartupToggle(input) {
@@ -947,6 +982,9 @@ function fillForms() {
   $('ov-auto').checked = CFG.auto_renew !== false;
   $('ov-autoconn').checked = CFG.auto_connect === true;
   $('ov-tray').checked = CFG.close_to_tray !== false;
+  $('ov-hotkeys').checked = CFG.global_hotkeys_enabled === true;
+  $('ov-lightweight').checked = CFG.lightweight_mode === true;
+  applyLightweightMode();
   $('ov-hours').textContent = '待同步';
   $('ov-renew-hours').textContent = '待同步';
 }
@@ -1291,7 +1329,7 @@ function applyUiStateSnapshot(snapshot) {
     .then(() => syncBlockingModals(snapshot.captcha, snapshot.sms))
     .catch(error => console.error('阻塞弹窗状态同步失败', error));
   const logsVersion = Number(snapshot.logs_version ?? -1);
-  if (curPage === 'logs' && logsVersion !== lastLogsVersion) {
+  if (curPage === 'logs' && window.RoutingActivityWorkspace?.runtimeLogsVisible?.() && logsVersion !== lastLogsVersion) {
     lastLogsVersion = logsVersion;
     void updateLogs();
   }
@@ -1349,7 +1387,7 @@ async function refreshUiStateOnce() {
     ]);
     updateOverview(state, vpnStatus);
     await syncBlockingModals(cap, sms);
-    if (curPage === 'logs') await updateLogs();
+    if (curPage === 'logs' && window.RoutingActivityWorkspace?.runtimeLogsVisible?.()) await updateLogs();
     if (curPage === 'browser') await refreshBrState();
   } catch (e) {
     console.error('状态快照读取失败', e);

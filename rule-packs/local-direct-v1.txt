@@ -1,0 +1,17 @@
+# CX VPN TOOLS 本地直连规则
+# UTF-8；每行格式：规则类型,匹配值[,no-resolve]
+# 支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-WILDCARD、IP-CIDR、IP-CIDR6。
+# 出口固定为 PHYSICAL，无需写入文件；空行和以 # 开头的行会被忽略。
+# 修改后重启软件加载；代理已启用时再保存应用一次配置。
+
+DOMAIN-SUFFIX,lan
+DOMAIN-SUFFIX,local
+IP-CIDR,10.0.0.0/8,no-resolve
+IP-CIDR,100.64.0.0/10,no-resolve
+IP-CIDR,127.0.0.0/8,no-resolve
+IP-CIDR,169.254.0.0/16,no-resolve
+IP-CIDR,172.16.0.0/12,no-resolve
+IP-CIDR,192.168.0.0/16,no-resolve
+IP-CIDR6,::1/128,no-resolve
+IP-CIDR6,fc00::/7,no-resolve
+IP-CIDR6,fe80::/10,no-resolve

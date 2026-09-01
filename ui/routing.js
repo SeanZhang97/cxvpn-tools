@@ -20,11 +20,24 @@
   const routingTestJobs = new Map();
   const testStartBusy = new Set();
   let preferenceBusy = '';
+  let autoPolicyDraft = null;
+  let autoPolicyProviderId = '';
   let nodeRegionFilter = 'all';
   let renderedNodeGroup = '';
+  let historyLoading = false;
   const SETUP_TTL_MS = 15000;
   const TEST_POLL_MS = 250;
   const TEST_POLL_MAX_MS = 5000;
+  const DNS_RECOMMENDED = Object.freeze({
+    dns_enhanced_mode: 'fake-ip', dns_respect_rules: false,
+    dns_servers: ['223.5.5.5', '1.1.1.1'],
+    default_nameserver: ['223.5.5.5', '1.1.1.1'],
+    proxy_server_nameserver: ['223.5.5.5', '1.1.1.1'],
+    direct_nameserver: ['223.5.5.5', '119.29.29.29'],
+    fake_ip_range: '198.18.0.0/16',
+    fake_ip_filter: ['+.lan', '+.local', 'localhost.ptlogin2.qq.com'],
+    nameserver_policy: [],
+  });
 
   const byId = id => document.getElementById(id);
   const backend = () => window.pywebview.api;
@@ -81,6 +94,7 @@
   }
 
   function enhanceRoutingSelect(select, { compact = false } = {}) {
+    if (!select) return null;
     if (select._routingWidget) {
       select._routingWidget.compact = compact;
       select._routingWidget.root.classList.toggle('compact', compact);
@@ -273,6 +287,17 @@
     })[value] || '自动测速';
   }
 
+  function providerSelectionLabel(provider) {
+    if (provider?.selection_mode === 'manual') return '手动节点';
+    if (provider?.auto_policy?.enabled) {
+      const regions = (provider.auto_policy.stages || [])
+        .map(stage => nodeTools?.REGION_LABELS?.[stage.region] || stage.region)
+        .filter(Boolean).join(' → ');
+      return regions ? `智能优选：${regions}` : '智能优选';
+    }
+    return '自动优选';
+  }
+
   function strategyOptions() {
     return [
       ['url-test', '自动测速', '定时测试延迟并自动选择较快节点'],
@@ -324,7 +349,297 @@
     provider.selection_mode = provider.selection_mode === 'manual' ? 'manual' : 'auto';
     provider.selected_node = String(provider.selected_node || '');
     provider.auto_update = !!provider.auto_update;
+    const rawPolicy = provider.auto_policy && typeof provider.auto_policy === 'object'
+      ? provider.auto_policy : {};
+    provider.auto_policy = {
+      enabled: !!rawPolicy.enabled,
+      stages: Array.isArray(rawPolicy.stages) ? rawPolicy.stages.map(stage => ({
+        region: String(stage?.region || '').toUpperCase(),
+        region_keywords: Array.isArray(stage?.region_keywords) ? [...stage.region_keywords] : [],
+        preferred_keywords: Array.isArray(stage?.preferred_keywords) ? [...stage.preferred_keywords] : [],
+        selection_mode: stage?.selection_mode === 'failure' ? 'failure' : 'latency',
+        preferred_node: String(stage?.preferred_node || ''),
+      })) : [],
+      fallback: rawPolicy.fallback === 'all' ? 'all' : 'reject',
+      latency_tolerance: Math.min(500, Math.max(0, Number(rawPolicy.latency_tolerance ?? 20) || 0)),
+      latency_tolerance_unit: rawPolicy.latency_tolerance_unit === 'percent' ? 'percent' : 'ms',
+    };
     return provider;
+  }
+
+  function defaultAutoPolicyDraft() {
+    return {
+      enabled: true,
+      stages: [
+        { region: 'JP', region_keywords: [], preferred_keywords: ['高速专线', 'IPLC', 'IEPL'], selection_mode: 'latency', preferred_node: '' },
+        { region: 'US', region_keywords: [], preferred_keywords: ['高速专线', 'IPLC', 'IEPL'], selection_mode: 'latency', preferred_node: '' },
+      ],
+      fallback: 'reject',
+      latency_tolerance: 20,
+      latency_tolerance_unit: 'ms',
+    };
+  }
+
+  function autoPolicyFeedback(message, tone = 'warning') {
+    const root = byId('routing-auto-policy-feedback');
+    if (!root) return;
+    root.textContent = message;
+    root.dataset.tone = tone;
+  }
+
+  function autoPolicyProviderNodes() {
+    const provider = routingConfig?.proxy_providers?.find(item => item.id === autoPolicyProviderId);
+    if (!provider) return [];
+    const persisted = providerNodesRecord(provider.id)?.nodes;
+    const preview = providerPreview(provider)?.nodes;
+    const runtime = proxyGroupState(provider.id)?.nodes;
+    const source = [persisted, preview, runtime].find(
+      nodes => Array.isArray(nodes) && nodes.length) || [];
+    return partitionNodes(source).selectable;
+  }
+
+  function autoPolicyNodeText(node) {
+    return preferenceNodeName(node, true);
+  }
+
+  function autoPolicyStageNodes(stage) {
+    const extras = (stage.region_keywords || []).map(value => String(value).toLocaleLowerCase());
+    return autoPolicyProviderNodes().filter(node => {
+      if (nodeTools.regionCode(node) === stage.region) return true;
+      const text = autoPolicyNodeText(node).toLocaleLowerCase();
+      return extras.some(keyword => text.includes(keyword));
+    });
+  }
+
+  function createKeywordEditor(labelText, values, placeholder, onChange) {
+    const field = document.createElement('div'); field.className = 'field routing-keyword-field';
+    const label = document.createElement('label'); label.textContent = labelText;
+    const editor = document.createElement('div'); editor.className = 'routing-keyword-editor';
+    const tags = document.createElement('div'); tags.className = 'routing-keyword-tags';
+    const refreshTags = () => {
+      tags.innerHTML = '';
+      values.forEach((value, index) => {
+        const tag = document.createElement('span'); tag.className = 'routing-keyword-tag';
+        const textNode = document.createElement('span'); textNode.textContent = value;
+        const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×';
+        remove.setAttribute('aria-label', `删除关键词 ${value}`);
+        remove.onclick = () => { values.splice(index, 1); refreshTags(); onChange(); };
+        tag.append(textNode, remove); tags.append(tag);
+      });
+    };
+    const inputRow = document.createElement('div'); inputRow.className = 'routing-keyword-input-row';
+    const input = document.createElement('input'); input.maxLength = 40; input.placeholder = placeholder;
+    input.setAttribute('aria-label', `${labelText}，每次添加一个`);
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'btn mini ghost'; add.textContent = '添加';
+    const commit = () => {
+      const value = input.value.trim();
+      if (!value) return;
+      if (/[,，|\r\n]/.test(value)) {
+        input.value = '';
+        autoPolicyFeedback('每次只能添加一个关键词，请不要使用逗号、竖线或换行分隔。');
+        return;
+      }
+      if (values.length >= 12) { autoPolicyFeedback('每类关键词最多添加 12 个。'); return; }
+      if (values.some(item => item.toLocaleLowerCase() === value.toLocaleLowerCase())) {
+        autoPolicyFeedback(`关键词“${value}”已经存在。`); return;
+      }
+      values.push(value); input.value = ''; refreshTags(); onChange(); autoPolicyFeedback('', '');
+    };
+    input.oninput = () => {
+      if (/[,，|\r\n]/.test(input.value)) {
+        input.value = '';
+        autoPolicyFeedback('每次只能添加一个关键词，请单独输入后点击“添加”。');
+      }
+    };
+    input.onkeydown = event => {
+      if (event.key === 'Enter') { event.preventDefault(); commit(); }
+    };
+    add.onclick = commit;
+    inputRow.append(input, add); editor.append(tags, inputRow); field.append(label, editor);
+    refreshTags();
+    return field;
+  }
+
+  function closeAutoPolicy() {
+    const panel = byId('routing-auto-policy');
+    if (!panel) return;
+    destroyRoutingSelects(byId('routing-auto-policy-stages'));
+    panel.classList.add('hidden');
+    autoPolicyDraft = null;
+    autoPolicyProviderId = '';
+  }
+
+  function autoPolicyFlowLabels() {
+    const labels = [];
+    (autoPolicyDraft?.stages || []).forEach(stage => {
+      const region = nodeTools?.REGION_LABELS?.[stage.region] || stage.region || '未选择地区';
+      if (stage.selection_mode === 'failure' && stage.preferred_node) labels.push(`${region}首选节点`);
+      if (stage.preferred_keywords?.length) labels.push(`${region}优先线路`);
+      labels.push(`${region}其他节点`);
+    });
+    labels.push(autoPolicyDraft?.fallback === 'all' ? '全部节点兜底' : '停止并提示');
+    return labels;
+  }
+
+  function renderAutoPolicyFlow() {
+    const root = byId('routing-auto-policy-flow');
+    if (!root) return;
+    root.innerHTML = '';
+    autoPolicyFlowLabels().forEach(label => {
+      const item = document.createElement('b'); item.textContent = label; root.append(item);
+    });
+  }
+
+  function updateAutoPolicyToleranceHelp() {
+    if (!autoPolicyDraft) return;
+    const tolerance = byId('routing-auto-policy-tolerance');
+    const toleranceUnit = byId('routing-auto-policy-tolerance-unit');
+    const hasLatencyStage = autoPolicyDraft.stages.some(stage => stage.selection_mode !== 'failure');
+    const currentDelays = autoPolicyProviderNodes().map(node => Number(node.delay)).filter(value => value > 0);
+    const referenceDelay = currentDelays.length ? Math.min(...currentDelays) : 100;
+    const converted = Math.round(referenceDelay * Number(autoPolicyDraft.latency_tolerance || 0) / 100);
+    tolerance.disabled = !hasLatencyStage;
+    toleranceUnit.disabled = !hasLatencyStage;
+    toleranceUnit._routingWidget?.refresh();
+    byId('routing-auto-policy-tolerance-help').textContent = !hasLatencyStage
+      ? '当前所有地区均为仅故障切换，不使用延迟容差。'
+      : toleranceUnit.value === 'percent'
+        ? `按最近测速最低值换算；当前参考 ${referenceDelay} ms，约等于 ${converted} ms。重新应用时更新。`
+        : '0 表示严格最低；建议 20 ms，减少微小波动导致的频繁切换。';
+  }
+
+  function renderAutoPolicy() {
+    const panel = byId('routing-auto-policy');
+    if (!panel || !autoPolicyDraft) return;
+    const enabled = byId('routing-auto-policy-enabled');
+    enabled.checked = !!autoPolicyDraft.enabled;
+    const tolerance = byId('routing-auto-policy-tolerance');
+    tolerance.value = String(autoPolicyDraft.latency_tolerance ?? 20);
+    const toleranceUnit = byId('routing-auto-policy-tolerance-unit');
+    toleranceUnit.value = autoPolicyDraft.latency_tolerance_unit === 'percent' ? 'percent' : 'ms';
+    tolerance.max = toleranceUnit.value === 'percent' ? '100' : '500';
+    tolerance.step = '1';
+    toleranceUnit._routingWidget?.refresh();
+    updateAutoPolicyToleranceHelp();
+    panel.classList.toggle('disabled-policy', !autoPolicyDraft.enabled);
+    panel.querySelectorAll('[data-auto-fallback]').forEach(button => {
+      button.classList.toggle('active', button.dataset.autoFallback === autoPolicyDraft.fallback);
+      button.setAttribute('aria-pressed', String(button.dataset.autoFallback === autoPolicyDraft.fallback));
+    });
+    const root = byId('routing-auto-policy-stages');
+    destroyRoutingSelects(root);
+    root.innerHTML = '';
+    const labels = nodeTools?.REGION_LABELS || {};
+    const entries = Object.entries(labels);
+    autoPolicyDraft.stages.forEach((stage, index) => {
+      const row = document.createElement('div'); row.className = 'routing-auto-policy-stage';
+      const order = document.createElement('div'); order.className = 'routing-auto-policy-rank'; order.title = `优先级 ${index + 1}`;
+      const orderLabel = document.createElement('span'); orderLabel.textContent = '优先级';
+      const orderValue = document.createElement('b'); orderValue.textContent = String(index + 1).padStart(2, '0');
+      order.append(orderLabel, orderValue);
+      const regionField = document.createElement('div'); regionField.className = 'field';
+      const regionLabel = document.createElement('label'); regionLabel.textContent = '地区';
+      const region = document.createElement('select'); region.setAttribute('aria-label', `第 ${index + 1} 个优选地区`);
+      entries.forEach(([code, label]) => region.append(option(code, label)));
+      region.value = stage.region;
+      region.onchange = () => { stage.region = region.value; stage.preferred_node = ''; renderAutoPolicy(); };
+      regionField.append(regionLabel, region);
+      const modeField = document.createElement('div'); modeField.className = 'field';
+      const modeLabel = document.createElement('label'); modeLabel.textContent = '组内切换';
+      const mode = document.createElement('select'); mode.setAttribute('aria-label', `第 ${index + 1} 个地区组内切换方式`);
+      mode.append(option('latency', '低延迟优化', '在容差外自动选择更低延迟节点'));
+      mode.append(option('failure', '仅故障切换', '首选节点健康时始终保持'));
+      mode.value = stage.selection_mode === 'failure' ? 'failure' : 'latency';
+      mode.onchange = () => { stage.selection_mode = mode.value; renderAutoPolicy(); };
+      modeField.append(modeLabel, mode);
+      let nodeField = null;
+      let preferredNode = null;
+      if (stage.selection_mode === 'failure') {
+        nodeField = document.createElement('div'); nodeField.className = 'field routing-auto-policy-node';
+        const nodeLabel = document.createElement('label'); nodeLabel.textContent = '首选节点';
+        preferredNode = document.createElement('select'); preferredNode.setAttribute('aria-label', `第 ${index + 1} 个地区首选节点`);
+        preferredNode.append(option('', '请选择首选节点'));
+        const stageNodes = autoPolicyStageNodes(stage);
+        stageNodes.forEach(node => {
+          const name = autoPolicyNodeText(node);
+          const detail = node.alive === false ? '最近检测不可用' : Number(node.delay) > 0 ? `${node.delay} ms` : '未测速';
+          preferredNode.append(option(name, name, detail));
+        });
+        if (stage.preferred_node && !stageNodes.some(node => autoPolicyNodeText(node) === stage.preferred_node)) {
+          preferredNode.append(option(stage.preferred_node, `${stage.preferred_node}（已失效）`, '请更新订阅后重新选择'));
+        }
+        preferredNode.value = stage.preferred_node || '';
+        preferredNode.onchange = () => { stage.preferred_node = preferredNode.value; renderAutoPolicyFlow(); };
+        nodeField.append(nodeLabel, preferredNode);
+      }
+      const keywordFields = document.createElement('div'); keywordFields.className = 'routing-auto-policy-keywords';
+      keywordFields.append(
+        createKeywordEditor('优先线路关键词', stage.preferred_keywords, '例如：高速专线', renderAutoPolicyFlow),
+        createKeywordEditor('地区补充关键词（可选）', stage.region_keywords, '例如：JP-Tokyo', () => {
+          if (stage.selection_mode === 'failure') {
+            stage.preferred_node = '';
+            renderAutoPolicy();
+          } else {
+            renderAutoPolicyFlow();
+          }
+        }),
+      );
+      const actions = document.createElement('div'); actions.className = 'routing-auto-policy-stage-actions';
+      const actionsLabel = document.createElement('span'); actionsLabel.textContent = '排序';
+      const actionButtons = document.createElement('div'); actionButtons.className = 'routing-auto-policy-stage-action-buttons';
+      const up = document.createElement('button'); up.type = 'button'; up.className = 'btn mini ghost'; up.textContent = '↑'; up.title = '提高优先级'; up.setAttribute('aria-label', `提高${labels[stage.region] || stage.region}优先级`); up.disabled = index === 0;
+      up.onclick = () => { [autoPolicyDraft.stages[index - 1], autoPolicyDraft.stages[index]] = [stage, autoPolicyDraft.stages[index - 1]]; renderAutoPolicy(); };
+      const down = document.createElement('button'); down.type = 'button'; down.className = 'btn mini ghost'; down.textContent = '↓'; down.title = '降低优先级'; down.setAttribute('aria-label', `降低${labels[stage.region] || stage.region}优先级`); down.disabled = index === autoPolicyDraft.stages.length - 1;
+      down.onclick = () => { [autoPolicyDraft.stages[index], autoPolicyDraft.stages[index + 1]] = [autoPolicyDraft.stages[index + 1], stage]; renderAutoPolicy(); };
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn mini danger'; remove.textContent = '删除'; remove.onclick = () => { autoPolicyDraft.stages.splice(index, 1); renderAutoPolicy(); };
+      actionButtons.append(up, down, remove);
+      actions.append(actionsLabel, actionButtons);
+      row.append(order, regionField, modeField);
+      if (nodeField) row.append(nodeField);
+      row.append(actions, keywordFields);
+      root.append(row);
+      enhanceRoutingSelect(region, { compact: true });
+      enhanceRoutingSelect(mode, { compact: true });
+      if (preferredNode) enhanceRoutingSelect(preferredNode, { compact: true });
+    });
+    byId('routing-auto-policy-empty').classList.toggle('hidden', autoPolicyDraft.stages.length > 0);
+    byId('btn-routing-auto-policy-add').disabled = autoPolicyDraft.stages.length >= 8;
+    byId('btn-routing-auto-policy-save').textContent = autoPolicyDraft.enabled
+      ? runtimeStatus?.running ? '保存并应用智能优选' : '保存智能优选'
+      : runtimeStatus?.running ? '保存并恢复普通优选' : '恢复普通自动优选';
+    renderAutoPolicyFlow();
+  }
+
+  function openAutoPolicy(provider) {
+    if (!provider) return;
+    const current = clone(provider.auto_policy || {});
+    autoPolicyDraft = current.stages?.length ? current : defaultAutoPolicyDraft();
+    autoPolicyProviderId = provider.id;
+    byId('routing-auto-policy').classList.remove('hidden');
+    byId('routing-auto-policy-feedback').textContent = '';
+    renderAutoPolicy();
+    byId('routing-auto-policy-title')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  function validateAutoPolicyDraft() {
+    if (!autoPolicyDraft) return '优选策略尚未打开';
+    if (autoPolicyDraft.enabled && !autoPolicyDraft.stages.length) return '至少添加一个优选地区';
+    const seen = new Set();
+    for (const stage of autoPolicyDraft.stages) {
+      if (seen.has(stage.region)) return `地区“${nodeTools.REGION_LABELS[stage.region] || stage.region}”重复，请保留一条`;
+      if (stage.region === 'OTHER' && !stage.region_keywords.length) return '“其他”地区必须填写地区补充关键词';
+      if (stage.selection_mode === 'failure' && !stage.preferred_node) return `${nodeTools.REGION_LABELS[stage.region] || stage.region}使用仅故障切换时必须选择首选节点`;
+      if (stage.region_keywords.length > 12 || stage.preferred_keywords.length > 12) return '每类关键词最多填写 12 个';
+      if ([...stage.region_keywords, ...stage.preferred_keywords].some(word => word.length > 40)) return '单个关键词不能超过 40 个字符';
+      seen.add(stage.region);
+    }
+    const tolerance = Number(byId('routing-auto-policy-tolerance').value);
+    const unit = byId('routing-auto-policy-tolerance-unit').value;
+    const maximum = unit === 'percent' ? 100 : 500;
+    if (!Number.isInteger(tolerance) || tolerance < 0 || tolerance > maximum) return `延迟切换容差必须是 0～${maximum} 的整数`;
+    autoPolicyDraft.latency_tolerance = tolerance;
+    autoPolicyDraft.latency_tolerance_unit = unit;
+    return '';
   }
 
   function providerNodesRecord(providerId) {
@@ -466,16 +781,23 @@
   }
 
   function setRoutingTab(name) {
-    if (name === 'nodes' && window.ProxyWorkspace?.openNodes) {
-      window.ProxyWorkspace.openNodes(pendingNodeGroup || '', { page: 'routing', tab: activeTab });
+    const workspacePages = { providers: 'subscriptions', rules: 'rules', nodes: 'nodes' };
+    if (workspacePages[name]) {
+      activeTab = name;
+      if (name === 'nodes') {
+        const currentPage = document.querySelector('.page.active')?.id?.replace('page-', '') || 'proxy';
+        window.ProxyWorkspace?.openNodes?.(pendingNodeGroup || '', {
+          page: ['routing', 'subscriptions', 'rules'].includes(currentPage) ? currentPage : 'proxy',
+          tab: 'overview',
+        });
+      } else {
+        void goToPage(workspacePages[name]);
+        void loadSetup();
+      }
       pendingNodeGroup = '';
       return;
     }
-    if (name === 'providers' && byId('page-proxy')?.classList.contains('active') &&
-        window.ProxyWorkspace?.openSubscriptions) {
-      window.ProxyWorkspace.openSubscriptions();
-      return;
-    }
+    if (name === 'overview' && !byId('page-routing')?.classList.contains('active')) void goToPage('routing');
     activeTab = name;
     document.querySelectorAll('[data-routing-tab]').forEach(button => {
       const selected = button.dataset.routingTab === name;
@@ -576,6 +898,9 @@
       [routingConfig?.capture_mode !== 'tun' || !(setup?.tun_conflicts || []).length, '接管方式', routingConfig?.capture_mode === 'tun'
         ? ((setup?.tun_conflicts || []).length ? '需关闭其他代理软件的 TUN 模式' : 'TUN 高级接管可用')
         : `Windows 系统代理 → 127.0.0.1:${routingConfig?.mixed_port || 17890}`],
+      [true, 'DNS 配置', routingConfig?.dns_mode === 'advanced'
+        ? `高级模式 · ${routingConfig?.dns_enhanced_mode || 'fake-ip'} · ${(routingConfig?.nameserver_policy || []).length} 条域名策略`
+        : '简单模式 · 使用内置推荐参数'],
       [vpnReady, 'Windows VPN', referencedVpns.size ? `${referencedVpns.size} 个引用已检查默认网关` : '规则未引用 Windows VPN'],
       [!proxyRequired || readyProviders.length > 0, '代理订阅', !proxyRequired
         ? `${routingConfig?.proxy_providers?.length || 0} 个已添加；当前出口不依赖代理`
@@ -600,9 +925,23 @@
     byId('routing-tab-node-count').textContent = String(summary.visible);
     const builtin = setup?.builtin_rule_pack?.id === routingConfig?.builtin_rule_pack
       ? setup.builtin_rule_pack : null;
-    const builtinCount = builtin?.rule_count ?? ({ off: 0, 'local-direct-v1': 11, 'cn-direct-v1': 42 }[routingConfig?.builtin_rule_pack] || 0);
-    const actual = routingConfig?.traffic_mode === 'global' ? 1 : activeRules.length + builtinCount + 1;
-    byId('routing-rule-composition').textContent = `用户规则 ${activeRules.length} 条 · 内置规则 ${routingConfig?.traffic_mode === 'global' ? 0 : builtinCount} 条（${routingConfig?.builtin_rule_pack || 'off'}） · 实际规则 ${actual} 条；顺序固定为 user → builtin → MATCH。`;
+    const builtinCount = builtin?.rule_count ?? 0;
+    const bypass = routingConfig?.system_proxy_bypass || {};
+    const bypassCount = (bypass.domains?.length || 0) + (bypass.processes?.length || 0);
+    const actual = bypassCount + (routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length + builtinCount) + 1;
+    byId('routing-rule-composition').textContent = `自定义绕过 ${bypassCount} 条 · 用户规则 ${routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length} 条 · 内置规则 ${routingConfig?.traffic_mode === 'global' ? 0 : builtinCount} 条（${routingConfig?.builtin_rule_pack || 'off'}） · 最多 ${actual} 条；顺序固定为 bypass → user → builtin → MATCH，重复项会自动合并。`;
+    renderBuiltinRules();
+  }
+
+  function renderDnsMode() {
+    const advanced = (routingConfig?.dns_mode || 'simple') === 'advanced';
+    byId('routing-dns-advanced').classList.toggle('hidden', !advanced);
+    byId('routing-dns-simple-summary').classList.toggle('hidden', advanced);
+    byId('btn-routing-dns-reset').textContent = advanced ? '恢复推荐参数' : '查看推荐参数';
+    const fakeIp = (routingConfig?.dns_enhanced_mode || 'fake-ip') === 'fake-ip';
+    byId('routing-fake-ip-range').disabled = !fakeIp || busy;
+    byId('routing-fake-ip-filter').disabled = !fakeIp || busy;
+    ['routing-dns-mode', 'routing-dns-enhanced'].forEach(id => byId(id)?._routingWidget?.refresh());
   }
 
   function fillForm() {
@@ -618,22 +957,41 @@
     });
     if (!interfaces.options.length) interfaces.append(option('', '未找到物理默认接口'));
     interfaces.value = routingConfig.physical_interface || interfaces.options[0].value;
-    enhanceRoutingSelect(interfaces);
     outboundOptions(byId('routing-default'), routingConfig.default_outbound);
-    enhanceRoutingSelect(byId('routing-default'));
     const allStrategy = byId('routing-proxy-strategy');
     allStrategy.replaceChildren(...strategyOptions().map(item => option(...item)));
     allStrategy.value = routingConfig.proxy_strategy || 'url-test';
-    enhanceRoutingSelect(allStrategy);
+    [
+      'routing-capture-mode',
+      'routing-traffic-mode',
+      'routing-interface',
+      'routing-proxy-strategy',
+      'routing-default',
+      'routing-builtin-pack',
+    ].forEach(id => enhanceRoutingSelect(byId(id)));
+    enhanceRoutingSelect(byId('builtin-rules-type'), { compact: true });
     byId('routing-dns').value = (routingConfig.dns_servers || []).join(', ');
     byId('routing-default-dns').value = (routingConfig.default_nameserver || []).join(', ');
     byId('routing-proxy-dns').value = (routingConfig.proxy_server_nameserver || []).join(', ');
     byId('routing-direct-dns').value = (routingConfig.direct_nameserver || []).join(', ');
+    byId('routing-dns-mode').value = routingConfig.dns_mode || 'simple';
+    byId('routing-dns-enhanced').value = routingConfig.dns_enhanced_mode || 'fake-ip';
+    byId('routing-dns-respect-rules').checked = !!routingConfig.dns_respect_rules;
+    byId('routing-fake-ip-range').value = routingConfig.fake_ip_range || DNS_RECOMMENDED.fake_ip_range;
+    byId('routing-fake-ip-filter').value = (routingConfig.fake_ip_filter || DNS_RECOMMENDED.fake_ip_filter).join('\n');
+    byId('routing-nameserver-policy').value = (routingConfig.nameserver_policy || [])
+      .map(item => `${item.domain} = ${(item.servers || []).join(', ')}`).join('\n');
+    ['routing-dns-mode', 'routing-dns-enhanced'].forEach(id => enhanceRoutingSelect(byId(id)));
+    renderDnsMode();
+    const bypass = routingConfig.system_proxy_bypass || {};
+    byId('routing-bypass-domains').value = (bypass.domains || []).join('\n');
+    byId('routing-bypass-processes').value = (bypass.processes || []).join('\n');
     renderProviders();
     renderAllProxyChoice();
     renderRules();
     renderOverview();
     renderNodes();
+    void loadConfigHistory();
   }
 
   function makeSelect(values, current, className) {
@@ -812,10 +1170,9 @@
       setRoutingTab('nodes');
     } catch (error) {
       const message = friendlyError(error);
-      providerPreviews.delete(provider.id);
       providerPreviewErrors.set(provider.id, { signature, message });
       feedback(`订阅获取失败：${message}`, 'error');
-      nodeFeedback(`订阅获取失败：${message}`, 'error');
+      nodeFeedback(`订阅获取失败：${message}；已保留上次节点列表。`, 'error');
       toast({ ok: false, msg: message });
     } finally {
       setBusy(false);
@@ -964,7 +1321,7 @@
     }
   }
 
-  async function refreshProvider(providerId) {
+  async function refreshProvider(providerId, allowFallback = false) {
     if (busy) return;
     setBusy(true);
     feedback('正在更新代理订阅…');
@@ -981,10 +1338,29 @@
       const tone = result.selection_invalid || result.warning ? 'warning' : 'success';
       feedback(message, tone); nodeFeedback(message, tone);
       toast({ ok: true, tone, msg: message });
+      return true;
     } catch (error) {
-      feedback(`更新失败：${friendlyError(error)}`, 'error');
-      toast({ ok: false, msg: friendlyError(error) });
+      const message = friendlyError(error);
+      if (allowFallback) {
+        feedback(`常驻核心更新未完成：${message}；正在尝试备用下载路径…`, 'warning');
+        nodeFeedback('常驻核心更新未完成，正在尝试备用下载路径；当前节点列表保持不变。', 'warning');
+        return false;
+      }
+      feedback(`更新失败：${message}；已保留当前节点列表。`, 'error');
+      nodeFeedback(`更新失败：${message}；已保留当前节点列表。`, 'error');
+      toast({ ok: false, msg: message });
+      return false;
     } finally { setBusy(false); }
+  }
+
+  async function fetchProvider(provider) {
+    const state = proxyGroupState(provider.id);
+    if (provider.enabled && providerIsSaved(provider) &&
+        (state || runtimeStatus?.core_running)) {
+      const updated = await refreshProvider(provider.id, true);
+      if (updated) return true;
+    }
+    return previewProvider(provider);
   }
 
   function testIsActive(job) {
@@ -1029,7 +1405,7 @@
         selected: provider?.selected_node || current.selected || '',
         nodes,
         alive_count: nodes.filter(node => !isMetadataNode(node) && node.alive === true).length,
-        tested_at: job.status === 'completed' ? Date.now() : current.tested_at,
+        tested_at: job.status === 'completed' ? Math.floor(Date.now() / 1000) : current.tested_at,
         signature: context.signature,
       });
       if (job.status === 'completed') {
@@ -1337,8 +1713,9 @@
     groupTest.title = group?.preview ? '后台启动无 TUN 的 Mihomo，逐节点回显延迟且不接管系统流量' : '后台测试当前运行代理组的全部节点';
     const autoSelect = byId('btn-routing-auto-select');
     autoSelect.disabled = busy || !provider || preferenceBusy === provider?.id;
-    autoSelect.textContent = provider?.selection_mode === 'auto' ? '已启用自动优选' : '自动优选';
-    autoSelect.title = !provider ? '请选择一个具体订阅后设置自动优选' : '由订阅策略自动选择较优节点';
+    const smartPolicy = provider?.selection_mode === 'auto' && provider?.auto_policy?.enabled;
+    autoSelect.textContent = smartPolicy ? '智能优选已启用' : provider?.selection_mode === 'auto' ? '优选策略' : '设置自动优选';
+    autoSelect.title = !provider ? '请选择一个具体订阅后设置自动优选' : '配置地区顺序、线路关键词和最终故障回退';
     byId('routing-node-alive').disabled = busy || (!!group?.preview && !previewTested && !context?.job);
     const locateCurrent = byId('btn-routing-locate-current');
     locateCurrent.disabled = busy || !parts.selectable.some(node => nodeSelection(node).selected);
@@ -1461,28 +1838,29 @@
       if (source) target.enabled = !!source.enabled;
       target.selection_mode = source?.selection_mode === 'manual' ? 'manual' : mode;
       target.selected_node = String(source?.selected_node ?? (mode === 'manual' ? nodeName : ''));
+      if (source?.auto_policy) target.auto_policy = clone(source.auto_policy);
       target.auto_update = source ? !!source.auto_update : !!target.auto_update;
     }
     if (authoritative?.default_outbound) config.default_outbound = authoritative.default_outbound;
   }
 
-  async function saveProxyPreference(providerId, mode, nodeName = '') {
+  async function saveProxyPreference(providerId, mode, nodeName = '', policy = null) {
     const provider = providerForGroup(providerId);
-    if (!provider || preferenceBusy) return;
+    if (!provider || preferenceBusy) return false;
     if (mode === 'manual') {
       const confirmed = await confirmAction({
         title: '确认目标节点',
         message: `将“${nodeName}”保存为“${provider.name}”的手动目标。运行中会回读确认实际选择；该操作不会修改默认出口。`,
         confirmText: '确认使用',
       });
-      if (!confirmed) return;
+      if (!confirmed) return false;
     }
     preferenceBusy = providerId; renderNodes(); renderProviders();
     const action = mode === 'manual' ? `正在保存目标节点“${nodeName}”…` : '正在启用自动优选…';
     nodeFeedback(action); feedback(action);
     try {
       const result = await backend().save_proxy_preference(
-        providerId, mode, nodeName, { ...provider });
+        providerId, mode, nodeName, { ...provider }, policy);
       if (result?.ok === false || !result?.config) throw new Error(result?.msg || '代理偏好保存失败');
       mergePreferenceIntoConfig(routingConfig, result.config, providerId, mode, nodeName);
       mergePreferenceIntoConfig(appliedConfig, result.config, providerId, mode, nodeName);
@@ -1516,9 +1894,11 @@
       nodeFeedback(message, result.requires_apply ? 'warning' : 'success');
       feedback(message, result.requires_apply ? 'warning' : 'success');
       toast({ ok: true, msg: message });
+      return true;
     } catch (error) {
       const message = `保存代理偏好失败：${friendlyError(error)}`;
       nodeFeedback(message, 'error'); feedback(message, 'error'); toast({ ok: false, msg: message });
+      return false;
     } finally {
       preferenceBusy = '';
       renderNodeWorkspace();
@@ -1607,7 +1987,7 @@
       const small = document.createElement('small');
       small.textContent = preview
         ? `已解析 ${partitionNodes(preview.nodes).selectable.length} 个可选节点 · ${cache?.available ? `${cache.node_count} 条缓存记录` : '尚未写入缓存'}`
-        : `${strategyLabel(provider.strategy)} · ${downloadRouteLabel(provider)} · ${cache?.available ? `${cache.node_count} 条缓存记录` : '暂无节点缓存'} · ${provider.auto_update ? `每 ${Math.round((provider.interval || 3600) / 60)} 分钟自动更新` : '仅手动更新'}`;
+        : `${providerSelectionLabel(provider)} · ${strategyLabel(provider.strategy)} · ${downloadRouteLabel(provider)} · ${cache?.available ? `${cache.node_count} 条缓存记录` : '暂无节点缓存'} · ${provider.auto_update ? `每 ${Math.round((provider.interval || 3600) / 60)} 分钟自动更新` : '仅手动更新'}`;
       title.append(strong, small); identity.append(order, title);
 
       const status = document.createElement('div'); status.className = 'routing-provider-status';
@@ -1621,12 +2001,12 @@
           : preview ? persistedNodes.length
             ? provider.selection_mode === 'manual' && targetNode
               ? `目标节点：${targetNode.display_name || targetNode.name} · ${selectionActive ? '当前使用' : '待启用'}`
-              : `节点已持久化 · ${provider.selection_mode === 'auto' ? '自动优选' : '尚未选择目标节点'}`
+              : `节点已持久化 · ${provider.selection_mode === 'auto' ? providerSelectionLabel(provider) : '尚未选择目标节点'}`
             : cache?.available
               ? '缓存可用，尚未生成节点快照；可重新获取或临时测速'
               : '尚未生成节点快照，请重新获取订阅'
           : state && !providerIsSaved(provider) ? '运行服务仍使用已应用配置；当前修改尚未应用'
-            : state ? `运行中：${selected?.display_name || state.selected || '等待检测'} · ${provider.selection_mode === 'manual' ? '手动节点' : '自动优选'}`
+            : state ? `运行中：${selected?.display_name || state.selected || '等待检测'} · ${providerSelectionLabel(provider)}`
             : cache?.available ? '节点缓存可用，启动统一分流后即可连接'
               : '尚未获取节点，首次获取将使用物理网络';
       current.classList.toggle('error', !!previewError && !cache?.available);
@@ -1652,7 +2032,7 @@
       const fetch = document.createElement('button'); fetch.type = 'button'; fetch.className = 'btn mini ghost'; fetch.textContent = '重新获取订阅';
       fetch.disabled = busy || !String(provider.url || '').trim();
       fetch.title = '立即从订阅地址更新并持久化节点清单';
-      fetch.onclick = () => previewProvider(provider);
+      fetch.onclick = () => fetchProvider(provider);
       const viewNodes = document.createElement('button'); viewNodes.type = 'button'; viewNodes.className = 'btn mini ghost routing-provider-nodes';
       viewNodes.textContent = preview || (state && providerIsSaved(provider))
         ? '查看节点' : busy ? '获取中…' : state ? '验证修改' : '预览节点';
@@ -1886,6 +2266,83 @@
     });
   }
 
+  function renderBuiltinRules() {
+    const list = byId('builtin-rules-list');
+    if (!list || !routingConfig) return;
+    const packId = routingConfig.builtin_rule_pack || 'off';
+    const detail = setup?.builtin_rule_packs?.[packId];
+    const rules = Array.isArray(detail?.rules) ? detail.rules : [];
+    const query = String(byId('builtin-rules-search')?.value || '').trim().toLocaleLowerCase();
+    const typeFilter = byId('builtin-rules-type')?.value || 'all';
+    const visible = rules.filter(rule => {
+      const kind = String(rule.type || '');
+      const typeMatches = typeFilter === 'all'
+        || (typeFilter === 'domain' && kind.startsWith('DOMAIN'))
+        || (typeFilter === 'ip' && kind.startsWith('IP-'));
+      const textMatches = !query || [kind, rule.value, rule.outbound, ...(rule.options || [])]
+        .some(value => String(value || '').toLocaleLowerCase().includes(query));
+      return typeMatches && textMatches;
+    });
+    const kindNames = {
+      'DOMAIN': '精确域名',
+      'DOMAIN-SUFFIX': '域名后缀',
+      'DOMAIN-WILDCARD': '域名通配符',
+      'IP-CIDR': 'IPv4 网段',
+      'IP-CIDR6': 'IPv6 网段',
+    };
+    list.replaceChildren(...visible.map(rule => {
+      const row = document.createElement('div');
+      row.className = 'builtin-rule-row';
+      row.setAttribute('role', 'listitem');
+      const order = document.createElement('span');
+      order.className = 'builtin-rule-order';
+      order.textContent = String(rule.index || 0).padStart(2, '0');
+      const kind = document.createElement('span');
+      kind.className = 'builtin-rule-kind';
+      kind.textContent = kindNames[rule.type] || rule.type || '未知';
+      kind.title = rule.type || '';
+      const value = document.createElement('span');
+      value.className = 'builtin-rule-value';
+      value.textContent = rule.value || '';
+      value.title = rule.value || '';
+      const outbound = document.createElement('span');
+      outbound.className = 'builtin-rule-outbound';
+      outbound.textContent = rule.outbound === 'PHYSICAL' ? '物理网络直连' : rule.outbound || '--';
+      if (rule.options?.length) {
+        const optionText = document.createElement('small');
+        optionText.textContent = rule.options.join(', ');
+        outbound.append(optionText);
+      }
+      row.append(order, kind, value, outbound);
+      return row;
+    }));
+    const count = byId('builtin-rules-count');
+    count.textContent = visible.length === rules.length
+      ? `${rules.length} 条` : `${visible.length} / ${rules.length} 条`;
+    byId('builtin-rules-description').textContent = detail?.error
+      ? detail.error
+      : detail?.description
+        ? detail.file_editable
+          ? `${detail.description}；来源于程序目录 ${detail.source_file}，修改后重启软件并重新应用配置。`
+          : detail.description
+        : packId === 'off' ? '当前已关闭本地规则包。'
+          : '规则详情尚未加载，请刷新页面后重试。';
+    const empty = byId('builtin-rules-empty');
+    empty.textContent = detail?.error ? '请修正规则包文件后重新保存并应用配置。'
+      : !detail && packId !== 'off' ? '规则详情尚未加载。'
+        : rules.length && !visible.length ? '没有符合当前筛选条件的规则。'
+          : '当前规则包不包含规则。';
+    byId('builtin-rules-search').disabled = !rules.length;
+    byId('builtin-rules-type').disabled = !rules.length;
+    byId('builtin-rules-type')._routingWidget?.refresh();
+    list.previousElementSibling?.classList.toggle('hidden', !rules.length);
+    const notice = byId('builtin-rules-mode-notice');
+    const globalMode = routingConfig.traffic_mode === 'global';
+    notice.classList.toggle('hidden', !globalMode);
+    notice.textContent = globalMode
+      ? '当前为全局模式：这些规则仍保留在配置中，但本次运行只生成 MATCH，不参与实际匹配。' : '';
+  }
+
   function moveRule(index, offset) {
     const next = index + offset;
     if (next < 0 || next >= routingConfig.rules.length) return;
@@ -1903,7 +2360,8 @@
       const result = await backend().preview_routing_match(collectConfig(), domain);
       if (result?.ok === false) throw new Error(result.msg);
       const match = result.result;
-      const source = match.source === 'user' ? `user · 第 ${match.rule_index} 条规则（${match.rule_domain}）`
+      const source = match.source === 'bypass' ? `bypass · 安全绕过（${match.rule_domain}）`
+        : match.source === 'user' ? `user · 第 ${match.rule_index} 条规则（${match.rule_domain}）`
         : match.source === 'builtin' ? `builtin · ${routingConfig.builtin_rule_pack}（${match.rule_domain}）`
           : 'default · MATCH';
       target.replaceChildren();
@@ -1918,7 +2376,7 @@
   function collectConfig() {
     return {
       ...routingConfig,
-      schema_version: 2,
+      schema_version: 6,
       enabled: byId('routing-enabled').checked,
       capture_mode: byId('routing-capture-mode').value,
       traffic_mode: byId('routing-traffic-mode').value,
@@ -1932,8 +2390,200 @@
       default_nameserver: byId('routing-default-dns').value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean),
       proxy_server_nameserver: byId('routing-proxy-dns').value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean),
       direct_nameserver: byId('routing-direct-dns').value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean),
+      dns_mode: byId('routing-dns-mode').value,
+      dns_enhanced_mode: byId('routing-dns-enhanced').value,
+      dns_respect_rules: byId('routing-dns-respect-rules').checked,
+      fake_ip_range: byId('routing-fake-ip-range').value.trim(),
+      fake_ip_filter: splitMaintenanceLines(byId('routing-fake-ip-filter').value),
+      nameserver_policy: parseNameserverPolicy(byId('routing-nameserver-policy').value),
+      system_proxy_bypass: {
+        lan: true,
+        domains: splitMaintenanceLines(byId('routing-bypass-domains').value),
+        processes: splitMaintenanceLines(byId('routing-bypass-processes').value),
+      },
       rules: (routingConfig.rules || []).map(rule => ({ ...rule, enabled: rule.enabled !== false })),
     };
+  }
+
+  function parseNameserverPolicy(value) {
+    return String(value || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean).map(line => {
+      const separator = line.indexOf('=');
+      return {
+        domain: (separator < 0 ? line : line.slice(0, separator)).trim(),
+        servers: (separator < 0 ? '' : line.slice(separator + 1))
+          .split(/[\s,]+/).map(item => item.trim()).filter(Boolean),
+      };
+    });
+  }
+
+  function dnsFeedback(message, tone = '') {
+    const element = byId('routing-dns-feedback');
+    element.textContent = message || '';
+    element.className = `form-feedback${tone ? ` ${tone}` : ''}`;
+  }
+
+  async function validateDns() {
+    if (busy) return;
+    dnsFeedback('正在校验 DNS 地址、fake-IP 地址池和域名策略…');
+    try {
+      const result = await backend().validate_routing_dns(collectConfig());
+      if (result?.ok === false) throw new Error(result.msg);
+      dnsFeedback(result.msg || 'DNS 配置校验通过。', 'success');
+    } catch (error) { dnsFeedback(`校验失败：${friendlyError(error)}`, 'error'); }
+  }
+
+  function resetDnsRecommended() {
+    Object.assign(routingConfig, clone(DNS_RECOMMENDED));
+    if ((routingConfig.dns_mode || 'simple') === 'simple') routingConfig.dns_mode = 'advanced';
+    fillDnsFields();
+    syncDirty();
+    dnsFeedback('已填入推荐参数；保存应用前可再次验证。', 'success');
+  }
+
+  function fillDnsFields() {
+    byId('routing-dns-mode').value = routingConfig.dns_mode || 'simple';
+    byId('routing-dns-enhanced').value = routingConfig.dns_enhanced_mode || 'fake-ip';
+    byId('routing-dns-respect-rules').checked = !!routingConfig.dns_respect_rules;
+    byId('routing-dns').value = (routingConfig.dns_servers || []).join(', ');
+    byId('routing-default-dns').value = (routingConfig.default_nameserver || []).join(', ');
+    byId('routing-proxy-dns').value = (routingConfig.proxy_server_nameserver || []).join(', ');
+    byId('routing-direct-dns').value = (routingConfig.direct_nameserver || []).join(', ');
+    byId('routing-fake-ip-range').value = routingConfig.fake_ip_range || DNS_RECOMMENDED.fake_ip_range;
+    byId('routing-fake-ip-filter').value = (routingConfig.fake_ip_filter || []).join('\n');
+    byId('routing-nameserver-policy').value = (routingConfig.nameserver_policy || [])
+      .map(item => `${item.domain} = ${(item.servers || []).join(', ')}`).join('\n');
+    ['routing-dns-mode', 'routing-dns-enhanced'].forEach(id => byId(id)?._routingWidget?.refresh());
+    renderDnsMode();
+  }
+
+  function splitMaintenanceLines(value) {
+    return [...new Set(String(value || '').split(/\r?\n/)
+      .map(item => item.trim()).filter(Boolean))];
+  }
+
+  function downloadJson(result) {
+    if (!result?.ok) throw new Error(result?.msg || '文件生成失败');
+    const blob = new Blob([result.content], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = result.filename || 'CXVPN-export.json';
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function historySourceLabel(source) {
+    return ({
+      baseline: '应用前基线', manual: '手动应用', backup_restore: '备份恢复',
+      history_restore: '历史回退', desktop_toggle: '托盘/快捷键启停',
+      desktop_mode: '托盘/快捷键切换模式', desktop_node: '托盘切换节点',
+    })[source] || source || '配置应用';
+  }
+
+  function renderConfigHistory(items) {
+    const root = byId('routing-config-history');
+    root.replaceChildren();
+    if (!items?.length) {
+      const empty = document.createElement('p');
+      empty.className = 'routing-history-empty'; empty.textContent = '尚无应用记录；首次保存应用后会自动建立基线。';
+      root.append(empty); return;
+    }
+    items.forEach(item => {
+      const row = document.createElement('div');
+      row.className = `routing-history-item${item.success ? '' : ' failed'}`;
+      const date = new Date(item.created_at || '');
+      const timeText = Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString('zh-CN', { hour12: false });
+      const title = document.createElement('strong');
+      title.textContent = `${item.success ? '应用成功' : '应用失败'} · ${historySourceLabel(item.source)}`;
+      const detail = document.createElement('span');
+      detail.textContent = `${timeText} · ${item.provider_count || 0} 个订阅 · ${item.rule_count || 0} 条用户规则 · ${item.capture_mode === 'tun' ? 'TUN' : '系统代理'}`;
+      row.append(title, detail);
+      if (item.restorable) {
+        const restore = document.createElement('button');
+        restore.type = 'button'; restore.className = 'btn mini ghost'; restore.textContent = '回退';
+        restore.onclick = () => restoreHistoryItem(item);
+        row.append(restore);
+      }
+      root.append(row);
+    });
+  }
+
+  async function loadConfigHistory() {
+    if (historyLoading || !byId('routing-config-history')) return;
+    historyLoading = true;
+    try {
+      const result = await backend().get_routing_config_history();
+      if (result?.ok === false) throw new Error(result.msg);
+      renderConfigHistory(result.items || []);
+    } catch (error) {
+      const root = byId('routing-config-history'); root.replaceChildren();
+      const empty = document.createElement('p'); empty.className = 'routing-history-empty';
+      empty.textContent = `历史读取失败：${friendlyError(error)}`; root.append(empty);
+    } finally { historyLoading = false; }
+  }
+
+  async function restoreHistoryItem(item) {
+    if (busy) return;
+    const confirmed = await confirmAction({
+      title: '回退到历史配置',
+      message: `将恢复 ${new Date(item.created_at).toLocaleString('zh-CN', { hour12: false })} 的有效分流配置，并立即重新应用。当前配置会先写入历史，是否继续？`,
+      confirmText: '回退并应用', tone: 'notice',
+    });
+    if (!confirmed) return;
+    setBusy(true, 'apply');
+    try {
+      const result = await backend().restore_routing_config_history(item.id);
+      if (result?.ok === false) throw new Error(result.msg);
+      feedback(result.msg || '历史配置已恢复。', 'success');
+      await loadSetup(true, false, true);
+      await loadConfigHistory();
+    } catch (error) { feedback(`回退失败：${friendlyError(error)}`, 'error'); }
+    finally { setBusy(false); }
+  }
+
+  async function exportBackup() {
+    if (busy) return;
+    try {
+      const result = await backend().export_config_backup(byId('routing-backup-urls').checked);
+      downloadJson(result);
+      feedback(`配置备份已导出；${result.summary?.includes_subscription_urls ? '包含订阅地址，但不含其他凭据' : '不含订阅地址和任何凭据'}。`, 'success');
+    } catch (error) { feedback(`备份失败：${friendlyError(error)}`, 'error'); }
+  }
+
+  async function exportDiagnostics() {
+    if (busy) return;
+    try {
+      const result = await backend().export_routing_diagnostics();
+      downloadJson(result); feedback(`诊断包已导出：${result.summary || '已脱敏'}`, 'success');
+    } catch (error) { feedback(`诊断导出失败：${friendlyError(error)}`, 'error'); }
+  }
+
+  async function restoreBackupFile(file) {
+    if (!file || busy) return;
+    try {
+      if (file.size > 2 * 1024 * 1024) throw new Error('备份文件不能超过 2 MB');
+      const content = await file.text();
+      const preview = await backend().preview_config_restore(content);
+      if (preview?.ok === false) throw new Error(preview.msg);
+      const summary = preview.summary || {};
+      const changes = [
+        `${summary.provider_count || 0} 个订阅`, `${summary.rule_count || 0} 条用户规则`,
+        `${summary.routing_fields?.length || 0} 项路由设置变化`, `${summary.general_fields?.length || 0} 项通用设置变化`,
+      ].join('、');
+      const warnings = (summary.warnings || []).join('；');
+      const confirmed = await confirmAction({
+        title: '确认恢复配置备份',
+        message: `已校验备份：${changes}。凭据保留当前本机值；${warnings || '代理启用状态保持不变'}。恢复后会立即预检并应用，是否继续？`,
+        confirmText: '恢复并应用', tone: 'notice',
+      });
+      if (!confirmed) return;
+      setBusy(true, 'apply');
+      const result = await backend().restore_config_backup(content);
+      if (result?.ok === false) throw new Error(result.msg);
+      feedback(result.msg || '配置备份已恢复。', 'success');
+      await loadSetup(true, false, true);
+      await loadConfigHistory();
+    } catch (error) { feedback(`恢复失败：${friendlyError(error)}`, 'error'); }
+    finally { byId('routing-restore-file').value = ''; setBusy(false); }
   }
 
   function feedback(message, tone = '') {
@@ -1986,12 +2636,19 @@
       'routing-mixed-port', 'routing-dns', 'routing-default-dns', 'routing-proxy-dns',
       'routing-direct-dns', 'routing-builtin-pack', 'routing-proxy-strategy',
       'routing-default', 'routing-test-domain', 'btn-routing-test', 'btn-routing-add',
-      'routing-node-search', 'btn-routing-discard',
+      'routing-node-search', 'btn-routing-discard', 'routing-bypass-domains',
+      'routing-bypass-processes', 'btn-routing-backup', 'btn-routing-restore',
+      'btn-routing-diagnostic', 'btn-routing-history-refresh',
+      'routing-dns-mode', 'routing-dns-enhanced', 'routing-dns-respect-rules',
+      'routing-fake-ip-range', 'routing-fake-ip-filter', 'routing-nameserver-policy',
+      'btn-routing-dns-validate', 'btn-routing-dns-reset',
     ].forEach(id => {
       const control = byId(id);
       if (control) control.disabled = value;
     });
-    document.querySelectorAll('#page-routing select').forEach(select => select._routingWidget?.refresh());
+    document.querySelectorAll('.routing-page select, .routing-workspace-page select')
+      .forEach(select => select._routingWidget?.refresh());
+    renderDnsMode();
     window.ProxyWorkspace?.sync?.();
   }
 
@@ -2022,6 +2679,29 @@
     showConflicts(result.tun_conflicts || []);
     window.ProxyWorkspace?.sync?.();
     return result;
+  }
+
+  function acceptApplyResult(result) {
+    if (!result?.config) return;
+    const committed = clone(result.config);
+    (committed.proxy_providers || []).forEach(normalizeProviderDefaults);
+    appliedConfig = committed;
+    savedConfig = clone(committed);
+    runtimeStatus = clone(result.status || runtimeStatus || {});
+    setup = {
+      ...(setup || {}),
+      config: clone(committed),
+      status: clone(runtimeStatus),
+    };
+    if (!dirty) {
+      routingConfig = clone(committed);
+      fillForm();
+      savedSnapshot = snapshot(collectConfig());
+    }
+    loaded = true;
+    lastLoadedAt = Date.now();
+    setStatus(runtimeStatus);
+    window.ProxyWorkspace?.sync?.();
   }
 
   function loadBootstrap() {
@@ -2192,14 +2872,89 @@
     byId('btn-routing-test-cancel').onclick = cancelProxyTest;
     byId('btn-routing-auto-select').onclick = () => {
       const provider = providerForGroup(byId('routing-node-group')?.value || '');
-      if (provider) saveProxyPreference(provider.id, 'auto', '');
+      if (provider) openAutoPolicy(provider);
+    };
+    byId('btn-routing-auto-policy-close').onclick = closeAutoPolicy;
+    byId('routing-auto-policy-enabled').onchange = event => {
+      if (!autoPolicyDraft) return;
+      autoPolicyDraft.enabled = event.target.checked;
+      renderAutoPolicy();
+    };
+    byId('routing-auto-policy-tolerance').oninput = event => {
+      if (!autoPolicyDraft) return;
+      autoPolicyDraft.latency_tolerance = Number(event.target.value);
+      updateAutoPolicyToleranceHelp();
+    };
+    byId('routing-auto-policy-tolerance-unit').onchange = event => {
+      if (!autoPolicyDraft) return;
+      autoPolicyDraft.latency_tolerance_unit = event.target.value;
+      const maximum = event.target.value === 'percent' ? 100 : 500;
+      autoPolicyDraft.latency_tolerance = Math.min(maximum, Number(autoPolicyDraft.latency_tolerance || 0));
+      renderAutoPolicy();
+    };
+    byId('btn-routing-auto-policy-add').onclick = () => {
+      if (!autoPolicyDraft || autoPolicyDraft.stages.length >= 8) return;
+      const used = new Set(autoPolicyDraft.stages.map(stage => stage.region));
+      const visibleRegions = nodeTools.regionOptions(
+        nodeGroups().find(item => item.id === byId('routing-node-group')?.value)?.nodes || [], 20)
+        .map(item => item.code).filter(code => code !== 'all');
+      const choices = [...visibleRegions, ...Object.keys(nodeTools.REGION_LABELS)];
+      const region = choices.find(code => !used.has(code));
+      if (!region) return;
+      autoPolicyDraft.stages.push({
+        region, region_keywords: [],
+        preferred_keywords: ['高速专线', 'IPLC', 'IEPL'],
+        selection_mode: 'latency', preferred_node: '',
+      });
+      renderAutoPolicy();
+    };
+    document.querySelectorAll('[data-auto-fallback]').forEach(button => {
+      button.onclick = () => {
+        if (!autoPolicyDraft) return;
+        autoPolicyDraft.fallback = button.dataset.autoFallback;
+        renderAutoPolicy();
+      };
+    });
+    byId('btn-routing-auto-policy-save').onclick = async () => {
+      const error = validateAutoPolicyDraft();
+      const status = byId('routing-auto-policy-feedback');
+      if (error) { status.textContent = error; status.className = 'form-feedback error'; return; }
+      const provider = providerForGroup(byId('routing-node-group')?.value || '');
+      if (!provider) { status.textContent = '当前订阅已不存在，请刷新后重试'; status.className = 'form-feedback error'; return; }
+      if (runtimeStatus?.running) {
+        const confirmed = await confirmAction({
+          title: autoPolicyDraft.enabled ? '应用智能优选策略' : '恢复普通自动优选',
+          message: '保存后将重新加载代理核心以立即应用策略，现有代理连接可能短暂中断。是否继续？',
+          confirmText: '保存并应用',
+        });
+        if (!confirmed) return;
+      }
+      status.textContent = '正在保存优选策略…'; status.className = 'form-feedback';
+      const saveButton = byId('btn-routing-auto-policy-save');
+      saveButton.disabled = true;
+      try {
+        const saved = await saveProxyPreference(provider.id, 'auto', '', clone(autoPolicyDraft));
+        if (saved) closeAutoPolicy();
+      } finally {
+        saveButton.disabled = false;
+      }
     };
     byId('routing-node-search').oninput = renderNodes;
     byId('routing-node-alive').onchange = renderNodes;
     byId('routing-node-sort').onchange = renderNodes;
     byId('btn-routing-locate-current').onclick = locateCurrentNode;
+    byId('btn-routing-backup').onclick = exportBackup;
+    byId('btn-routing-restore').onclick = () => byId('routing-restore-file').click();
+    byId('btn-routing-diagnostic').onclick = exportDiagnostics;
+    byId('btn-routing-history-refresh').onclick = loadConfigHistory;
+    byId('btn-routing-dns-validate').onclick = validateDns;
+    byId('btn-routing-dns-reset').onclick = resetDnsRecommended;
+    byId('routing-restore-file').onchange = event => restoreBackupFile(event.target.files?.[0]);
+    byId('builtin-rules-search').oninput = renderBuiltinRules;
+    byId('builtin-rules-type').onchange = renderBuiltinRules;
     enhanceRoutingSelect(byId('routing-node-sort'), { compact: true });
-    byId('routing-node-group').onchange = () => { nodeRegionFilter = 'all'; renderNodes(); };
+    enhanceRoutingSelect(byId('routing-auto-policy-tolerance-unit'), { compact: true });
+    byId('routing-node-group').onchange = () => { nodeRegionFilter = 'all'; closeAutoPolicy(); renderNodes(); };
     document.querySelectorAll('[data-routing-tab]').forEach(button => {
       button.onclick = () => setRoutingTab(button.dataset.routingTab);
       button.onkeydown = event => {
@@ -2216,9 +2971,11 @@
     document.querySelector('[data-routing-workbench="nodes"]')?.addEventListener('click', () => setRoutingTab('nodes'));
     ['routing-enabled', 'routing-capture-mode', 'routing-traffic-mode', 'routing-interface',
       'routing-default', 'routing-builtin-pack', 'routing-mixed-port', 'routing-dns',
-      'routing-default-dns', 'routing-proxy-dns', 'routing-direct-dns'].forEach(id => {
+      'routing-default-dns', 'routing-proxy-dns', 'routing-direct-dns',
+      'routing-bypass-domains', 'routing-bypass-processes', 'routing-fake-ip-range',
+      'routing-fake-ip-filter', 'routing-nameserver-policy'].forEach(id => {
       const element = byId(id);
-      element.addEventListener(id.includes('dns') || id === 'routing-mixed-port' ? 'input' : 'change', () => {
+      element.addEventListener(id.includes('dns') || id.includes('bypass') || id === 'routing-mixed-port' ? 'input' : 'change', () => {
         if (id === 'routing-enabled') routingConfig.enabled = element.checked;
         if (id === 'routing-capture-mode') routingConfig.capture_mode = element.value;
         if (id === 'routing-traffic-mode') routingConfig.traffic_mode = element.value;
@@ -2230,9 +2987,30 @@
         if (id === 'routing-default-dns') routingConfig.default_nameserver = element.value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean);
         if (id === 'routing-proxy-dns') routingConfig.proxy_server_nameserver = element.value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean);
         if (id === 'routing-direct-dns') routingConfig.direct_nameserver = element.value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean);
+        if (id === 'routing-fake-ip-range') routingConfig.fake_ip_range = element.value.trim();
+        if (id === 'routing-fake-ip-filter') routingConfig.fake_ip_filter = splitMaintenanceLines(element.value);
+        if (id === 'routing-nameserver-policy') routingConfig.nameserver_policy = parseNameserverPolicy(element.value);
+        if (id === 'routing-bypass-domains') routingConfig.system_proxy_bypass = {
+          ...(routingConfig.system_proxy_bypass || {}), lan: true, domains: splitMaintenanceLines(element.value),
+        };
+        if (id === 'routing-bypass-processes') routingConfig.system_proxy_bypass = {
+          ...(routingConfig.system_proxy_bypass || {}), lan: true, processes: splitMaintenanceLines(element.value),
+        };
         syncDirty(); renderOverview(); updateApplyButton();
       });
     });
+    byId('routing-dns-mode').onchange = () => {
+      routingConfig.dns_mode = byId('routing-dns-mode').value;
+      syncDirty(); renderDnsMode();
+    };
+    byId('routing-dns-enhanced').onchange = () => {
+      routingConfig.dns_enhanced_mode = byId('routing-dns-enhanced').value;
+      syncDirty(); renderDnsMode();
+    };
+    byId('routing-dns-respect-rules').onchange = () => {
+      routingConfig.dns_respect_rules = byId('routing-dns-respect-rules').checked;
+      syncDirty();
+    };
     byId('routing-proxy-strategy').onchange = () => {
       routingConfig.proxy_strategy = byId('routing-proxy-strategy').value;
       setDirty(); renderAllProxyChoice(); renderOverview();
@@ -2252,6 +3030,10 @@
         strategy: 'url-test',
         selection_mode: 'auto',
         selected_node: '',
+        auto_policy: {
+          enabled: false, stages: [], fallback: 'reject', latency_tolerance: 20,
+          latency_tolerance_unit: 'ms',
+        },
         auto_update: false,
         interval: 3600,
         filter: '',
@@ -2280,8 +3062,22 @@
       setDirty(); renderRules(); renderOverview();
       byId('routing-rules').lastElementChild?.querySelector('.routing-domain')?.focus();
     };
-    document.querySelector('#nav [data-page="routing"]')?.addEventListener('click', () => loadSetup());
-    document.querySelector('#nav [data-page="proxy"]')?.addEventListener('click', () => loadSetup());
+    document.querySelector('#nav [data-page="proxy"]')?.addEventListener(
+      'click', () => void loadSetup(false, true, true));
+    ['subscriptions', 'rules', 'nodes'].forEach(page => {
+      document.querySelector(`#nav [data-page="${page}"]`)?.addEventListener(
+        'click', () => void loadSetup());
+    });
+    window.addEventListener('cxvpn:pagechange', event => {
+      const page = event.detail?.page;
+      if (page === 'subscriptions') activeTab = 'providers';
+      if (page === 'rules') activeTab = 'rules';
+      if (page === 'nodes') {
+        activeTab = 'nodes';
+        renderNodes();
+      }
+      closeRoutingSelect();
+    });
     document.querySelectorAll('#nav [data-page]').forEach(item => {
       item.addEventListener('click', () => closeRoutingSelect());
     });
@@ -2300,7 +3096,10 @@
 
   window.RoutingWorkspace = {
     load: loadSetup,
+    loadForProxyHome: () => loadSetup(false, true, true),
     refresh: (preserveDraft = true) => loadSetup(true, preserveDraft),
+    refreshBackground: (preserveDraft = true) => loadSetup(true, preserveDraft, true),
+    acceptApplyResult,
     openTab: setRoutingTab,
     state: () => ({
       setup,
@@ -2321,6 +3120,7 @@
     },
     renderNodes,
     refreshNodes,
+    enhanceSelect: enhanceRoutingSelect,
     previewProvider: providerId => {
       const provider = routingConfig?.proxy_providers?.find(item => item.id === providerId);
       return provider ? previewProvider(provider) : Promise.resolve();

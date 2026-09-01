@@ -126,6 +126,12 @@ class LocalWebSocketServer:
 
 
 class MihomoTelemetryTests(unittest.TestCase):
+    def test_websocket_path_rejects_header_injection(self):
+        with self.assertRaises(ValueError):
+            mihomo_telemetry._open_websocket(
+                {'controller_port': 19090, 'controller_secret': 'safe'},
+                path='/logs\r\nInjected: yes')
+
     def test_client_control_frames_are_masked_and_round_trip(self):
         encoded = _client_frame(0xA, '中文🇯🇵'.encode('utf-8'))
         self.assertTrue(encoded[1] & 0x80)

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from core import routing, subscription_store
+from core import routing, routing_rules, subscription_store
 
 
 def vpn_profile(name='公司 VPN', connected=True, gateway=False):
@@ -495,12 +495,16 @@ class RoutingConfigTests(unittest.TestCase):
         with mock.patch.object(
                 manager, '_preview_proxy_provider_once',
                 side_effect=routing.ProviderFetchError('缓存不可用')) as once, \
-                mock.patch.object(routing, 'windows_system_proxy') as proxy:
+                mock.patch.object(routing, 'windows_system_proxy') as proxy, \
+                mock.patch.object(
+                    subscription_store, 'cache_status',
+                    return_value={'available': True}) as cache_status:
             with self.assertRaises(routing.ProviderFetchError):
                 manager.test_preview_proxy_provider(provider)
 
         once.assert_called_once()
         proxy.assert_not_called()
+        cache_status.assert_not_called()
 
     def test_auto_preview_reports_all_routes_failed(self):
         provider = {
@@ -514,11 +518,56 @@ class RoutingConfigTests(unittest.TestCase):
                     routing.ProviderFetchError('物理网络失败'),
                     routing.RoutingError('系统代理已不可用'),
                 ]), mock.patch.object(
-                    routing, 'windows_system_proxy',
-                    return_value='http://127.0.0.1:7892'):
+                routing, 'windows_system_proxy',
+                return_value='http://127.0.0.1:7892'), mock.patch.object(
+                subscription_store, 'cache_status',
+                return_value={'available': False}):
             with self.assertRaisesRegex(
                     routing.RoutingError, 'Windows 系统代理均失败'):
                 manager.preview_proxy_provider(provider)
+
+    def test_auto_preview_retains_cached_nodes_after_all_network_routes_fail(self):
+        provider = {
+            'id': 'draft', 'name': '科学',
+            'url': 'https://example.test/subscription',
+            'enabled': False, 'download_route': 'auto',
+        }
+        manager = routing.RoutingManager()
+        cached_result = {
+            'ok': True, 'provider_name': '科学', 'node_count': 1,
+            'nodes': [{
+                'name': '东京 01', 'display_name': '东京 01',
+                'type': 'vless', 'delay': 0, 'alive': None,
+                'tested': False, 'tested_at': 0,
+            }],
+        }
+        snapshot = {'nodes': [{
+            'name': '东京 01', 'display_name': '东京 01',
+            'type': 'vless', 'delay': 88, 'alive': True,
+            'tested': True, 'tested_at': 1_800_000_000,
+        }]}
+        with mock.patch.object(
+                manager, '_preview_proxy_provider_once', side_effect=[
+                    routing.ProviderFetchError('物理网络失败'),
+                    routing.RoutingError('系统代理已不可用'),
+                    cached_result,
+                ]) as once, mock.patch.object(
+                    routing, 'windows_system_proxy',
+                    return_value='http://127.0.0.1:7892'), mock.patch.object(
+                    subscription_store, 'cache_status',
+                    return_value={'available': True, 'node_count': 1}), \
+                mock.patch.object(
+                    subscription_store, 'load_node_snapshot',
+                    return_value=snapshot):
+            result = manager.preview_proxy_provider(provider)
+
+        self.assertEqual(once.call_count, 3)
+        self.assertTrue(once.call_args_list[2].kwargs['_cache_only'])
+        self.assertFalse(once.call_args_list[2].kwargs['_persist_snapshot'])
+        self.assertEqual(result['update_state'], 'cache_retained')
+        self.assertFalse(result['refreshed'])
+        self.assertEqual(result['nodes'][0]['delay'], 88)
+        self.assertTrue(result['nodes'][0]['alive'])
 
     def test_preview_test_requires_matching_cache_before_process_start(self):
         provider = {
@@ -669,6 +718,9 @@ class RoutingConfigTests(unittest.TestCase):
             self.assertEqual(
                 after_status['updated_at'], before_status['updated_at'])
             self.assertIn('继续使用上次成功缓存', result['msg'])
+            self.assertEqual(result['update_state'], 'cache_retained')
+            self.assertFalse(result['refreshed'])
+            self.assertTrue(result['used_cache'])
 
     def test_provider_cache_filename_is_scoped_to_subscription_url(self):
         provider = {
@@ -843,6 +895,9 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertTrue(result['partial'])
         self.assertEqual(result['provider_caches']['default'], cache)
         self.assertEqual(result['provider_nodes'], snapshots)
+        self.assertEqual(
+            len(result['builtin_rule_packs']['cn-direct-v1']['rules']),
+            len(routing_rules.rules_for('cn-direct-v1')))
         status.assert_called_once()
         self.assertTrue(status.call_args.kwargs['quick'])
         vpns.assert_not_called()
@@ -864,6 +919,8 @@ class RoutingConfigTests(unittest.TestCase):
             status = manager.status(self.base_config(), quick=True)
 
         self.assertTrue(status['running'])
+        self.assertTrue(status['service_update_required'])
+        self.assertNotIn('builtin_rule_packs', status)
         probe.assert_not_called()
 
     def test_disabled_config_reports_running_core_as_standby_not_proxy(self):
@@ -942,7 +999,10 @@ class RoutingConfigTests(unittest.TestCase):
         }}
         providers = {'providers': {'provider-default': {'proxies': [{
             'name': node_name, 'type': 'Vless', 'alive': True,
-            'history': [{'delay': 56}],
+            'history': [{
+                'delay': 56,
+                'time': '2026-09-01T12:34:56.1234567+08:00',
+            }],
         }]}}}
         with mock.patch.object(
                 manager, '_controller_request',
@@ -954,6 +1014,7 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(node['type'], 'Vless')
         self.assertEqual(node['delay'], 56)
         self.assertTrue(node['alive'])
+        self.assertEqual(node['tested_at'], 1_788_237_296)
         self.assertEqual(node['provider_name'], 'provider-default')
 
     def test_single_provider_node_uses_provider_healthcheck_endpoint(self):

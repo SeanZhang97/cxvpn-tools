@@ -1,6 +1,6 @@
 use crate::util::{atomic_write, AppResult};
 use serde::{Deserialize, Serialize};
-use std::{ffi::c_void, fs, path::Path};
+use std::{collections::HashSet, ffi::c_void, fs, path::Path};
 use windows_sys::Win32::{
     Foundation::ERROR_SUCCESS,
     Networking::WinInet::{
@@ -15,6 +15,7 @@ use windows_sys::Win32::{
 const SNAPSHOT_FILE: &str = "system-proxy-snapshot.json";
 const INTERNET_SETTINGS: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 const SAFE_BYPASS: &str = "<local>;localhost;127.*;[::1];*.local;*.lan;10.*;192.168.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*";
+const MAX_CUSTOM_BYPASS_DOMAINS: usize = 100;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Snapshot {
@@ -28,10 +29,60 @@ pub fn is_active(base: &Path) -> bool {
     base.join(SNAPSHOT_FILE).is_file()
 }
 
-pub fn activate(base: &Path, owner_sid: &str, port: u16) -> AppResult<()> {
+pub fn normalize_bypass_domains(values: &[String]) -> AppResult<Vec<String>> {
+    if values.len() > MAX_CUSTOM_BYPASS_DOMAINS {
+        return Err(format!(
+            "系统代理入口绕过域名最多配置 {MAX_CUSTOM_BYPASS_DOMAINS} 个"
+        ));
+    }
+    let mut result = Vec::with_capacity(values.len());
+    let mut seen = HashSet::new();
+    for (index, raw) in values.iter().enumerate() {
+        let domain = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+        let valid = !domain.is_empty()
+            && domain.len() <= 253
+            && domain.is_ascii()
+            && domain.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+            });
+        if !valid {
+            return Err(format!("系统代理入口绕过第 {} 个域名无效", index + 1));
+        }
+        if seen.insert(domain.clone()) {
+            result.push(domain);
+        }
+    }
+    Ok(result)
+}
+
+fn proxy_override(values: &[String]) -> AppResult<String> {
+    let domains = normalize_bypass_domains(values)?;
+    let mut result = String::from(SAFE_BYPASS);
+    for domain in domains {
+        result.push(';');
+        result.push_str(&domain);
+        result.push_str(";*.");
+        result.push_str(&domain);
+    }
+    Ok(result)
+}
+
+pub fn activate(
+    base: &Path,
+    owner_sid: &str,
+    port: u16,
+    bypass_domains: &[String],
+) -> AppResult<()> {
     let path = base.join(SNAPSHOT_FILE);
     let key = open(owner_sid, KEY_READ | KEY_SET_VALUE)?;
     let result = (|| -> AppResult<()> {
+        let expected_override = proxy_override(bypass_domains)?;
         if !path.is_file() {
             let snapshot = Snapshot {
                 proxy_enable: query_dword(key, "ProxyEnable")?,
@@ -44,10 +95,13 @@ pub fn activate(base: &Path, owner_sid: &str, port: u16) -> AppResult<()> {
             atomic_write(&path, &data)?;
         }
         set_string(key, "ProxyServer", &format!("127.0.0.1:{port}"))?;
-        set_string(key, "ProxyOverride", SAFE_BYPASS)?;
+        set_string(key, "ProxyOverride", &expected_override)?;
         delete_value(key, "AutoConfigURL")?;
         set_dword(key, "ProxyEnable", 1)?;
         notify();
+        if query_string(key, "ProxyOverride")?.as_deref() != Some(expected_override.as_str()) {
+            return Err("Windows 系统代理绕过域名写入后回读不一致".to_string());
+        }
         Ok(())
     })();
     unsafe { RegCloseKey(key) };
@@ -232,5 +286,39 @@ fn notify() {
             std::ptr::null_mut(),
             0,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_bypass_domains, proxy_override};
+
+    #[test]
+    fn proxy_override_lists_each_domain_and_subdomain_pattern() {
+        let value = proxy_override(&[
+            "Chaoxing.com".to_string(),
+            "dashscope.aliyuncs.com".to_string(),
+        ])
+        .expect("域名应有效");
+
+        assert!(value.contains(";chaoxing.com;*.chaoxing.com"));
+        assert!(value.contains(";dashscope.aliyuncs.com;*.dashscope.aliyuncs.com"));
+    }
+
+    #[test]
+    fn bypass_domains_reject_proxy_override_injection() {
+        let error = normalize_bypass_domains(&["example.com;*.evil.test".to_string()])
+            .expect_err("分号必须被拒绝");
+
+        assert!(error.contains("域名无效"));
+    }
+
+    #[test]
+    fn bypass_domains_are_normalized_and_deduplicated() {
+        let values =
+            normalize_bypass_domains(&["Example.COM.".to_string(), "example.com".to_string()])
+                .expect("域名应有效");
+
+        assert_eq!(values, vec!["example.com"]);
     }
 }

@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CX VPN TOOLS</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="routing_activity.css">
+<link rel="stylesheet" href="routing_rules.css">
 </head>
 <body>
 <div class="app">
@@ -17,12 +19,15 @@
       <button type="button" data-page="overview" class="active" aria-current="page"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg><span>总览</span></button>
       <button type="button" data-page="vpns"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 2v20"/></svg><span>VPN 配置</span></button>
       <button type="button" data-page="proxy"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg><span>网络代理</span></button>
-      <button type="button" data-page="routing"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 6h8M7 8l4 8M17 8l-4 8"/></svg><span>域名分流</span></button>
+      <button type="button" data-page="subscriptions"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span>订阅</span></button>
+      <button type="button" data-page="nodes"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 6h8M7 8l4 8M17 8l-4 8"/></svg><span>节点</span></button>
+      <button type="button" data-page="rules"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/><circle cx="18" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></svg><span>规则</span></button>
+      <button type="button" data-page="connections"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 12h8M12 8v8"/><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/></svg><span>连接</span></button>
       <button type="button" data-page="cx"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>超星账号</span></button>
       <button type="button" data-page="vlm"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m4 20 11-11"/><path d="m12.5 6.5 5 5"/><path d="M18 2v4M16 4h4"/><path d="M6 5v3M4.5 6.5h3"/><path d="M19 15v4M17 17h4"/></svg><span>自动化配置</span></button>
       <button type="button" data-page="browser"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg><span>浏览器</span></button>
       <button type="button" data-page="help"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.5 2.5 0 1 1 3.7 2.2c-1 .6-1.5 1.1-1.5 2.3"/><path d="M12 17h.01"/></svg><span>帮助说明</span></button>
-      <button type="button" data-page="logs"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg><span>运行日志</span></button>
+      <button type="button" data-page="logs"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg><span>日志</span></button>
     </nav>
     <div class="side-foot"><div id="side-state" class="pill off">调度未启动</div></div>
   </aside>
@@ -162,13 +167,29 @@
             </div>
             <label class="switch compact-switch"><input id="ov-startup" type="checkbox" disabled><i></i></label>
           </div>
-          <div class="setting-row automation-last-setting">
+          <div class="setting-row">
             <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M12 6v9M8.5 11.5 12 15l3.5-3.5"/></svg></span>
             <div>
               <strong>关闭到托盘</strong>
               <p>关闭主窗口后继续执行后台自动化</p>
             </div>
             <label class="switch compact-switch"><input id="ov-tray" type="checkbox"><i></i></label>
+          </div>
+          <div class="setting-row">
+            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16"/><path d="m7 7 10 10M17 7 7 17"/></svg></span>
+            <div>
+              <strong>全局快捷键</strong>
+              <p>Ctrl+Alt+P 启停代理，M 切换模式，C 打开连接页</p>
+            </div>
+            <label class="switch compact-switch"><input id="ov-hotkeys" type="checkbox"><i></i></label>
+          </div>
+          <div class="setting-row automation-last-setting">
+            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/><circle cx="12" cy="12" r="9"/></svg></span>
+            <div>
+              <strong>轻量模式</strong>
+              <p>减少动画、模糊效果和后台状态采样频率</p>
+            </div>
+            <label class="switch compact-switch"><input id="ov-lightweight" type="checkbox"><i></i></label>
           </div>
           <button id="btn-repair" class="maintenance-link">
             <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5-5L7 4l3 3 2.7-2.7a4 4 0 0 1-5 5L2 15l4 4 5.7-5.7a4 4 0 0 0 5-5L14 11l-3-3 3.7-1.7Z"/></svg></span>
@@ -336,6 +357,29 @@
             <button id="btn-routing-auto-select" class="btn ghost" type="button">自动优选</button>
             <button id="btn-routing-group-test" class="btn ghost">全部测速</button>
           </div>
+          <section id="routing-auto-policy" class="routing-auto-policy hidden" aria-labelledby="routing-auto-policy-title">
+            <div class="routing-auto-policy-head">
+              <div><span class="routing-eyebrow">SMART FAILOVER</span><h4 id="routing-auto-policy-title">智能优选策略</h4><p>按地区顺序故障转移；每个地区可独立选择低延迟优化或仅故障切换。</p></div>
+              <button id="btn-routing-auto-policy-close" class="btn mini ghost" type="button" aria-label="关闭智能优选策略">关闭</button>
+            </div>
+            <label class="routing-auto-policy-switch">
+              <input id="routing-auto-policy-enabled" type="checkbox"><i aria-hidden="true"></i>
+              <span><strong>启用分层故障转移</strong><small>关闭时恢复订阅原有的普通自动优选</small></span>
+            </label>
+            <div class="routing-auto-policy-section">
+              <div class="routing-auto-policy-section-head"><div><strong>故障转移顺序</strong><small>只有当前地区全部不可用，才进入下一地区</small></div><button id="btn-routing-auto-policy-add" class="btn mini ghost" type="button">添加地区</button></div>
+              <div id="routing-auto-policy-stages" class="routing-auto-policy-stages"></div>
+              <p id="routing-auto-policy-empty" class="routing-auto-policy-empty hidden">尚未添加地区，至少添加一个地区后才能启用。</p>
+            </div>
+            <div class="routing-auto-policy-options">
+              <div class="routing-auto-policy-tolerance">
+                <div class="field"><label for="routing-auto-policy-tolerance">延迟切换容差</label><div class="routing-auto-policy-tolerance-input"><input id="routing-auto-policy-tolerance" type="number" min="0" max="500" step="1"><select id="routing-auto-policy-tolerance-unit" aria-label="延迟切换容差单位"><option value="ms">ms</option><option value="percent">%</option></select></div><small id="routing-auto-policy-tolerance-help">0 表示严格最低；建议 20 ms，减少微小波动导致的频繁切换</small></div>
+              </div>
+              <fieldset><legend>所有地区都不可用时</legend><div class="routing-auto-policy-choice"><button type="button" data-auto-fallback="reject">停止并提示</button><button type="button" data-auto-fallback="all">从全部节点兜底</button></div></fieldset>
+            </div>
+            <div class="routing-auto-policy-flow"><span>执行流程</span><div id="routing-auto-policy-flow"></div></div>
+            <div class="routing-auto-policy-actions"><p id="routing-auto-policy-feedback" class="form-feedback" role="status" aria-live="polite"></p><button id="btn-routing-auto-policy-save" class="btn primary" type="button">保存智能优选</button></div>
+          </section>
           <div id="routing-node-filterbar" class="routing-node-filterbar">
             <div class="routing-region-control"><span>地区</span><div id="routing-node-regions" class="routing-region-list" role="group" aria-label="按地区筛选节点"></div></div>
             <div class="routing-node-ordering">
@@ -367,6 +411,40 @@
           <div id="routing-nodes-empty" class="routing-empty hidden">尚无节点，可返回订阅管理点击“获取节点”。</div>
         </section>
       </div>
+    </section>
+
+    <section id="page-subscriptions" class="page standard-page routing-workspace-page">
+      <header class="routing-workspace-heading"><span class="routing-eyebrow">PROXY SUBSCRIPTIONS</span><h2>订阅</h2><p>集中管理订阅源、更新方式与节点选择策略</p></header>
+      <div id="routing-subscriptions-mount"></div>
+    </section>
+
+    <section id="page-nodes" class="page standard-page routing-workspace-page">
+      <div id="routing-nodes-mount"></div>
+    </section>
+
+    <section id="page-rules" class="page standard-page routing-workspace-page">
+      <header class="routing-workspace-heading"><span class="routing-eyebrow">ROUTING RULES</span><h2>规则</h2><p>查看规则优先级、内置规则包与实际出口</p></header>
+      <div id="routing-rules-mount"></div>
+    </section>
+
+    <section id="page-connections" class="page standard-page activity-page">
+      <header class="activity-heading"><div><span class="routing-eyebrow">MIHOMO CONNECTIONS</span><h2>连接</h2><p>实时查看经过代理核心的活动连接与最近关闭记录</p></div><span id="connections-stream-state" class="activity-stream-state">等待页面激活</span></header>
+      <div class="activity-metrics">
+        <div><span>活动连接</span><strong id="connections-active-count">0</strong></div>
+        <div><span>累计上传</span><strong id="connections-upload-total">0 B</strong></div>
+        <div><span>累计下载</span><strong id="connections-download-total">0 B</strong></div>
+        <div><span>最近关闭</span><strong id="connections-closed-count">0</strong></div>
+      </div>
+      <section class="card activity-shell">
+        <div class="activity-toolbar">
+          <div class="activity-tabs" role="tablist" aria-label="连接状态"><button type="button" class="active" role="tab" aria-selected="true" data-connection-scope="active">活动连接</button><button type="button" role="tab" aria-selected="false" data-connection-scope="closed">最近关闭</button></div>
+          <input id="connections-search" class="activity-search" placeholder="搜索域名、IP、进程、规则或节点" aria-label="搜索连接">
+          <select id="connections-sort" aria-label="连接排序"><option value="start-desc">最新开始</option><option value="traffic-desc">流量最多</option><option value="host-asc">目标名称</option></select>
+          <button id="btn-connections-clear" class="btn mini ghost" type="button">清空已关闭</button>
+          <button id="btn-connections-close-all" class="btn mini danger" type="button">关闭全部</button>
+        </div>
+        <div class="connection-table-wrap"><table class="connection-table"><thead><tr><th>目标 / 进程</th><th>规则</th><th>代理链</th><th>上传</th><th>下载</th><th>开始时间</th><th></th></tr></thead><tbody id="connections-body"></tbody></table><div id="connections-empty" class="activity-empty">暂无活动连接</div></div>
+      </section>
     </section>
 
     <section id="page-routing" class="page standard-page routing-page">
@@ -407,10 +485,6 @@
             <div class="field grow"><label for="routing-traffic-mode">流量策略</label><select id="routing-traffic-mode"><option value="rule">规则模式</option><option value="global">全局模式（仅 MATCH）</option></select></div>
             <div class="field grow"><label for="routing-interface">物理直连接口</label><select id="routing-interface"></select></div>
             <div class="field grow"><label for="routing-mixed-port">本地 mixed-port</label><input id="routing-mixed-port" type="number" min="1024" max="65535"></div>
-            <div class="field grow"><label for="routing-dns">默认查询 nameserver</label><input id="routing-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
-            <div class="field grow"><label for="routing-default-dns">引导解析 default-nameserver</label><input id="routing-default-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
-            <div class="field grow"><label for="routing-proxy-dns">节点域名 proxy-server-nameserver</label><input id="routing-proxy-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
-            <div class="field grow"><label for="routing-direct-dns">直连域名 direct-nameserver</label><input id="routing-direct-dns" placeholder="223.5.5.5, 119.29.29.29"></div>
           </div>
           <div class="routing-engine-extra">
             <div class="field grow"><label for="routing-proxy-strategy">聚合代理池策略</label><select id="routing-proxy-strategy"></select></div>
@@ -426,6 +500,63 @@
           <div id="routing-checks" class="routing-checks"></div>
           </section>
         </div>
+
+        <div class="routing-p1-grid">
+          <section class="card routing-dns-card">
+            <div class="settings-card-head">
+              <span class="settings-symbol">DNS</span>
+              <div><h3>DNS 模式</h3><p>简单模式使用经过验证的推荐参数；高级模式开放 nameserver、策略和 fake-IP，保存应用前仍执行完整预检。</p></div>
+            </div>
+            <div class="routing-dns-mode-row">
+              <div class="field grow"><label for="routing-dns-mode">配置模式</label><select id="routing-dns-mode"><option value="simple">简单模式（推荐）</option><option value="advanced">高级模式</option></select></div>
+              <div id="routing-dns-simple-summary" class="routing-dns-summary"><strong>推荐 DNS 配置</strong><span>fake-ip · 阿里 DNS + Cloudflare · 国内直连解析单独分层</span></div>
+            </div>
+            <div id="routing-dns-advanced" class="routing-dns-advanced hidden">
+              <div class="routing-form-grid">
+                <div class="field grow"><label for="routing-dns-enhanced">解析增强模式</label><select id="routing-dns-enhanced"><option value="fake-ip">fake-ip（推荐）</option><option value="redir-host">redir-host（兼容模式）</option></select></div>
+                <div class="field grow"><label for="routing-fake-ip-range">fake-IP IPv4 地址池</label><input id="routing-fake-ip-range" placeholder="198.18.0.0/16"></div>
+                <div class="field grow"><label for="routing-dns">默认查询 nameserver</label><input id="routing-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
+                <div class="field grow"><label for="routing-default-dns">引导解析 default-nameserver</label><input id="routing-default-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
+                <div class="field grow"><label for="routing-proxy-dns">节点域名 proxy-server-nameserver</label><input id="routing-proxy-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
+                <div class="field grow"><label for="routing-direct-dns">直连域名 direct-nameserver</label><input id="routing-direct-dns" placeholder="223.5.5.5, 119.29.29.29"></div>
+              </div>
+              <label class="routing-backup-option routing-dns-respect"><input id="routing-dns-respect-rules" type="checkbox"><span><strong>DNS 查询遵循分流规则</strong><small>启用 `respect-rules`；配置错误可能形成解析环路，仅在明确理解上游出口时使用。</small></span></label>
+              <div class="routing-bypass-fields">
+                <div class="field grow"><label for="routing-fake-ip-filter">fake-IP 排除域名</label><textarea id="routing-fake-ip-filter" rows="4" placeholder="每行一个，例如：+.lan"></textarea><small>redir-host 模式下保留配置但不参与运行。</small></div>
+                <div class="field grow"><label for="routing-nameserver-policy">域名 DNS 策略</label><textarea id="routing-nameserver-policy" rows="4" placeholder="example.com = 223.5.5.5, 119.29.29.29"></textarea><small>每行“域名 = DNS 地址列表”，最多 100 条。</small></div>
+              </div>
+            </div>
+            <div class="routing-dns-actions"><button id="btn-routing-dns-validate" type="button" class="btn ghost">验证 DNS 配置</button><button id="btn-routing-dns-reset" type="button" class="btn ghost">恢复推荐参数</button><p id="routing-dns-feedback" class="form-feedback" aria-live="polite"></p></div>
+          </section>
+
+          <section class="card routing-bypass-card">
+            <div class="settings-card-head">
+              <span class="settings-symbol">03</span>
+              <div><h3>系统代理绕过</h3><p>域名可从 Windows 系统代理入口直接连接；进程项由 Mihomo 强制物理直连。</p></div>
+            </div>
+            <div class="routing-protected-bypass"><strong>局域网与回环保护</strong><span>Windows 系统代理模式始终绕过 localhost、127.0.0.0/8、私有网段和本地域名；TUN 模式由所选内置规则包控制。</span><i>已保护</i></div>
+            <div class="routing-bypass-fields">
+              <div class="field grow"><label for="routing-bypass-domains">不经过系统代理的域名</label><textarea id="routing-bypass-domains" rows="4" placeholder="每行一个域名&#10;例如：chaoxing.com"></textarea><small>每行一个域名；系统代理模式不经过本地 mixed-port，TUN 模式按域名后缀直连。</small></div>
+              <div class="field grow"><label for="routing-bypass-processes">指定进程直连</label><textarea id="routing-bypass-processes" rows="4" placeholder="每行一个进程&#10;例如：example.exe"></textarea><small>每行一个进程；由 Mihomo 严格识别并强制物理直连。</small></div>
+            </div>
+          </section>
+
+          <section class="card routing-maintenance-card">
+            <div class="settings-card-head">
+              <span class="settings-symbol">04</span>
+              <div><h3>配置保护与诊断</h3><p>导出安全备份、查看有效配置历史，或生成不含连接目标的脱敏诊断包。</p></div>
+            </div>
+            <div class="routing-maintenance-actions">
+              <button id="btn-routing-backup" type="button" class="btn ghost">导出配置备份</button>
+              <button id="btn-routing-restore" type="button" class="btn ghost">从备份恢复</button>
+              <button id="btn-routing-diagnostic" type="button" class="btn ghost">导出诊断包</button>
+              <input id="routing-restore-file" class="hidden" type="file" accept="application/json,.json">
+            </div>
+            <label class="routing-backup-option"><input id="routing-backup-urls" type="checkbox"><span><strong>备份中包含订阅地址</strong><small>默认关闭。订阅 URL 可能包含 Token；登录、VPN、邮箱、VLM 和 Controller 凭据始终不会导出。</small></span></label>
+            <div class="routing-history-head"><strong>配置应用历史</strong><button id="btn-routing-history-refresh" type="button" class="btn mini ghost">刷新</button></div>
+            <div id="routing-config-history" class="routing-config-history"><p class="routing-history-empty">正在读取历史记录…</p></div>
+          </section>
+        </div>
       </div>
 
       <div id="routing-panel-rules" class="routing-tab-panel" role="tabpanel" aria-labelledby="routing-tab-rules" aria-hidden="true" data-routing-panel="rules">
@@ -433,11 +564,22 @@
           <div class="routing-rules-head"><div><h3>默认出口与命中测试</h3><p>规则从上到下匹配；未命中时使用默认出口。仅支持域名，不支持 URL 路径。</p></div></div>
           <div class="routing-rule-tools">
             <div class="field grow"><label for="routing-default">未命中规则的默认出口</label><select id="routing-default"></select></div>
-            <div class="field grow"><label for="routing-builtin-pack">只读内置规则包</label><select id="routing-builtin-pack"><option value="off">off</option><option value="local-direct-v1">local-direct-v1</option><option value="cn-direct-v1">cn-direct-v1（离线）</option></select></div>
+            <div class="field grow"><label for="routing-builtin-pack">本地规则包</label><select id="routing-builtin-pack"><option value="off">off</option><option value="local-direct-v1">local-direct-v1</option><option value="cn-direct-v1">cn-direct-v1（本地文件）</option></select></div>
             <div class="field grow"><label for="routing-test-domain">测试一个域名</label><div class="routing-test-input"><input id="routing-test-domain" placeholder="例如：mh.chaoxing.com"><button id="btn-routing-test" class="btn ghost">查看命中</button></div></div>
           </div>
           <p id="routing-rule-composition" class="routing-node-feedback">用户规则 0 条 · 内置规则 0 条 · 实际规则 1 条；顺序固定为 user → builtin → MATCH。</p>
           <div id="routing-test-result" class="routing-test-result hidden"></div>
+        </section>
+        <section class="card builtin-rules-card">
+          <div class="routing-rules-head builtin-rules-head"><div><h3>规则包明细（界面只读）</h3><p id="builtin-rules-description">选择规则包后，可在这里检查本地文件当前加载的规则。</p></div><span id="builtin-rules-count" class="builtin-rules-count">0 条</span></div>
+          <div class="builtin-rules-toolbar">
+            <input id="builtin-rules-search" type="search" placeholder="搜索域名、网段或规则类型" aria-label="搜索内置规则">
+            <select id="builtin-rules-type" aria-label="筛选内置规则类型"><option value="all">全部类型</option><option value="domain">域名规则</option><option value="ip">IP 网段</option></select>
+          </div>
+          <div id="builtin-rules-mode-notice" class="builtin-rules-notice hidden"></div>
+          <div class="builtin-rules-table-head" aria-hidden="true"><span>顺序</span><span>匹配方式</span><span>匹配内容</span><span>出口</span></div>
+          <div id="builtin-rules-list" class="builtin-rules-list" role="list" aria-label="本地规则包明细"></div>
+          <div id="builtin-rules-empty" class="routing-empty">当前规则包不包含规则。</div>
         </section>
         <section class="card routing-rules-card">
           <div class="routing-rules-head"><div><h3>有序域名规则</h3><p>精确域名、域名后缀和通配符均可配置；越靠上优先级越高。</p></div><button id="btn-routing-add" class="btn ghost">＋ 添加规则</button></div>
@@ -704,16 +846,30 @@
     </section>
 
     <section id="page-logs" class="page standard-page logs-page">
-      <header><h2>运行日志</h2><p>后台活动与授权处理记录</p></header>
-      <div class="card log-shell">
+      <header><h2>日志</h2><p>代理核心请求与程序后台活动分开查看</p></header>
+      <div class="activity-tabs log-source-tabs" role="tablist" aria-label="日志来源">
+        <button type="button" class="active" role="tab" aria-selected="true" data-log-source="proxy">代理核心日志</button>
+        <button type="button" role="tab" aria-selected="false" data-log-source="runtime">程序运行日志</button>
+      </div>
+      <div id="proxy-log-panel" class="card log-shell proxy-log-shell">
+        <div class="activity-toolbar proxy-log-toolbar">
+          <div class="log-meta"><span id="proxy-log-stream-state" class="live-indicator">等待连接</span><span id="proxy-log-count">0 条记录</span></div>
+          <select id="proxy-log-level" aria-label="日志级别"><option value="all">全部级别</option><option value="debug">Debug</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option></select>
+          <input id="proxy-log-search" class="activity-search" placeholder="搜索核心日志" aria-label="搜索核心日志">
+          <select id="proxy-log-order" aria-label="日志顺序"><option value="newest">最新在下</option><option value="oldest">最新在上</option></select>
+          <button id="btn-proxy-log-pause" class="btn mini ghost" type="button">暂停</button>
+          <button id="btn-proxy-log-clear" class="btn mini ghost" type="button">清空</button>
+        </div>
+        <div id="proxy-log-list" class="proxy-log-list"></div>
+        <div id="proxy-log-empty" class="activity-empty">暂无代理核心日志</div>
+      </div>
+      <div id="runtime-log-panel" class="card log-shell hidden">
         <div class="log-toolbar">
           <div class="log-meta"><span class="live-indicator">实时</span><span id="log-count">0 条记录</span></div>
           <button id="btn-copy-logs" class="btn mini ghost" disabled>复制日志</button>
         </div>
         <div id="log-empty" class="log-empty">
-          <span class="log-empty-icon">≣</span>
-          <strong>暂无运行日志</strong>
-          <p>后台活动和授权处理记录会实时显示在这里</p>
+          <span class="log-empty-icon">≣</span><strong>暂无运行日志</strong><p>后台活动和授权处理记录会实时显示在这里</p>
         </div>
         <pre id="logbox" class="logbox hidden"></pre>
       </div>
@@ -851,7 +1007,9 @@
 <script src="app.js"></script>
 <script src="routing_nodes.js"></script>
 <script src="routing_telemetry.js"></script>
+<script src="routing_workspace.js"></script>
 <script src="routing.js"></script>
 <script src="proxy.js"></script>
+<script src="routing_activity.js"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """build.py - PyInstaller 打包 (onedir 便携版)
 
-产物: dist/CXVPN管理器/ 整个文件夹可打 zip 分发。
+产物: dist/CX VPN TOOLS/ 整个文件夹可打 zip 分发。
 首次构建带控制台窗口便于排错, 稳定后把 --noconsole 打开。
 """
 import os
@@ -13,20 +13,38 @@ import PyInstaller.__main__
 from build_runtime import build_routing_service
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DIST_CFG = os.path.join(BASE, 'dist', 'CXVPN管理器', 'config.json')
+APP_NAME = 'CX VPN TOOLS'
+LEGACY_APP_NAME = 'CXVPN管理器'
+DIST_DIR = os.path.join(BASE, 'dist')
+DIST_ROOT = os.path.join(DIST_DIR, APP_NAME)
+DIST_CFG = os.path.join(DIST_ROOT, 'config.json')
+LEGACY_DIST_CFG = os.path.join(
+    DIST_DIR, LEGACY_APP_NAME, 'config.json')
+RULE_PACK_FILES = ('local-direct-v1.txt', 'cn-direct-v1.txt')
+SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
+DIST_RULE_PACK_DIR = os.path.join(DIST_ROOT, 'rule-packs')
 
 build_routing_service()
 
 # 重打包前保留用户配置, 构建后恢复
 saved_cfg = None
-if os.path.exists(DIST_CFG):
+source_cfg = next(
+    (path for path in (DIST_CFG, LEGACY_DIST_CFG) if os.path.exists(path)),
+    None)
+if source_cfg:
     saved_cfg = os.path.join(BASE, 'build_tmp', 'config.json.keep')
     os.makedirs(os.path.dirname(saved_cfg), exist_ok=True)
-    shutil.copy2(DIST_CFG, saved_cfg)
+    shutil.copy2(source_cfg, saved_cfg)
+saved_rule_packs = {}
+for filename in RULE_PACK_FILES:
+    path = os.path.join(DIST_RULE_PACK_DIR, filename)
+    if os.path.isfile(path):
+        with open(path, 'rb') as stream:
+            saved_rule_packs[filename] = stream.read()
 
 args = [
     os.path.join(BASE, 'main.py'),
-    '--name', 'CXVPN管理器',
+    '--name', APP_NAME,
     '--onedir',
     '--noconfirm',
     '--noconsole',
@@ -46,5 +64,15 @@ args = [
 PyInstaller.__main__.run(args)
 
 if saved_cfg:
+    os.makedirs(DIST_ROOT, exist_ok=True)
     shutil.copy2(saved_cfg, DIST_CFG)
     print('[build] 已恢复用户配置 config.json')
+os.makedirs(DIST_RULE_PACK_DIR, exist_ok=True)
+for filename in RULE_PACK_FILES:
+    target = os.path.join(DIST_RULE_PACK_DIR, filename)
+    if filename in saved_rule_packs:
+        with open(target, 'wb') as stream:
+            stream.write(saved_rule_packs[filename])
+    else:
+        shutil.copy2(os.path.join(SOURCE_RULE_PACK_DIR, filename), target)
+print('[build] 已部署并保留用户规则包 rule-packs')

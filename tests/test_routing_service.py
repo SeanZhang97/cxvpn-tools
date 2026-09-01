@@ -31,8 +31,11 @@ class RoutingServiceClientTests(unittest.TestCase):
             with open(provider, 'wb') as stream:
                 stream.write(b'proxies: []')
 
-            result = client.apply(config, [{
-                'name': 'provider-alpha.yaml', 'path': provider}])
+            result = client.apply(
+                config,
+                [{'name': 'provider-alpha.yaml', 'path': provider}],
+                system_proxy_bypass_domains=[
+                    'chaoxing.com', 'dashscope.aliyuncs.com'])
 
         self.assertEqual(result['transaction_id'], 'tx')
         self.assertEqual(captured['op'], 'apply')
@@ -44,6 +47,9 @@ class RoutingServiceClientTests(unittest.TestCase):
         self.assertEqual(len(captured['config_sha256']), 64)
         self.assertEqual(len(captured['providers'][0]['sha256']), 64)
         self.assertEqual(captured['runtime_mode'], 'active')
+        self.assertFalse(captured['fast_toggle_ready'])
+        self.assertEqual(captured['system_proxy_bypass_domains'], [
+            'chaoxing.com', 'dashscope.aliyuncs.com'])
 
     def test_apply_supports_standby_and_provider_cache_round_trip(self):
         client = routing_service.RoutingServiceClient('service.exe')
@@ -69,6 +75,7 @@ class RoutingServiceClientTests(unittest.TestCase):
         cache = client.read_provider('provider-alpha.yaml')
 
         self.assertEqual(captured[0]['runtime_mode'], 'standby')
+        self.assertEqual(captured[0]['system_proxy_bypass_domains'], [])
         self.assertEqual(captured[1], {
             'op': 'read_provider', 'provider_name': 'provider-alpha.yaml'})
         self.assertIn('日本 🇯🇵', cache['content'].decode('utf-8'))
@@ -99,6 +106,19 @@ class RoutingServiceClientTests(unittest.TestCase):
         client.activate_system_proxy('事务-🇨🇳')
         self.assertEqual(captured, {
             'op': 'activate_system_proxy', 'transaction_id': '事务-🇨🇳'})
+
+    def test_fast_system_proxy_toggle_uses_boolean_protocol_field(self):
+        client = routing_service.RoutingServiceClient('service.exe')
+        captured = []
+        client.request = lambda payload, **_kwargs: captured.append(payload) or {}
+
+        client.set_system_proxy_enabled(True)
+        client.set_system_proxy_enabled(False)
+
+        self.assertEqual(captured, [
+            {'op': 'set_system_proxy_enabled', 'enabled': True},
+            {'op': 'set_system_proxy_enabled', 'enabled': False},
+        ])
 
 
 if __name__ == '__main__':

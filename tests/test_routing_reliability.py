@@ -191,7 +191,7 @@ class RoutingReliabilityTests(unittest.TestCase):
         manager._native_service.commit.assert_called_once_with('transaction-1')
         manager._native_service.rollback.assert_not_called()
 
-    def test_native_disable_starts_standby_after_capture_is_stopped(self):
+    def test_native_disable_can_defer_standby_after_capture_is_stopped(self):
         manager = routing.RoutingManager()
         manager._native_service = mock.Mock()
         manager._service_state = mock.Mock(return_value={
@@ -206,11 +206,12 @@ class RoutingReliabilityTests(unittest.TestCase):
             'enabled': False,
             'default_outbound': 'proxy',
             'proxy_provider_url': provider()['url'],
-        })
+        }, defer_standby=True)
 
-        self.assertEqual(result['msg'], '代理已关闭，节点核心保持待机')
+        self.assertEqual(result['msg'], '代理已关闭，节点核心正在后台启动')
+        self.assertTrue(result['standby_pending'])
         manager._native_service.stop_runtime.assert_called_once()
-        manager._start_standby_runtime.assert_called_once()
+        manager._start_standby_runtime.assert_not_called()
 
     def test_standby_failure_keeps_capture_closed_and_returns_warning(self):
         manager = routing.RoutingManager()
@@ -233,6 +234,97 @@ class RoutingReliabilityTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertTrue(result['warnings'])
         manager._native_service.stop_runtime.assert_called_once()
+
+    def test_controller_requests_force_direct_loopback_access(self):
+        manager = routing.RoutingManager()
+        config = routing.normalize_config({
+            'controller_secret': 'controller-secret',
+        })
+        response = mock.MagicMock()
+        response.read.return_value = b'{"version":"1.2.3"}'
+        opener = mock.MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        direct_handler = object()
+
+        with mock.patch.object(
+                routing.urllib.request, 'ProxyHandler',
+                return_value=direct_handler) as proxy_handler, \
+                mock.patch.object(
+                    routing.urllib.request, 'build_opener',
+                    return_value=opener) as build_opener, \
+                mock.patch.object(routing.urllib.request, 'urlopen') as urlopen:
+            result = manager._controller_request(config, '/version')
+
+        self.assertEqual(result, {'version': '1.2.3'})
+        proxy_handler.assert_called_once_with({})
+        build_opener.assert_called_once_with(direct_handler)
+        opener.open.assert_called_once()
+        urlopen.assert_not_called()
+
+    def test_fast_disable_keeps_ready_core_and_skips_standby_rebuild(self):
+        manager = routing.RoutingManager()
+        manager._service_state = mock.Mock(return_value={
+            'installed': True, 'state': 'Running', 'backend': 'native',
+            'runtime_running': True, 'runtime_mode': 'active',
+            'fast_toggle_ready': True, 'crash_fused': False,
+        })
+        manager._fast_toggle_system_proxy = mock.Mock(return_value={
+            'ok': True, 'msg': '代理已关闭',
+            'config': routing.normalize_config({'enabled': False}),
+            'warnings': [], 'status': {}, 'standby_pending': False,
+        })
+        manager._native_service = mock.Mock()
+        manager._start_standby_runtime = mock.Mock()
+
+        result = manager.apply(
+            {'enabled': False, 'schema_version': 6,
+             'capture_mode': 'system-proxy'}, defer_standby=True,
+            allow_fast_toggle=True)
+
+        self.assertTrue(result['ok'])
+        manager._fast_toggle_system_proxy.assert_called_once()
+        manager._native_service.stop_runtime.assert_not_called()
+        manager._start_standby_runtime.assert_not_called()
+
+    def test_fast_enable_probes_loaded_core_before_system_proxy_write(self):
+        manager = routing.RoutingManager()
+        config = routing.normalize_config({
+            'enabled': True,
+            'capture_mode': 'system-proxy',
+            'mixed_port': 17890,
+        })
+        manager._native_service = mock.Mock()
+        manager._verify_runtime_egress = mock.Mock()
+        manager.status = mock.Mock(return_value={'running': True})
+
+        with mock.patch.object(
+                routing, 'windows_system_proxy',
+                return_value='http://127.0.0.1:17890'):
+            result = manager._fast_toggle_system_proxy(config, True)
+
+        self.assertTrue(result['ok'])
+        manager._verify_runtime_egress.assert_called_once_with(config)
+        manager._native_service.set_system_proxy_enabled.assert_called_once_with(
+            True)
+
+    def test_fast_toggle_requires_ready_native_system_proxy_core(self):
+        config = routing.normalize_config({
+            'capture_mode': 'system-proxy',
+        })
+        ready = {
+            'installed': True, 'backend': 'native', 'runtime_running': True,
+            'runtime_mode': 'standby', 'fast_toggle_ready': True,
+            'crash_fused': False,
+        }
+
+        self.assertTrue(
+            routing.RoutingManager._can_fast_toggle_system_proxy(config, ready))
+        self.assertFalse(
+            routing.RoutingManager._can_fast_toggle_system_proxy(
+                config, {**ready, 'fast_toggle_ready': False}))
+        self.assertFalse(
+            routing.RoutingManager._can_fast_toggle_system_proxy(
+                {**config, 'capture_mode': 'tun'}, ready))
 
     def test_native_install_rolls_back_when_manual_node_is_not_ready(self):
         manager = routing.RoutingManager()
@@ -292,7 +384,7 @@ class RoutingReliabilityTests(unittest.TestCase):
             'transaction-unicode')
         manager._native_service.commit.assert_not_called()
 
-    def test_runtime_egress_checks_selected_node_and_tun_connectivity(self):
+    def test_runtime_egress_confirms_selected_node_and_tun_connectivity(self):
         manager = routing.RoutingManager()
         config = routing.normalize_config({
             'enabled': True,
@@ -302,11 +394,7 @@ class RoutingReliabilityTests(unittest.TestCase):
                                  'selected_node': 'JP-01'}],
         })
         runtime_node = '[订阅一] JP-01'
-        provider_payload = {'providers': {
-            'provider-alpha': {'proxies': [{
-                'name': runtime_node, 'type': 'Vless'}]}}}
         group_payload = {'now': runtime_node, 'all': [runtime_node]}
-        health_payload = {'delay': 86}
         response = mock.MagicMock()
         response.status = 204
         response.read.return_value = b''
@@ -314,12 +402,8 @@ class RoutingReliabilityTests(unittest.TestCase):
         opener.open.return_value.__enter__.return_value = response
 
         def controller(_config, path, **_kwargs):
-            if path == '/providers/proxies':
-                return provider_payload
             if path == '/proxies/PROXY-alpha':
                 return group_payload
-            if path.startswith('/providers/proxies/provider-alpha/'):
-                return health_payload
             raise AssertionError(path)
 
         manager._controller_request = mock.Mock(side_effect=controller)
@@ -327,12 +411,11 @@ class RoutingReliabilityTests(unittest.TestCase):
                 routing.urllib.request, 'build_opener', return_value=opener):
             manager._verify_runtime_egress(config)
 
-        health_path = manager._controller_request.call_args_list[2].args[1]
-        self.assertIn('/healthcheck?', health_path)
-        self.assertIn('provider-alpha', health_path)
+        manager._controller_request.assert_called_once_with(
+            config, '/proxies/PROXY-alpha', timeout=5)
         opener.open.assert_called_once()
 
-    def test_unusable_selected_node_aborts_before_transaction_commit(self):
+    def test_startup_does_not_repeat_node_speedtest_before_end_to_end_probe(self):
         manager = routing.RoutingManager()
         config = routing.normalize_config({
             'enabled': True,
@@ -342,18 +425,22 @@ class RoutingReliabilityTests(unittest.TestCase):
                                  'selected_node': 'JP-01'}],
         })
         runtime_node = '[订阅一] JP-01'
-        manager._controller_request = mock.Mock(side_effect=[
-            {'providers': {'provider-alpha': {'proxies': [{
-                'name': runtime_node, 'type': 'Vless'}]}}},
-            {'now': runtime_node, 'all': [runtime_node]},
-            OSError('healthcheck failed'),
-            OSError('healthcheck failed'),
-        ])
+        manager._controller_request = mock.Mock(return_value={
+            'now': runtime_node, 'all': [runtime_node]})
+        response = mock.MagicMock()
+        response.status = 204
+        response.read.return_value = b''
+        opener = mock.MagicMock()
+        opener.open.return_value.__enter__.return_value = response
 
-        with mock.patch.object(routing.time, 'sleep'):
-            with self.assertRaisesRegex(
-                    routing.RoutingError, '启动实时检测未通过.*已检测 2 次'):
-                manager._verify_runtime_egress(config)
+        with mock.patch.object(
+                routing.urllib.request, 'build_opener', return_value=opener):
+            manager._verify_runtime_egress(config)
+
+        paths = [call.args[1]
+                 for call in manager._controller_request.call_args_list]
+        self.assertEqual(paths, ['/proxies/PROXY-alpha'])
+        self.assertFalse(any('healthcheck' in path for path in paths))
 
     def test_tun_connectivity_failure_is_actionable(self):
         manager = routing.RoutingManager()
@@ -364,7 +451,8 @@ class RoutingReliabilityTests(unittest.TestCase):
 
         with mock.patch.object(
                 routing.urllib.request, 'build_opener', return_value=opener):
-            with self.assertRaisesRegex(routing.RoutingError, '系统 DNS'):
+            with self.assertRaisesRegex(
+                    routing.RoutingError, '已恢复 Windows 原始路由.*请重试'):
                 manager._verify_runtime_egress(config)
 
     def test_elevated_child_error_is_returned_instead_of_generic_uac_hint(self):

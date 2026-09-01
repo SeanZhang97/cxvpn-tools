@@ -47,6 +47,16 @@ class UiStateStream:
         """业务状态变化时唤醒采样；高频事件会由 Event 自动合并。"""
         self._poke.set()
 
+    def set_interval(self, seconds):
+        """运行时调整采样间隔；用于轻量模式，不中断当前订阅。"""
+        try:
+            value = max(0.1, min(5.0, float(seconds)))
+        except (TypeError, ValueError):
+            return False
+        self._interval = value
+        self._poke.set()
+        return True
+
     def current(self):
         with self._condition:
             return {

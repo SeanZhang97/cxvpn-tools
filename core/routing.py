@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 
 from core import config as cfgmod
 from core import subscription_store
@@ -28,6 +29,7 @@ from core.routing_support import sha256_file as _sha256
 from core.routing_support import stop_temporary_process as _stop_temporary_process
 from core.routing_support import verify_runtime_files
 from core import routing_selection as _selection
+from core import routing_auto_policy as _auto_policy
 from core import routing_rules as _routing_rules
 from core import routing_service as _routing_service
 from core.routing_speedtest import (
@@ -46,11 +48,15 @@ WINSW_SHA256 = '05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA
 DOMAIN_RE = re.compile(r'^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$', re.I)
 WILDCARD_RE = re.compile(r'^[a-z0-9*?](?:[a-z0-9*?.-]{0,251}[a-z0-9*?])?$', re.I)
 PROVIDER_ID_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,39}$', re.I)
+PROCESS_NAME_RE = re.compile(r'^[^\\/:*?"<>|\x00-\x1f]{1,128}$')
 PROXY_STRATEGIES = {'url-test', 'fallback', 'select'}
 SELECTION_MODES = {'auto', 'manual'}
 TRAFFIC_MODES = {'rule', 'global'}
 CAPTURE_MODES = {'system-proxy', 'tun'}
 DOWNLOAD_ROUTES = {'auto', 'physical', 'system-proxy', 'custom-proxy'}
+DNS_MODES = {'simple', 'advanced'}
+DNS_ENHANCED_MODES = {'fake-ip', 'redir-host'}
+DEFAULT_FAKE_IP_FILTER = ['+.lan', '+.local', 'localhost.ptlogin2.qq.com']
 # 与 Clash Verge Rev v2.5.2 默认测速目标保持一致，避免因目标站点和 TLS
 # 握手差异让同一节点在两个客户端中出现不可比较的延迟。
 HEALTH_CHECK_URL = 'http://cp.cloudflare.com/generate_204'
@@ -92,11 +98,22 @@ def default_config():
         'proxy_providers': [],
         'default_outbound': 'physical',
         'builtin_rule_pack': 'local-direct-v1',
+        'system_proxy_bypass': {
+            'lan': True,
+            'domains': [],
+            'processes': [],
+        },
         'mixed_port': 17890,
+        'dns_mode': 'simple',
+        'dns_enhanced_mode': 'fake-ip',
+        'dns_respect_rules': False,
         'dns_servers': ['223.5.5.5', '1.1.1.1'],
         'default_nameserver': ['223.5.5.5', '1.1.1.1'],
         'proxy_server_nameserver': ['223.5.5.5', '1.1.1.1'],
         'direct_nameserver': ['223.5.5.5', '119.29.29.29'],
+        'fake_ip_range': '198.18.0.1/16',
+        'fake_ip_filter': list(DEFAULT_FAKE_IP_FILTER),
+        'nameserver_policy': [],
         'controller_port': 19090,
         'controller_secret': '',
         'rules': [],
@@ -371,6 +388,8 @@ def normalize_config(value):
             'strategy': strategy,
             'selection_mode': selection_mode,
             'selected_node': selected_node,
+            'auto_policy': _auto_policy.normalize_policy(
+                provider.get('auto_policy'), name, RoutingError),
             'auto_update': bool(provider.get('auto_update', False)),
             'interval': min(86400, max(300, interval)),
             'filter': include_filter,
@@ -396,6 +415,40 @@ def normalize_config(value):
     if builtin_rule_pack not in _routing_rules.BUILTIN_PACKS:
         raise RoutingError('内置规则包无效')
     result['builtin_rule_pack'] = builtin_rule_pack
+    raw_bypass = source.get('system_proxy_bypass')
+    raw_bypass = raw_bypass if isinstance(raw_bypass, dict) else {}
+
+    def normalize_bypass_list(field, maximum):
+        values = raw_bypass.get(field)
+        if isinstance(values, str):
+            values = re.split(r'[,\r\n]+', values)
+        if not isinstance(values, list):
+            values = []
+        cleaned = []
+        seen_values = set()
+        for raw in values:
+            candidate = str(raw or '').strip()
+            if not candidate:
+                continue
+            if field == 'domains':
+                candidate = _normalize_domain(candidate.lstrip('.'), 'suffix')
+            elif not PROCESS_NAME_RE.fullmatch(candidate):
+                raise RoutingError(f'绕过进程名称无效：{candidate}')
+            key = candidate.casefold()
+            if key not in seen_values:
+                cleaned.append(candidate)
+                seen_values.add(key)
+        if len(cleaned) > maximum:
+            label = '域名' if field == 'domains' else '进程'
+            raise RoutingError(f'系统代理绕过{label}最多配置 {maximum} 个')
+        return cleaned
+
+    result['system_proxy_bypass'] = {
+        # 回环与局域网是防止本机服务和内网设备被代理误伤的保护项，不能关闭。
+        'lan': True,
+        'domains': normalize_bypass_list('domains', 100),
+        'processes': normalize_bypass_list('processes', 100),
+    }
     try:
         mixed_port = int(source.get('mixed_port') or 17890)
     except (TypeError, ValueError) as exc:
@@ -415,7 +468,57 @@ def normalize_config(value):
     secret = str(source.get('controller_secret') or '').strip()
     result['controller_secret'] = secret or secrets.token_urlsafe(24)
 
-    def normalize_dns(field, fallback):
+    dns_mode = str(source.get('dns_mode') or (
+        'advanced' if schema_version < 4 else 'simple')).strip().lower()
+    if dns_mode not in DNS_MODES:
+        raise RoutingError('DNS 配置模式无效')
+    result['dns_mode'] = dns_mode
+    enhanced_mode = str(
+        source.get('dns_enhanced_mode') or 'fake-ip').strip().lower()
+    if enhanced_mode not in DNS_ENHANCED_MODES:
+        raise RoutingError('DNS enhanced-mode 无效')
+    result['dns_enhanced_mode'] = enhanced_mode
+    result['dns_respect_rules'] = bool(source.get('dns_respect_rules', False))
+
+    def normalize_dns_value(value, label):
+        candidate = str(value or '').strip()
+        if (not candidate or len(candidate) > 512 or
+                any(ord(char) < 32 for char in candidate)):
+            raise RoutingError(f'{label}包含无效 DNS 地址')
+        if candidate == 'system':
+            return candidate
+        try:
+            ipaddress.ip_address(candidate)
+            return candidate
+        except ValueError:
+            if '://' not in candidate:
+                try:
+                    return _normalize_domain(candidate, 'exact')
+                except RoutingError:
+                    pass
+        parsed = urllib.parse.urlparse(candidate)
+        if (parsed.scheme not in {'https', 'tls', 'quic', 'dhcp', 'udp', 'tcp'} or
+                not parsed.hostname or parsed.username or parsed.password or
+                parsed.query or parsed.fragment):
+            raise RoutingError(
+                f'{label}仅支持 IP、system 或 https/tls/quic/dhcp/udp/tcp DNS 地址')
+        return candidate
+
+    def normalize_dns_value_list(values, label):
+        cleaned = []
+        seen_dns = set()
+        for item in values:
+            if not str(item).strip():
+                continue
+            candidate = normalize_dns_value(item, label)
+            if candidate.casefold() not in seen_dns:
+                cleaned.append(candidate)
+                seen_dns.add(candidate.casefold())
+        if len(cleaned) > 8:
+            raise RoutingError(f'{label}最多配置 8 个 DNS 地址')
+        return cleaned
+
+    def normalize_dns(field, fallback, label=None):
         values = source.get(field)
         if values is None and field != 'dns_servers':
             values = source.get('dns_servers')
@@ -423,7 +526,7 @@ def normalize_config(value):
             values = re.split(r'[,\s]+', values)
         if not isinstance(values, list):
             values = []
-        cleaned = [str(item).strip() for item in values if str(item).strip()][:8]
+        cleaned = normalize_dns_value_list(values, label or field)
         return cleaned or list(fallback)
 
     result['dns_servers'] = normalize_dns(
@@ -434,6 +537,66 @@ def normalize_config(value):
         'proxy_server_nameserver', default_config()['proxy_server_nameserver'])
     result['direct_nameserver'] = normalize_dns(
         'direct_nameserver', default_config()['direct_nameserver'])
+    fake_ip_range = str(
+        source.get('fake_ip_range') or '198.18.0.1/16').strip()
+    try:
+        fake_network = ipaddress.ip_network(fake_ip_range, strict=False)
+        reserved = ipaddress.ip_network('198.18.0.0/15')
+    except ValueError as exc:
+        raise RoutingError('fake-IP 地址池必须是有效 IPv4 CIDR') from exc
+    if (fake_network.version != 4 or not fake_network.subnet_of(reserved) or
+            not 16 <= fake_network.prefixlen <= 30):
+        raise RoutingError('fake-IP 地址池必须位于 198.18.0.0/15，前缀长度为 16～30')
+    result['fake_ip_range'] = str(fake_network)
+
+    raw_filter = source.get('fake_ip_filter')
+    if isinstance(raw_filter, str):
+        raw_filter = re.split(r'[,\r\n]+', raw_filter)
+    if not isinstance(raw_filter, list):
+        raw_filter = list(DEFAULT_FAKE_IP_FILTER)
+    filters = []
+    seen_filters = set()
+    for raw in raw_filter:
+        candidate = str(raw or '').strip().lower()
+        if not candidate:
+            continue
+        check = candidate[2:] if candidate.startswith(('+.', '*.')) else candidate
+        _normalize_domain(check, 'suffix')
+        if candidate not in seen_filters:
+            filters.append(candidate)
+            seen_filters.add(candidate)
+    if len(filters) > 100:
+        raise RoutingError('fake-IP 排除域名最多配置 100 个')
+    result['fake_ip_filter'] = filters
+
+    policies = source.get('nameserver_policy')
+    if not isinstance(policies, list):
+        policies = []
+    normalized_policies = []
+    policy_domains = set()
+    for index, policy in enumerate(policies):
+        if not isinstance(policy, dict):
+            raise RoutingError(f'第 {index + 1} 条 DNS 策略无效')
+        raw_domain = str(policy.get('domain') or '').strip().lower()
+        domain = _normalize_domain(
+            raw_domain[2:] if raw_domain.startswith(('+.', '*.')) else raw_domain,
+            'suffix')
+        if domain in policy_domains:
+            raise RoutingError(f'DNS 策略域名重复：{domain}')
+        servers = policy.get('servers')
+        if isinstance(servers, str):
+            servers = re.split(r'[,\s]+', servers)
+        if not isinstance(servers, list) or not any(str(item).strip() for item in servers):
+            raise RoutingError(f'DNS 策略“{domain}”必须配置服务器')
+        normalized_policies.append({
+            'domain': domain,
+            'servers': normalize_dns_value_list(
+                servers, f'DNS 策略“{domain}”'),
+        })
+        policy_domains.add(domain)
+    if len(normalized_policies) > 100:
+        raise RoutingError('DNS 策略最多配置 100 条')
+    result['nameserver_policy'] = normalized_policies
 
     normalized_rules = []
     seen = set()
@@ -481,10 +644,63 @@ def normalize_config(value):
     return result
 
 
+def validate_auto_policy_nodes(provider):
+    snapshot = subscription_store.load_node_snapshot(provider)
+    _auto_policy.validate_preferred_nodes(
+        provider, snapshot.get('nodes') or [], RoutingError)
+
+
 def _active_rules(config):
     if config.get('traffic_mode') == 'global':
         return []
     return [rule for rule in config.get('rules', []) if rule.get('enabled', True)]
+
+
+def _builtin_rules(pack_id):
+    try:
+        return _routing_rules.rules_for(pack_id)
+    except _routing_rules.RulePackError as exc:
+        raise RoutingError(str(exc)) from exc
+
+
+def _bypass_rules(config):
+    """生成始终优先于用户规则和 MATCH 的安全直连规则。"""
+    bypass = config.get('system_proxy_bypass') or {}
+    # 局域网和回环由 Windows ProxyOverride 在系统代理入口保护；这里只生成
+    # 必须经过 Mihomo 判断的用户域名与进程规则，避免和内置包重复。
+    rules = []
+    rules.extend(
+        f'DOMAIN-SUFFIX,{domain},PHYSICAL'
+        for domain in bypass.get('domains', []))
+    rules.extend(
+        f'PROCESS-NAME,{process},PHYSICAL'
+        for process in bypass.get('processes', []))
+    return rules
+
+
+def _effective_rules(config):
+    rules = []
+    seen = set()
+
+    def append(raw):
+        key = raw.casefold()
+        if key not in seen:
+            rules.append(raw)
+            seen.add(key)
+
+    for raw in _bypass_rules(config):
+        append(raw)
+    if config.get('traffic_mode') != 'global':
+        rule_kind = {'exact': 'DOMAIN', 'suffix': 'DOMAIN-SUFFIX',
+                     'wildcard': 'DOMAIN-WILDCARD'}
+        for rule in _active_rules(config):
+            append(
+                f'{rule_kind[rule["match_type"]]},{rule["domain"]},'
+                f'{rule["outbound"]}')
+        for raw in _builtin_rules(config['builtin_rule_pack']):
+            append(raw)
+    append(f'MATCH,{config["default_outbound"]}')
+    return rules
 
 
 def _target_vpns(config):
@@ -520,8 +736,19 @@ def explain_domain(value, domain, vpns=None):
     """解释一个域名最终命中的规则和出口，不修改系统状态。"""
     config = normalize_config(value)
     normalized_domain = _normalize_domain(domain, 'exact')
+    bypass_match = next((item for item in config['system_proxy_bypass']['domains']
+                         if normalized_domain == item or
+                         normalized_domain.endswith('.' + item)), None)
+    if not bypass_match and config['capture_mode'] == 'system-proxy':
+        for raw in _builtin_rules('local-direct-v1'):
+            parts = raw.split(',')
+            if parts[0] == 'DOMAIN-SUFFIX' and (
+                    normalized_domain == parts[1] or
+                    normalized_domain.endswith('.' + parts[1])):
+                bypass_match = parts[1]
+                break
     matched = None
-    for index, rule in enumerate(_active_rules(config), start=1):
+    for index, rule in enumerate([] if bypass_match else _active_rules(config), start=1):
         pattern = rule['domain']
         match_type = rule['match_type']
         if match_type == 'exact':
@@ -536,15 +763,15 @@ def explain_domain(value, domain, vpns=None):
             break
 
     builtin_match = None
-    if not matched and config['traffic_mode'] != 'global':
-        for raw in _routing_rules.rules_for(config['builtin_rule_pack']):
+    if not bypass_match and not matched and config['traffic_mode'] != 'global':
+        for raw in _builtin_rules(config['builtin_rule_pack']):
             parts = raw.split(',')
             if parts[0] == 'DOMAIN-SUFFIX' and (
                     normalized_domain == parts[1] or
                     normalized_domain.endswith('.' + parts[1])):
                 builtin_match = parts
                 break
-    outbound = (matched[1]['outbound'] if matched else
+    outbound = ('physical' if bypass_match else matched[1]['outbound'] if matched else
                 'physical' if builtin_match else config['default_outbound'])
     providers = {item['id']: item for item in config['proxy_providers']}
     vpn_rows = vpns if vpns is not None else []
@@ -577,11 +804,14 @@ def explain_domain(value, domain, vpns=None):
 
     return {
         'domain': normalized_domain,
-        'matched': bool(matched or builtin_match),
-        'source': 'user' if matched else 'builtin' if builtin_match else 'default',
+        'matched': bool(bypass_match or matched or builtin_match),
+        'source': ('bypass' if bypass_match else 'user' if matched else
+                   'builtin' if builtin_match else 'default'),
         'rule_index': matched[0] if matched else 0,
-        'match_type': matched[1]['match_type'] if matched else 'suffix' if builtin_match else 'default',
-        'rule_domain': matched[1]['domain'] if matched else builtin_match[1] if builtin_match else '',
+        'match_type': (matched[1]['match_type'] if matched else 'suffix'
+                       if bypass_match or builtin_match else 'default'),
+        'rule_domain': (matched[1]['domain'] if matched else bypass_match or
+                        (builtin_match[1] if builtin_match else '')),
         'outbound': outbound,
         'outbound_name': outbound_name,
         'detail': detail,
@@ -737,6 +967,30 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
             return 'REJECT'
         return proxy_names[value[4:]]
 
+    dns_source = config if config.get('dns_mode') == 'advanced' else default_config()
+    dns_config = {
+        'enable': True,
+        'ipv6': True,
+        'enhanced-mode': dns_source['dns_enhanced_mode'],
+        'use-hosts': True,
+        'respect-rules': bool(dns_source.get('dns_respect_rules')),
+        'nameserver': dns_source['dns_servers'],
+        'default-nameserver': dns_source['default_nameserver'],
+        'proxy-server-nameserver': dns_source['proxy_server_nameserver'],
+        'direct-nameserver': dns_source['direct_nameserver'],
+    }
+    if dns_source['dns_enhanced_mode'] == 'fake-ip':
+        dns_config.update({
+            'fake-ip-range': dns_source['fake_ip_range'],
+            'fake-ip-range6': 'fdfe:dcba:9876::1/64',
+            'fake-ip-filter': dns_source['fake_ip_filter'],
+        })
+    if dns_source.get('nameserver_policy'):
+        dns_config['nameserver-policy'] = {
+            f'+.{item["domain"]}': item['servers']
+            for item in dns_source['nameserver_policy']
+        }
+
     generated = {
         'mixed-port': (config['mixed_port']
                        if standby or config['capture_mode'] == 'system-proxy'
@@ -753,19 +1007,8 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
         # 因此无需开放任何 CORS Origin。
         'secret': config['controller_secret'],
         'profile': {'store-selected': True, 'store-fake-ip': True},
-        'dns': {
-            'enable': True,
-            'ipv6': True,
-            'enhanced-mode': 'fake-ip',
-            'fake-ip-range': '198.18.0.1/16',
-            'fake-ip-range6': 'fdfe:dcba:9876::1/64',
-            'use-hosts': True,
-            'nameserver': config['dns_servers'],
-            'default-nameserver': config['default_nameserver'],
-            'proxy-server-nameserver': config['proxy_server_nameserver'],
-            'direct-nameserver': config['direct_nameserver'],
-            'fake-ip-filter': ['+.lan', '+.local', 'localhost.ptlogin2.qq.com'],
-        },
+        'find-process-mode': 'strict',
+        'dns': dns_config,
         'tun': {
             'enable': not standby and config['capture_mode'] == 'tun',
             'device': 'CXVPN-TUN',
@@ -820,10 +1063,17 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
                 interface_name=config['physical_interface'],
                 download_proxy=download['target'])
             generated['proxy-providers'][provider_keys[provider['id']]] = provider_config
-            generated['proxy-groups'].append(_proxy_group_config(
-                provider_groups[provider['id']],
-                _selection.provider_group_strategy(provider),
-                [provider_keys[provider['id']]]))
+            if _auto_policy.is_enabled(provider):
+                generated['proxy-groups'].extend(_auto_policy.build_groups(
+                    provider, provider_keys[provider['id']],
+                    provider_groups[provider['id']], HEALTH_CHECK_URL,
+                    subscription_store.load_node_snapshot(provider).get(
+                        'nodes') or []))
+            else:
+                generated['proxy-groups'].append(_proxy_group_config(
+                    provider_groups[provider['id']],
+                    _selection.provider_group_strategy(provider),
+                    [provider_keys[provider['id']]]))
         generated['proxy-groups'].append(_proxy_group_config(
             'PROXY', config['proxy_strategy'],
             [provider_keys[item['id']] for item in enabled_providers]))
@@ -831,15 +1081,13 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
     if standby:
         rules.append('MATCH,PROXY' if enabled_providers else 'MATCH,PHYSICAL')
     else:
-        rule_kind = {'exact': 'DOMAIN', 'suffix': 'DOMAIN-SUFFIX',
-                     'wildcard': 'DOMAIN-WILDCARD'}
-        for rule in _active_rules(config):
-            rules.append(
-                f'{rule_kind[rule["match_type"]]},{rule["domain"]},'
-                f'{target_name(rule["outbound"])}')
-        if config['traffic_mode'] != 'global':
-            rules.extend(_routing_rules.rules_for(config['builtin_rule_pack']))
-        rules.append(f'MATCH,{target_name(config["default_outbound"])}')
+        for raw in _effective_rules(config):
+            parts = raw.split(',')
+            if parts[0] == 'MATCH':
+                parts[1] = target_name(parts[1])
+            elif len(parts) >= 3 and parts[2] != 'PHYSICAL':
+                parts[2] = target_name(parts[2])
+            rules.append(','.join(parts))
     generated['rules'] = rules
     return generated
 
@@ -914,6 +1162,36 @@ def _provider_proxy_catalog(payload):
             catalog[node_name] = {
                 **node, 'provider_name': str(provider_name or '')}
     return catalog
+
+
+def _resolve_selected_proxy(proxies, selected, maximum_depth=8):
+    """沿嵌套策略组解析到最终节点，避免 UI 只看到内部组名。"""
+    current = str(selected or '')
+    seen = set()
+    for _index in range(maximum_depth):
+        if not current or current in seen:
+            break
+        seen.add(current)
+        item = proxies.get(current)
+        if not isinstance(item, dict) or not item.get('now'):
+            break
+        current = str(item.get('now') or current)
+    return current
+
+
+def _history_tested_at(history_item):
+    """把 Mihomo history.time 转为安全的 Unix 秒时间戳。"""
+    if not isinstance(history_item, dict):
+        return 0
+    raw = str(history_item.get('time') or '').strip()
+    if not raw:
+        return 0
+    try:
+        value = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        timestamp = int(value.timestamp())
+    except (OverflowError, TypeError, ValueError):
+        return 0
+    return timestamp if 0 < timestamp <= subscription_store.MAX_TIMESTAMP else 0
 
 
 def _write_json(path, value):
@@ -1070,6 +1348,8 @@ class RoutingManager:
                     'active' if native.get('runtime_enabled') else 'stopped')),
                 'service_version': str(native.get('service_version') or ''),
                 'system_proxy_active': bool(native.get('system_proxy_active')),
+                'fast_toggle_ready': bool(native.get('fast_toggle_ready')),
+                'config_sha256': str(native.get('config_sha256') or ''),
                 'crash_fused': bool(native.get('crash_fused')),
             }
         if not allow_powershell:
@@ -1112,7 +1392,11 @@ if ($service) {{
             headers['Content-Type'] = 'application/json'
         request = urllib.request.Request(
             url, data=body, headers=headers, method=method)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # Controller 只监听回环地址。必须显式禁用系统/环境代理，避免关闭
+        # Windows 系统代理后，urllib 的默认 opener 仍把就绪探测送入旧的
+        # mixed-port，形成“本地 Controller 请求经代理组转发”的回环。
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=timeout) as response:
             raw = response.read()
         return json.loads(raw.decode('utf-8')) if raw else {}
 
@@ -1122,6 +1406,17 @@ if ($service) {{
             return data.get('version', '')
         except (OSError, ValueError, urllib.error.URLError):
             return ''
+
+    def close_connections(self, config, connection_id=''):
+        """关闭一个或全部 Mihomo 活动连接。"""
+        normalized = normalize_config(config)
+        target = str(connection_id or '').strip()
+        path = '/connections'
+        if target:
+            path += '/' + urllib.parse.quote(target, safe='')
+        self._controller_request(
+            normalized, path, method='DELETE', timeout=3)
+        return {'ok': True, 'closed': 'one' if target else 'all'}
 
     @staticmethod
     def _group_identity(config, group_id):
@@ -1166,7 +1461,12 @@ if ($service) {{
                 continue
             nodes = []
             prefix = '' if group_id == 'all' else f'[{display_name}] '
-            for node_name in group.get('all') or []:
+            provider = next((item for item in normalized['proxy_providers']
+                             if item['id'] == group_id), None)
+            node_names = list(group.get('all') or [])
+            if provider and _auto_policy.is_enabled(provider):
+                node_names = [name for name in provider_catalog if name.startswith(prefix)]
+            for node_name in node_names:
                 generic_node = proxies.get(node_name)
                 node = (generic_node if isinstance(generic_node, dict)
                         else provider_catalog.get(node_name, {}))
@@ -1182,6 +1482,7 @@ if ($service) {{
                     'alive': (node.get('alive')
                               if isinstance(node.get('alive'), bool) else None),
                     'tested': isinstance(node.get('alive'), bool),
+                    'tested_at': _history_tested_at(last),
                     'type': str(node.get('type') or ''),
                     'provider_name': str(
                         node.get('provider-name') or
@@ -1191,7 +1492,8 @@ if ($service) {{
                 'id': group_id,
                 'name': display_name,
                 'strategy': strategy,
-                'selected': group.get('now') or '',
+                'selected': _resolve_selected_proxy(
+                    proxies, group.get('now') or ''),
                 'nodes': nodes,
                 'alive_count': len([
                     item for item in nodes if item['alive'] is True]),
@@ -1209,11 +1511,13 @@ if ($service) {{
         rows = payload.get('connections') if isinstance(payload, dict) else []
         if not isinstance(rows, list):
             rows = []
+        try:
+            current_builtin_rules = _builtin_rules(
+                normalized['builtin_rule_pack'])
+        except RoutingError:
+            current_builtin_rules = []
         builtin_payloads = {
-            item.split(',')[1] for item in
-            _routing_rules.rules_for(normalized['builtin_rule_pack'])
-            if ',' in item
-        }
+            item.split(',')[1] for item in current_builtin_rules if ',' in item}
         user_payloads = {
             item['domain'] for item in _active_rules(normalized)}
         counts = {}
@@ -1326,39 +1630,111 @@ if ($service) {{
         }
         try:
             return self._preview_proxy_provider_once(source, network, **kwargs)
-        except ProviderFetchError:
+        except ProviderFetchError as primary_error:
             can_fallback = (
                 route == 'auto' and not _cache_only and _seed_payload is None)
             system_proxy = windows_system_proxy() if can_fallback else ''
-            if not system_proxy:
-                raise
             provider_name = str(source.get('name') or '未命名订阅')
-            started_at = time.monotonic()
-            self.log(
-                f'[routing] 订阅“{provider_name}”内置更新未产出节点，'
-                f'开始通过 Windows 系统代理自动回退（超时 25 秒）')
-            retry_source = dict(source)
-            retry_source['download_route'] = 'system-proxy'
-            try:
-                result = self._preview_proxy_provider_once(
-                    retry_source, network, **kwargs)
-            except RoutingError as fallback_error:
-                elapsed = time.monotonic() - started_at
+            fallback_error = primary_error
+            if system_proxy:
+                started_at = time.monotonic()
                 self.log(
-                    f'[routing] 订阅“{provider_name}”Windows 系统代理回退失败，'
-                    f'耗时 {elapsed:.1f} 秒，错误类型 '
-                    f'{type(fallback_error).__name__}')
+                    f'[routing] 订阅“{provider_name}”内置更新未产出节点，'
+                    f'开始通过 Windows 系统代理自动回退（超时 25 秒）')
+                retry_source = dict(source)
+                retry_source['download_route'] = 'system-proxy'
+                try:
+                    result = self._preview_proxy_provider_once(
+                        retry_source, network, **kwargs)
+                except RoutingError as exc:
+                    fallback_error = exc
+                    elapsed = time.monotonic() - started_at
+                    self.log(
+                        f'[routing] 订阅“{provider_name}”Windows 系统代理回退失败，'
+                        f'耗时 {elapsed:.1f} 秒，错误类型 {type(exc).__name__}')
+                else:
+                    elapsed = time.monotonic() - started_at
+                    self.log(
+                        f'[routing] 订阅“{provider_name}”Windows 系统代理回退成功，'
+                        f'耗时 {elapsed:.1f} 秒')
+                    result['download_route'] = (
+                        f'Windows 系统代理自动回退 {_proxy_display(system_proxy)}')
+                    result['auto_fallback'] = 'system-proxy'
+                    return result
+
+            if _cache_only or _seed_payload is not None:
+                raise primary_error
+            retained = self._retained_cache_preview(
+                source, network, kwargs, provider_name)
+            if retained:
+                return retained
+            if system_proxy:
                 raise RoutingError(
                     '无法获取订阅：内置代理、物理网络和 Windows 系统代理均失败，'
-                    '请检查订阅地址、代理状态或导入现有 YAML') from fallback_error
-            elapsed = time.monotonic() - started_at
-            self.log(
-                f'[routing] 订阅“{provider_name}”Windows 系统代理回退成功，'
-                f'耗时 {elapsed:.1f} 秒')
-            result['download_route'] = (
-                f'Windows 系统代理自动回退 {_proxy_display(system_proxy)}')
-            result['auto_fallback'] = 'system-proxy'
-            return result
+                    '当前没有可保留的节点缓存；请检查订阅地址或导入现有 YAML') \
+                    from fallback_error
+            raise primary_error
+
+    def _retained_cache_preview(self, source, network, kwargs, provider_name):
+        """远端链路均失败时显式解析 last-known-good，且保留历史测速状态。"""
+        normalized = normalize_config({
+            'enabled': False,
+            'proxy_providers': [{**source, 'enabled': True}],
+            'default_outbound': 'physical',
+        })
+        provider = normalized['proxy_providers'][0]
+        cache = subscription_store.cache_status(provider)
+        if not cache.get('available'):
+            return None
+        cache_kwargs = dict(kwargs)
+        cache_kwargs.update({
+            '_persist': False,
+            '_run_delay_test': False,
+            '_refresh_cache': False,
+            '_cache_only': True,
+            '_persist_snapshot': False,
+        })
+        try:
+            result = self._preview_proxy_provider_once(
+                source, network, **cache_kwargs)
+        except RoutingError as exc:
+            self._log_best_effort(
+                f'[routing] 订阅“{provider_name}”last-known-good 解析失败，'
+                f'错误类型={type(exc).__name__}')
+            return None
+        snapshot = subscription_store.load_node_snapshot(provider)
+        previous = {
+            str(item.get('display_name') or item.get('name') or ''): item
+            for item in snapshot.get('nodes') or []
+        }
+        nodes = []
+        for item in result.get('nodes') or []:
+            name = str(item.get('display_name') or item.get('name') or '')
+            old = previous.get(name)
+            nodes.append({
+                **item,
+                **({
+                    'delay': old.get('delay'),
+                    'alive': old.get('alive'),
+                    'tested': old.get('tested', False),
+                    'tested_at': old.get('tested_at', 0),
+                } if old else {}),
+            })
+        result.update({
+            'msg': f'远端更新失败，已保留上次成功缓存中的 {len(nodes)} 个节点',
+            'nodes': nodes,
+            'node_count': len(nodes),
+            'download_route': '本地节点缓存（远端更新失败）',
+            'cache': cache,
+            'used_cache': True,
+            'refreshed': False,
+            'update_state': 'cache_retained',
+            'warning': '远端更新失败，节点列表和历史测速结果均已保留',
+        })
+        self._log_best_effort(
+            f'[routing] 订阅“{provider_name}”远端更新失败，'
+            f'已从 last-known-good 恢复 {len(nodes)} 个节点')
+        return result
 
     def _preview_proxy_provider_once(self, value, network=None,
                                      _seed_payload=None, _persist=True,
@@ -1538,7 +1914,6 @@ if ($service) {{
                                                 controller_config,
                                                 '/providers/proxies/preview',
                                                 method='PUT', timeout=15)
-                                            refreshed = True
                                             latest = self._controller_request(
                                                 controller_config,
                                                 '/providers/proxies/preview',
@@ -1546,6 +1921,10 @@ if ($service) {{
                                             if isinstance(latest, dict) and isinstance(
                                                     latest.get('proxies'), list) and latest['proxies']:
                                                 provider_payload = latest
+                                                refreshed = True
+                                            else:
+                                                refresh_warning = (
+                                                    '在线更新结果无法确认，已继续使用上次成功缓存')
                                         except (OSError, ValueError,
                                                 urllib.error.URLError):
                                             refresh_warning = (
@@ -1859,23 +2238,26 @@ if ($service) {{
             'runtime_mode': runtime_mode,
             'traffic_mode': normalized['traffic_mode'],
             'capture_mode': normalized['capture_mode'],
+            'dns_mode': normalized['dns_mode'],
             'service_state': service.get('state', 'Unknown'),
             'service_backend': service.get('backend', 'unknown'),
             'service_version': service.get('service_version', ''),
+            'service_update_required': bool(
+                service.get('backend') == 'native' and
+                service.get('service_version') !=
+                _routing_service.SERVICE_VERSION),
             'mihomo_version': version or MIHOMO_VERSION,
             'winsw_version': WINSW_VERSION,
             'rule_count': len(normalized['rules']),
             'builtin_rule_pack': _routing_rules.summary(
                 normalized['builtin_rule_pack']),
-            'actual_rule_count': (1 if normalized['traffic_mode'] == 'global' else
-                                  len(_active_rules(normalized)) +
-                                  len(_routing_rules.rules_for(
-                                      normalized['builtin_rule_pack'])) + 1),
+            'actual_rule_count': len(_effective_rules(normalized)),
             'provider_count': len([
                 item for item in normalized['proxy_providers'] if item['enabled']]),
             'physical_interface': normalized['physical_interface'],
             'mixed_port': normalized['mixed_port'],
             'system_proxy_active': bool(service.get('system_proxy_active')),
+            'fast_toggle_ready': bool(service.get('fast_toggle_ready')),
             'crash_fused': bool(service.get('crash_fused')),
             'msg': ('Mihomo 连续崩溃已熔断，系统接管已恢复，请查看诊断日志后重试'
                     if service.get('crash_fused') else
@@ -1910,6 +2292,7 @@ if ($service) {{
             },
             'builtin_rule_pack': _routing_rules.summary(
                 normalized['builtin_rule_pack']),
+            'builtin_rule_packs': _routing_rules.catalog(),
             'protected_fields': [
                 'mixed-port', 'tun', 'external-controller',
                 'secret', 'proxy-providers', 'proxy-groups', 'rules', 'dns'],
@@ -1953,6 +2336,7 @@ if ($service) {{
             },
             'builtin_rule_pack': _routing_rules.summary(
                 normalized['builtin_rule_pack']),
+            'builtin_rule_packs': _routing_rules.catalog(),
             'protected_fields': [
                 'mixed-port', 'tun', 'external-controller',
                 'secret', 'proxy-providers', 'proxy-groups', 'rules', 'dns'],
@@ -2383,18 +2767,11 @@ if ($service) {{
         return result
 
     def _verify_runtime_egress(self, config):
-        """提交前验证真实节点及显式本地链路/TUN 系统链路。"""
+        """提交前确认当前选择，并以真实接管链路作为唯一可用性门控。"""
         groups = self._traffic_proxy_groups(config)
         if groups:
             self.log(
-                f'[routing] 开始验证实际代理出口，共 {len(groups)} 个流量组，单次超时 8 秒')
-            try:
-                provider_payload = self._controller_request(
-                    config, '/providers/proxies', timeout=5)
-                provider_catalog = _provider_proxy_catalog(provider_payload)
-            except (OSError, ValueError, urllib.error.URLError) as exc:
-                raise RoutingError(
-                    '无法读取代理节点健康状态，已恢复 Windows 原始路由') from exc
+                f'[routing] 开始确认实际代理出口，共 {len(groups)} 个流量组')
             for group_name in groups:
                 group_path = f'/proxies/{urllib.parse.quote(group_name, safe="")}'
                 try:
@@ -2406,30 +2783,12 @@ if ($service) {{
                 if not selected or selected == 'REJECT':
                     raise RoutingError(
                         f'代理组“{group_name}”没有可用节点，已恢复 Windows 原始路由')
-                node = dict(provider_catalog.get(selected) or {})
-                node['name'] = selected
-                path = _node_healthcheck_path(
-                    node, HEALTH_CHECK_URL, timeout=5000)
-                delay = 0
-                last_error = None
-                for attempt in range(2):
-                    try:
-                        payload = self._controller_request(config, path, timeout=8)
-                        value = payload.get('delay') if isinstance(payload, dict) else 0
-                        delay = value if isinstance(value, int) and value > 0 else 0
-                    except (OSError, ValueError, urllib.error.URLError) as exc:
-                        last_error = exc
-                    if delay:
-                        break
-                    if attempt == 0:
-                        time.sleep(0.5)
-                if not delay:
+                members = state.get('all') if isinstance(state, dict) else []
+                if isinstance(members, list) and members and selected not in members:
                     raise RoutingError(
-                        f'当前代理节点的启动实时检测未通过（已检测 2 次，'
-                        f'并非“未测速”状态）。请在节点列表重新测速并选择'
-                        f'当前可用节点；已自动恢复 Windows 原始路由') from last_error
-                self.log(
-                    f'[routing] 代理组 {group_name} 当前节点健康检查通过，延迟 {delay} ms')
+                        f'代理组“{group_name}”的当前节点状态不一致，'
+                        '已恢复 Windows 原始路由')
+                self.log(f'[routing] 代理组 {group_name} 当前节点已确认')
 
         if config['capture_mode'] == 'system-proxy':
             address = f'http://127.0.0.1:{config["mixed_port"]}'
@@ -2470,11 +2829,14 @@ if ($service) {{
                 self._log_best_effort(
                     f'[routing] {source}验证失败：目标={host}，分类={category}，'
                     f'异常={type(exc).__name__}，耗时={time.monotonic() - started_at:.1f} 秒')
+        self._log_best_effort(
+            f'[routing] {source}全部验证目标失败：{", ".join(errors)}')
         raise RoutingError(
-            f'{source}多端点自检失败（{", ".join(errors)}），已自动回滚；'
-            '请确认节点、系统 DNS 与本机代理端口可用')
+            f'{source}当前无法建立可用连接，已恢复 Windows 原始路由。'
+            '请重试；若仍失败，请检查当前节点或网络设置')
 
-    def _install(self, config_path, config, runtime_mode='active'):
+    def _install(self, config_path, config, runtime_mode='active',
+                 fast_toggle_ready=False):
         started_at = time.monotonic()
         mode_label = '待机核心' if runtime_mode == 'standby' else '系统接管'
         self.log(
@@ -2483,7 +2845,10 @@ if ($service) {{
         try:
             self._native_service.ensure_installed()
             transaction = self._native_service.apply(
-                config_path, self._native_provider_files(config), runtime_mode)
+                config_path, self._native_provider_files(config), runtime_mode,
+                fast_toggle_ready=fast_toggle_ready,
+                system_proxy_bypass_domains=(
+                    config['system_proxy_bypass']['domains']))
         except _routing_service.ServiceError as exc:
             raise RoutingError(
                 f'统一分流服务操作失败：{_sanitize_mihomo_error(exc)}') from exc
@@ -2544,26 +2909,91 @@ if ($service) {{
         test_data = os.path.join(staging, 'data')
         config_path = os.path.join(staging, 'config.json')
         os.makedirs(test_data, exist_ok=True)
-        self._log_best_effort(
-            '[routing] 待机核心配置开始生成：TUN=off，系统代理=off，监听仅限回环')
-        generated = build_mihomo_config(
-            config, [], system_proxy=windows_system_proxy(), standby=True)
+        fast_toggle_ready = config['capture_mode'] == 'system-proxy'
+        if fast_toggle_ready:
+            self._log_best_effort(
+                '[routing] 快切待机配置开始生成：保留完整规则与节点组，系统代理=off')
+            vpns = vpn_os.list_vpns()
+            excludes, _warnings = _resolve_vpn_server_routes(
+                vpns, set(_target_vpns(config)))
+            generated = build_mihomo_config(
+                config, vpns, excludes, windows_system_proxy())
+        else:
+            self._log_best_effort(
+                '[routing] 待机核心配置开始生成：TUN=off，系统代理=off，监听仅限回环')
+            generated = build_mihomo_config(
+                config, [], system_proxy=windows_system_proxy(), standby=True)
         _write_json(config_path, generated)
         self._test_config(config_path, test_data)
-        self._install(config_path, config, runtime_mode='standby')
+        self._install(
+            config_path, config, runtime_mode='standby',
+            fast_toggle_ready=fast_toggle_ready)
 
-    def apply(self, value):
+    @staticmethod
+    def _can_fast_toggle_system_proxy(config, service_state):
+        return bool(
+            config['capture_mode'] == 'system-proxy' and
+            service_state.get('installed') and
+            service_state.get('backend') == 'native' and
+            service_state.get('runtime_running') and
+            service_state.get('fast_toggle_ready') and
+            service_state.get('runtime_mode') in {'active', 'standby'} and
+            not service_state.get('crash_fused'))
+
+    def _fast_toggle_system_proxy(self, config, enabled):
+        started_at = time.monotonic()
+        action = '开启' if enabled else '关闭'
+        self.log(
+            f'[routing] Windows 系统代理快切请求已提交：target={action}，'
+            '复用常驻 Mihomo，不重载配置')
+        if enabled:
+            # 在写入 Windows 系统代理前验证当前常驻核心的真实 mixed-port
+            # 链路；配置未变化时不重复扫描 VPN/网卡或执行 Mihomo -t。
+            self._verify_runtime_egress(config)
+        try:
+            self._native_service.set_system_proxy_enabled(enabled)
+        except _routing_service.ServiceError as exc:
+            raise RoutingError(
+                f'系统代理{action}失败：{_sanitize_mihomo_error(exc)}') from exc
+        if enabled:
+            expected = f'http://127.0.0.1:{config["mixed_port"]}'
+            if windows_system_proxy() != expected:
+                try:
+                    self._native_service.set_system_proxy_enabled(False)
+                except _routing_service.ServiceError:
+                    pass
+                raise RoutingError(
+                    'Windows 系统代理开启后回读不一致，已自动恢复原设置')
+        self.log(
+            f'[routing] Windows 系统代理快切完成：target={action}，耗时 '
+            f'{time.monotonic() - started_at:.2f} 秒')
+        return {
+            'ok': True,
+            'msg': '代理已开启' if enabled else '代理已关闭，节点核心保持待机',
+            'config': config,
+            'warnings': [],
+            'standby_pending': False,
+            'status': self.status(config),
+        }
+
+    def apply(self, value, defer_standby=False, allow_fast_toggle=False):
         config = normalize_config(value)
         self.log(
             f'[routing] 收到分流应用请求：enabled={config["enabled"]}，'
             f'mode={config["traffic_mode"]}，规则 {len(config["rules"])} 条')
+        service_state = self._service_state()
+        if (allow_fast_toggle and
+                self._can_fast_toggle_system_proxy(config, service_state)):
+            return self._fast_toggle_system_proxy(config, config['enabled'])
         if not config['enabled']:
-            service_state = self._service_state()
             if service_state.get('state') == 'Unknown':
                 raise RoutingError(
                     '无法确认统一分流服务是否仍在运行，未保存关闭状态；请稍后重试')
             installed = bool(service_state.get('installed'))
             warnings = []
+            enabled_providers = [
+                item for item in config['proxy_providers']
+                if item.get('enabled')]
             if installed:
                 if service_state.get('backend') == 'native':
                     try:
@@ -2572,10 +3002,7 @@ if ($service) {{
                         raise RoutingError(
                             f'关闭统一分流失败：{_sanitize_mihomo_error(exc)}') from exc
                     self.log('[routing] 系统流量接管已停止，Windows 原始路由已恢复')
-                    enabled_providers = [
-                        item for item in config['proxy_providers']
-                        if item.get('enabled')]
-                    if enabled_providers:
+                    if enabled_providers and not defer_standby:
                         try:
                             self._start_standby_runtime(config)
                             self.log(
@@ -2590,6 +3017,9 @@ if ($service) {{
                                 f'[routing] 待机核心启动失败，保持系统接管关闭：'
                                 f'{type(exc).__name__}: '
                                 f'{_sanitize_mihomo_error(exc)}')
+                    elif enabled_providers:
+                        self.log(
+                            '[routing] 系统接管关闭已完成，节点待机核心转入后台启动')
                 else:
                     self._uninstall_legacy()
                     self.log('[routing] 旧版统一分流服务已停止并注销')
@@ -2600,12 +3030,17 @@ if ($service) {{
                 self._service_state(allow_powershell=False).get(
                     'runtime_mode') == 'standby')
             return {'ok': True,
-                    'msg': ('代理已关闭，节点核心保持待机'
+                    'msg': ('代理已关闭，节点核心正在后台启动'
+                            if defer_standby and installed and enabled_providers else
+                            '代理已关闭，节点核心保持待机'
                             if standby_started else
                             '统一分流已关闭' if installed else
                             '分流配置已保存'),
                     'config': config,
-                    'warnings': warnings, 'status': self.status(config)}
+                    'warnings': warnings,
+                    'standby_pending': bool(
+                        defer_standby and installed and enabled_providers),
+                    'status': self.status(config)}
 
         verify_runtime()
         self.log('[routing] 开始执行启用前校验：运行时、节点偏好、接口、VPN 与 TUN 冲突')
@@ -2631,7 +3066,9 @@ if ($service) {{
         self.log('[routing] Mihomo 候选配置已生成，开始离线语法预检（超时 45 秒）')
         self._test_config(config_path, test_data)
         self.log('[routing] Mihomo 候选配置离线预检通过，开始应用服务事务')
-        self._install(config_path, config)
+        self._install(
+            config_path, config,
+            fast_toggle_ready=config['capture_mode'] == 'system-proxy')
         self.log(f'[routing] 统一分流已启动，规则 {len(config["rules"])} 条')
         return {
             'ok': True,

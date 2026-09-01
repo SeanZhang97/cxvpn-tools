@@ -3,6 +3,7 @@
 import datetime
 import json
 import os
+import platform
 import sys
 import threading
 import time
@@ -11,9 +12,10 @@ import urllib.request
 from contextlib import nullcontext
 
 from core import config as cfgmod
-from core import (ip_info, proxy_guard, ras_cred, routing, sms_receiver,
-                  vpn_connect, vpn_os, windows_desktop)
+from core import (config_maintenance, ip_info, proxy_guard, ras_cred, routing,
+                  sms_receiver, vpn_connect, vpn_os, windows_desktop)
 from core import vpn_service
+from core.mihomo_activity import MihomoActivityRelay
 from core.mihomo_telemetry import MihomoTelemetryRelay
 from core.routing_speedtest import RoutingTestJobs
 from core.routing_updates import RoutingUpdateWorker
@@ -94,6 +96,8 @@ class Api:
         self.worker._serializable = False
         self.routing = routing.RoutingManager(self.log)
         self.routing._serializable = False
+        self.routing_history = config_maintenance.ConfigHistory()
+        self.routing_history._serializable = False
         self.routing_test_jobs = RoutingTestJobs(self.log)
         self.routing_test_jobs._serializable = False
         self.routing_updates = RoutingUpdateWorker(
@@ -102,8 +106,12 @@ class Api:
         self.routing_telemetry = MihomoTelemetryRelay(
             self._cfg_get, self.routing, self.log, self._poke_ui_state)
         self.routing_telemetry._serializable = False
+        self.routing_activity = MihomoActivityRelay(
+            self._cfg_get, self.routing, self.log)
+        self.routing_activity._serializable = False
         self._ui_state_stream = UiStateStream(
-            self._build_ui_snapshot, self.log, interval=0.5)
+            self._build_ui_snapshot, self.log,
+            interval=1.5 if self.cfg.get('lightweight_mode') else 0.5)
         self._ui_state_stream._serializable = False
 
     # ---------- 基础设施 ----------
@@ -122,7 +130,7 @@ class Api:
         line = f'{datetime.datetime.now():%H:%M:%S} {msg}'
         with self._lock:
             self.logs.append(line)
-            self._log_version += 1
+            self._log_version = getattr(self, '_log_version', 0) + 1
             if len(self.logs) > LOG_MAX:
                 self.logs = self.logs[-LOG_MAX:]
             # 运行日志同步落盘 run.log (供事后追溯, 含验证码等关键信息)
@@ -186,17 +194,30 @@ class Api:
         if not self.worker.is_alive():
             self.worker.start()
         self.routing_updates.start()
-        self._ui_state_stream.start()
-        self.routing_telemetry.start()
-        self._start_routing_standby_reconcile()
+        state_stream = getattr(self, '_ui_state_stream', None)
+        if state_stream is not None:
+            state_stream.start()
+        telemetry = getattr(self, 'routing_telemetry', None)
+        if telemetry is not None:
+            telemetry.start()
+        activity = getattr(self, 'routing_activity', None)
+        if activity is not None:
+            activity.start()
+        if hasattr(self, '_routing_lock'):
+            self._start_routing_standby_reconcile()
 
-    def _start_routing_standby_reconcile(self):
+    def _start_routing_standby_reconcile(self, source='启动'):
         """升级后在后台恢复待机核心，不阻塞窗口首屏。"""
-        self.log('[routing] 启动待机核心复核任务已提交')
+        thread = getattr(self, '_routing_standby_thread', None)
+        if thread is not None and thread.is_alive():
+            self.log(f'[routing] {source}待机核心复核已在后台排队，无需重复提交')
+            return
+        self.log(f'[routing] {source}待机核心复核任务已提交')
 
         def reconcile():
-            self.log('[routing] 后台已领取待机核心复核任务')
+            self.log(f'[routing] 后台已领取{source}待机核心复核任务，等待路由互斥锁')
             with self._routing_lock:
+                self.log(f'[routing] {source}待机核心复核开始执行')
                 current = routing.normalize_config(
                     (self._cfg_get().get('routing') or {}))
                 if current['enabled'] or not any(
@@ -230,9 +251,11 @@ class Api:
                     f'[routing] 待机核心复核失败：{type(exc).__name__}；'
                     '代理保持关闭，订阅操作将使用临时核心')
 
-        threading.Thread(
+        thread = threading.Thread(
             target=guarded_reconcile, daemon=True,
-            name='routing-standby-reconcile').start()
+            name='routing-standby-reconcile')
+        self._routing_standby_thread = thread
+        thread.start()
 
     def _attach_desktop(self, desktop):
         self._desktop = desktop
@@ -343,12 +366,45 @@ class Api:
         """页面生命周期只传布尔意图，Controller 细节始终留在后端。"""
         return self.routing_telemetry.set_active(active)
 
+    def set_routing_activity_view(self, view):
+        """按当前可见页面启停连接或核心日志流。"""
+        return self.routing_activity.set_view(view)
+
+    def get_routing_activity_snapshot(self, view):
+        return self.routing_activity.snapshot(view)
+
+    def wait_routing_activity(self, after_version=0, view='connections',
+                              timeout=25):
+        return self.routing_activity.wait(after_version, view, timeout)
+
+    def clear_routing_activity(self, view):
+        cleared = self.routing_activity.clear(view)
+        if cleared:
+            self.log(f'[routing-activity] UI 已清空 {view} 本地历史')
+        return cleared
+
+    def close_routing_connection(self, connection_id=''):
+        target = '单个连接' if str(connection_id or '').strip() else '全部连接'
+        self.log(f'[routing-activity] {target}关闭请求已提交')
+        with self._routing_lock:
+            self.log(f'[routing-activity] 后台已领取{target}关闭请求，开始执行')
+            try:
+                result = self.routing_activity.close_connection(connection_id)
+                self.log(f'[routing-activity] {target}关闭成功')
+                return result
+            except Exception as exc:
+                self.log(
+                    f'[routing-activity] {target}关闭失败: '
+                    f'{type(exc).__name__}')
+                return {'ok': False, 'msg': '关闭连接失败，请确认代理核心正在运行'}
+
     def shutdown(self):
         """解除可能的人工等待并停止后台线程，供托盘退出和窗口关闭使用。"""
         self._manual_event.set()
         self._manual_sms_ev.set()
         self._sms_ui = False
         self.routing_telemetry.stop()
+        self.routing_activity.stop()
         self._ui_state_stream.stop()
         self.routing_updates.stop()
         self.worker.stop()
@@ -381,6 +437,14 @@ class Api:
             self.worker.update_default_target(new_default)
         elif new_auto_connect and not old_auto_connect:
             self.worker.enable_auto_connect()
+        state_stream = getattr(self, '_ui_state_stream', None)
+        if state_stream is not None:
+            state_stream.set_interval(
+                1.5 if self._cfg_get().get('lightweight_mode') else 0.5)
+        desktop = getattr(self, '_desktop', None)
+        if desktop is not None:
+            desktop.refresh_hotkeys()
+        self._poke_ui_state()
         return True
 
     # ---------- 统一域名分流 ----------
@@ -467,10 +531,13 @@ class Api:
                 return {'ok': False, 'msg': str(exc)}
 
     def save_proxy_preference(
-            self, provider_id, mode, node_name='', provider_draft=None):
+            self, provider_id, mode, node_name='', provider_draft=None,
+            auto_policy=None):
         """持久化自动/手动节点偏好；运行态可安全热切换时立即生效。"""
+        self.log('[routing] 节点偏好保存请求已提交')
         with self._routing_lock:
             try:
+                self.log('[routing] 后台已领取节点偏好保存请求，开始校验并写入')
                 current_cfg = self._cfg_get()
                 current = routing.normalize_config(
                     current_cfg.get('routing') or {})
@@ -502,19 +569,49 @@ class Api:
                         raise routing.RoutingError(
                             '所选节点不在当前持久化节点列表中，请先更新订阅')
                 previous_mode = provider.get('selection_mode')
+                previous_policy = json.dumps(
+                    provider.get('auto_policy') or {}, ensure_ascii=False,
+                    sort_keys=True)
                 provider['selection_mode'] = target_mode
                 provider['selected_node'] = (
                     selected if target_mode == 'manual' else '')
+                if target_mode == 'auto' and auto_policy is not None:
+                    provider['auto_policy'] = auto_policy
                 normalized = routing.normalize_config(current)
+                normalized_provider = next(
+                    item for item in normalized['proxy_providers']
+                    if item['id'] == target_id)
+                if (target_mode == 'auto' and
+                        (normalized_provider.get('auto_policy') or {}).get(
+                            'enabled')):
+                    routing.validate_auto_policy_nodes(normalized_provider)
+                policy_changed = previous_policy != json.dumps(
+                    normalized_provider.get('auto_policy') or {},
+                    ensure_ascii=False, sort_keys=True)
+                status = self.routing.status(current)
+                structural_change = (
+                    previous_mode != target_mode or policy_changed)
+                if status.get('running') and structural_change:
+                    self.log(
+                        f'[routing] 节点优选策略开始重新应用: provider={target_id}')
+                    applied = self._apply_routing_locked(
+                        normalized, 'proxy-preference')
+                    if not applied.get('ok'):
+                        return applied
+                    self.log(
+                        f'[routing] 节点优选策略重新应用成功: provider={target_id}')
+                    return self._routing_result_for_ui({
+                        **applied,
+                        'msg': '节点优选策略已保存并立即应用',
+                        'requires_apply': False,
+                    })
                 with self._lock:
                     committed = json.loads(json.dumps(self.cfg))
                     committed['routing'] = normalized
                     cfgmod.save(committed)
                     self.cfg = committed
 
-                status = self.routing.status(normalized)
-                requires_apply = bool(
-                    status.get('running') and previous_mode != target_mode)
+                requires_apply = False
                 if (status.get('running') and target_mode == 'manual' and
                         previous_mode == 'manual'):
                     runtime_name = f'[{provider["name"]}] {selected}'
@@ -530,11 +627,15 @@ class Api:
                        '节点偏好已保存并立即生效'
                        if status.get('running') else
                        '节点偏好已保存，开启代理时将自动应用')
+                self.log(
+                    f'[routing] 节点偏好保存成功: provider={target_id}, '
+                    f'mode={target_mode}, requires_apply={requires_apply}')
                 return self._routing_result_for_ui({
                     'ok': True, 'msg': msg, 'config': normalized,
                     'status': status, 'requires_apply': requires_apply,
                 })
             except routing.RoutingError as exc:
+                self.log(f'[routing] 节点偏好保存失败: {exc}')
                 return {'ok': False, 'msg': str(exc)}
             except Exception as exc:
                 self.log(f'[routing] 节点偏好保存失败: {type(exc).__name__}')
@@ -660,6 +761,28 @@ class Api:
         except Exception as exc:
             return {'ok': False, 'msg': str(exc)}
 
+    def validate_routing_dns(self, value):
+        """只校验 DNS 草稿，不访问网络、不写配置或重启服务。"""
+        try:
+            normalized = routing.normalize_config(
+                self._routing_with_private_fields(value))
+            active = (normalized if normalized['dns_mode'] == 'advanced'
+                      else routing.default_config())
+            return {
+                'ok': True,
+                'msg': ('DNS 高级配置校验通过' if normalized['dns_mode'] == 'advanced'
+                        else 'DNS 简单模式将使用内置推荐配置'),
+                'summary': {
+                    'mode': normalized['dns_mode'],
+                    'enhanced_mode': active['dns_enhanced_mode'],
+                    'nameserver_count': len(active['dns_servers']),
+                    'policy_count': len(active.get('nameserver_policy') or []),
+                    'fake_ip_range': active['fake_ip_range'],
+                },
+            }
+        except Exception as exc:
+            return {'ok': False, 'msg': str(exc)}
+
     def preview_routing(self, value):
         with self._routing_lock:
             try:
@@ -673,42 +796,189 @@ class Api:
 
     def apply_routing(self, value):
         with self._routing_lock:
-            previous_cfg = self._cfg_get()
-            previous_routing = previous_cfg.get('routing') or routing.default_config()
+            return self._apply_routing_locked(value, 'manual')
+
+    def set_routing_enabled(self, enabled, traffic_mode=''):
+        """首页快开关：只修改启用状态，避免前端旧快照覆盖完整配置。"""
+        if not isinstance(enabled, bool):
+            return {'ok': False, 'msg': '代理启用状态无效'}
+        target = enabled
+        mode = str(traffic_mode or '').strip().lower()
+        if mode and mode not in routing.TRAFFIC_MODES:
+            return {'ok': False, 'msg': '流量模式无效'}
+        with self._routing_lock:
+            current = routing.normalize_config(
+                self._cfg_get().get('routing') or routing.default_config())
+            current['enabled'] = target
+            if target and mode:
+                current['traffic_mode'] = mode
+            return self._apply_routing_locked(current, 'proxy_toggle')
+
+    @staticmethod
+    def _routing_matches_except_enabled(previous, requested):
+        try:
+            left = routing.normalize_config(previous)
+            right = routing.normalize_config(requested)
+        except Exception:
+            # 完整应用仍由 RoutingManager 返回原有校验错误；快路径判断不能
+            # 提前改变异常边界，也兼容测试或旧调用方提供的最小替身配置。
+            return False
+        left.pop('enabled', None)
+        right.pop('enabled', None)
+        return left == right
+
+    def _history_record(self, config, success, source, message):
+        try:
+            self.routing_history.record(
+                config, success, source, message)
+        except Exception as exc:
+            self.log(
+                f'[routing-history] 历史记录写入失败: {type(exc).__name__}')
+
+    def _apply_routing_locked(self, value, source, replacement_cfg=None):
+        """在持有 _routing_lock 时提交路由和磁盘配置，并维护有效历史。"""
+        previous_cfg = self._cfg_get()
+        previous_routing_raw = json.loads(json.dumps(
+            previous_cfg.get('routing') or routing.default_config()))
+        previous_routing = routing.normalize_config(
+            previous_routing_raw)
+        requested = self._routing_with_private_fields(value)
+        allow_fast_toggle = self._routing_matches_except_enabled(
+            previous_routing, requested)
+        try:
             try:
-                result = self.routing.apply(
-                    self._routing_with_private_fields(value))
-                save_exc = None
-                with self._lock:
-                    committed_cfg = json.loads(json.dumps(self.cfg))
-                    committed_cfg['routing'] = json.loads(
-                        json.dumps(result['config']))
-                    try:
-                        cfgmod.save(committed_cfg)
-                    except Exception as exc:
-                        save_exc = exc
-                    else:
-                        self.cfg = committed_cfg
-                if save_exc is not None:
-                    self.log('[routing] 配置提交失败，正在恢复原分流状态')
-                    try:
-                        self.routing.apply(previous_routing)
-                    except Exception as rollback_exc:
-                        self.log(
-                            '[routing] 严重错误：配置提交和服务回滚均失败: '
-                            f'{type(rollback_exc).__name__}')
-                        raise routing.RoutingError(
-                            '分流服务已变更，但配置保存失败且自动恢复未完成；'
-                            '请保持软件打开并重新应用原配置') from save_exc
-                    raise routing.RoutingError(
-                        '配置保存失败，已自动恢复原分流状态') from save_exc
-                routing.subscription_store.prune_cache(
-                    result['config'].get('proxy_providers') or [])
-                self._poke_ui_state()
-                return self._routing_result_for_ui(result)
+                self.routing_history.ensure_baseline(previous_routing)
             except Exception as exc:
-                self.log(f'[routing] 应用失败: {exc}')
+                self.log(
+                    f'[routing-history] 基线记录失败: {type(exc).__name__}')
+            result = self.routing.apply(
+                requested, defer_standby=True,
+                allow_fast_toggle=allow_fast_toggle)
+            standby_pending = bool(result.pop('standby_pending', False))
+            save_exc = None
+            with self._lock:
+                committed_cfg = json.loads(json.dumps(
+                    replacement_cfg if replacement_cfg is not None else self.cfg))
+                # 运行时返回值才是通过规范化和预检的最终事实。
+                committed_cfg['routing'] = json.loads(
+                    json.dumps(result['config']))
+                try:
+                    cfgmod.save(committed_cfg)
+                except Exception as exc:
+                    save_exc = exc
+                else:
+                    self.cfg = committed_cfg
+            if save_exc is not None:
+                self.log('[routing] 配置提交失败，正在恢复原分流状态')
+                try:
+                    self.routing.apply(previous_routing_raw)
+                except Exception as rollback_exc:
+                    self.log(
+                        '[routing] 严重错误：配置提交和服务回滚均失败: '
+                        f'{type(rollback_exc).__name__}')
+                    raise routing.RoutingError(
+                        '分流服务已变更，但配置保存失败且自动恢复未完成；'
+                        '请保持软件打开并重新应用原配置') from save_exc
+                raise routing.RoutingError(
+                    '配置保存失败，已自动恢复原分流状态') from save_exc
+            routing.subscription_store.prune_cache(
+                result['config'].get('proxy_providers') or [])
+            self._history_record(
+                result['config'], True, source,
+                result.get('msg') or '配置已应用')
+            if standby_pending:
+                self._start_routing_standby_reconcile('代理关闭后')
+            self._poke_ui_state()
+            return self._routing_result_for_ui(result)
+        except Exception as exc:
+            try:
+                failed = routing.normalize_config(requested)
+            except Exception:
+                failed = previous_routing
+            self._history_record(failed, False, source, str(exc))
+            self.log(f'[routing] 应用失败: {exc}')
+            return {'ok': False, 'msg': str(exc)}
+
+    def export_config_backup(self, include_subscription_urls=False):
+        try:
+            result = config_maintenance.create_backup(
+                self._cfg_get(), bool(include_subscription_urls))
+            self.log('[config] 配置备份已生成（不包含登录或服务凭据）')
+            return result
+        except Exception as exc:
+            self.log(f'[config] 配置备份生成失败: {type(exc).__name__}')
+            return {'ok': False, 'msg': str(exc)}
+
+    def preview_config_restore(self, content):
+        try:
+            prepared = config_maintenance.prepare_restore(
+                content, self._cfg_get())
+            return {'ok': True, 'summary': prepared['summary']}
+        except Exception as exc:
+            return {'ok': False, 'msg': str(exc)}
+
+    def restore_config_backup(self, content):
+        with self._routing_lock:
+            try:
+                prepared = config_maintenance.prepare_restore(
+                    content, self._cfg_get())
+            except Exception as exc:
                 return {'ok': False, 'msg': str(exc)}
+            result = self._apply_routing_locked(
+                prepared['candidate']['routing'], 'backup_restore',
+                prepared['candidate'])
+            if result.get('ok'):
+                result['msg'] = '配置备份已恢复；代理启用状态保持不变'
+                result['restore_summary'] = prepared['summary']
+                self.log('[config] 配置备份恢复成功')
+            return result
+
+    def get_routing_config_history(self):
+        try:
+            return {'ok': True, 'items': self.routing_history.list()}
+        except Exception as exc:
+            return {'ok': False, 'msg': str(exc), 'items': []}
+
+    def restore_routing_config_history(self, record_id):
+        with self._routing_lock:
+            try:
+                historical = self.routing_history.load(record_id)
+            except Exception as exc:
+                return {'ok': False, 'msg': str(exc)}
+            return self._apply_routing_locked(historical, 'history_restore')
+
+    def export_routing_diagnostics(self):
+        try:
+            service = self.routing._service_state(allow_powershell=False)
+            try:
+                native = self.routing._native_service.diagnostics()
+            except Exception as exc:
+                native = {'available': False, 'error': type(exc).__name__}
+            logs_snapshot = self.routing_activity.snapshot('logs')
+            connections_snapshot = self.routing_activity.snapshot('connections')
+            core_logs = ((logs_snapshot.get('snapshot') or {}).get('items') or [])
+            connection_state = connections_snapshot.get('snapshot') or {}
+            activity = {
+                'active_connection_count': len(connection_state.get('active') or []),
+                'closed_connection_count': len(connection_state.get('closed') or []),
+                'upload_total': connection_state.get('upload_total', 0),
+                'download_total': connection_state.get('download_total', 0),
+            }
+            result = config_maintenance.diagnostic_bundle(
+                self._cfg_get(), self.get_logs(), core_logs,
+                {'state': service, 'native': native}, activity,
+                {
+                    'system': platform.system(),
+                    'release': platform.release(),
+                    'machine': platform.machine(),
+                    'python_frozen': bool(getattr(sys, 'frozen', False)),
+                    'mihomo_version': routing.MIHOMO_VERSION,
+                })
+            self.log('[diagnostic] 脱敏诊断包已生成')
+            return result
+        except Exception as exc:
+            self.log(f'[diagnostic] 诊断包生成失败: {type(exc).__name__}')
+            return {'ok': False, 'msg': str(exc)}
 
     def test_sms_email(self):
         """测试已保存的 IMAP 配置，只读打开邮箱而不读取正文。"""
@@ -718,10 +988,100 @@ class Api:
         return {'ok': ok, 'msg': msg}
 
     def get_desktop_settings(self):
+        desktop = getattr(self, '_desktop', None)
         return {
             'startup_enabled': windows_desktop.is_startup_enabled(),
             'close_to_tray': self._cfg_get().get('close_to_tray', True),
+            'global_hotkeys_enabled': self._cfg_get().get(
+                'global_hotkeys_enabled', False),
+            'global_hotkeys_active': bool(
+                desktop and desktop.hotkeys_active),
+            'lightweight_mode': self._cfg_get().get('lightweight_mode', False),
         }
+
+    def desktop_quick_snapshot(self):
+        """仅从配置和安全节点快照构造托盘菜单，不发起网络请求。"""
+        current = routing.normalize_config(
+            self._cfg_get().get('routing') or routing.default_config())
+        providers = []
+        for provider in current['proxy_providers']:
+            if not provider.get('enabled'):
+                continue
+            snapshot = routing.subscription_store.load_node_snapshot(provider)
+            rows = list(snapshot.get('nodes') or [])
+            selected = str(provider.get('selected_node') or '')
+            rows.sort(key=lambda item: (
+                str(item.get('name') or '') != selected,
+                item.get('alive') is False,
+                int(item.get('delay') or 1 << 30),
+                str(item.get('name') or '').casefold()))
+            nodes = []
+            for item in rows[:24]:
+                name = str(item.get('name') or '').strip()
+                if name:
+                    nodes.append({
+                        'name': name,
+                        'selected': (provider.get('selection_mode') == 'manual'
+                                     and name == selected),
+                    })
+            if nodes:
+                providers.append({
+                    'id': provider['id'], 'name': provider['name'],
+                    'nodes': nodes,
+                })
+        return {
+            'enabled': current['enabled'],
+            'traffic_mode': current['traffic_mode'],
+            'providers': providers,
+        }
+
+    def desktop_toggle_routing(self):
+        with self._routing_lock:
+            current = routing.normalize_config(
+                self._cfg_get().get('routing') or routing.default_config())
+            current['enabled'] = not current['enabled']
+            return self._apply_routing_locked(current, 'desktop_toggle')
+
+    def desktop_set_traffic_mode(self, mode):
+        target = str(mode or '').strip().lower()
+        if target not in routing.TRAFFIC_MODES:
+            return {'ok': False, 'msg': '流量模式无效'}
+        with self._routing_lock:
+            current = routing.normalize_config(
+                self._cfg_get().get('routing') or routing.default_config())
+            if current['traffic_mode'] == target:
+                return {'ok': True, 'msg': '当前已经是所选流量模式'}
+            current['traffic_mode'] = target
+            return self._apply_routing_locked(current, 'desktop_mode')
+
+    def desktop_toggle_traffic_mode(self):
+        current = routing.normalize_config(
+            self._cfg_get().get('routing') or routing.default_config())
+        target = 'global' if current['traffic_mode'] == 'rule' else 'rule'
+        return self.desktop_set_traffic_mode(target)
+
+    def desktop_select_node(self, provider_id, node_name):
+        """使用现有节点快照切换节点，并通过完整事务立即应用。"""
+        with self._routing_lock:
+            current = routing.normalize_config(
+                self._cfg_get().get('routing') or routing.default_config())
+            target_id = str(provider_id or '').strip().lower()
+            selected = str(node_name or '').strip()
+            provider = next((
+                item for item in current['proxy_providers']
+                if item['id'] == target_id and item.get('enabled')), None)
+            if not provider:
+                return {'ok': False, 'msg': '代理订阅不存在或未启用'}
+            snapshot = routing.subscription_store.load_node_snapshot(provider)
+            names = {
+                str(item.get('name') or '')
+                for item in snapshot.get('nodes') or []
+            }
+            if selected not in names:
+                return {'ok': False, 'msg': '所选节点不在当前持久化节点列表中'}
+            provider['selection_mode'] = 'manual'
+            provider['selected_node'] = selected
+            return self._apply_routing_locked(current, 'desktop_node')
 
     def set_startup_enabled(self, enabled):
         try:

@@ -6,4 +6,4 @@
 - `changelog/`: 记录代码、配置或系统行为的实际变化，一个需求/Bug/重构一个文件。
 - `knowledge/`: 记录当前有效、可复用的项目事实；`INDEX.md` 为唯一入口索引。
 
-项目根目录: `C:\develop\workspace\cxvpn-manager`（CX VPN TOOLS，便携 GUI 工具）。
+项目根目录: `C:\develop\workspace\cxvpn-tools`（CX VPN TOOLS，便携 GUI 工具）。

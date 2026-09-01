@@ -242,11 +242,11 @@
   collect-submodules webview（2026-08-27 起不再 collect playwright）；
   打包 `runtime/routing` 中锁定版本的 Mihomo/WinSW 与许可证；重打包前自动备份并恢复
   dist 下 config.json。
-- 分发: 整个 dist/CXVPN管理器 文件夹 zip；目标机需 Win10/11 + Edge + WebView2
+- 分发: 整个 `dist/CX VPN TOOLS` 文件夹 zip；目标机需 Win10/11 + Edge + WebView2
   + 已配对 Phone Link。
 - 图标: make_icon.py 生成黑底圆角流星 icon.ico 与 ui/logo.png；
   改图标后需删除 build_tmp 强制重嵌 EXE 图标（PyInstaller 缓存不感知 icon 变化）。
-- 源码在 C:\develop\workspace\cxvpn-manager；`main.py`、`api.py`、`core/`、`ui/`
+- 源码在 `C:\develop\workspace\cxvpn-tools`；`main.py`、`api.py`、`core/`、`ui/`
   或打包资源发生变化后，按项目规则执行
   `uv run --with pyinstaller python build.py`，并核对 dist 用户配置未丢失。
 

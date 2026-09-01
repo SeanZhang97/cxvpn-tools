@@ -24,6 +24,7 @@ use std::{
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_BYTES: usize = 10 * 1024 * 1024;
+const SYSTEM_PROXY_BYPASS_FILE: &str = "system-proxy-bypass.json";
 
 #[derive(Debug)]
 struct PendingTransaction {
@@ -33,6 +34,8 @@ struct PendingTransaction {
     had_data: bool,
     had_marker: bool,
     had_mode_marker: bool,
+    had_fast_toggle_marker: bool,
+    had_system_proxy_bypass: bool,
     deadline: Instant,
 }
 
@@ -45,6 +48,10 @@ struct PendingRecord {
     had_marker: bool,
     #[serde(default)]
     had_mode_marker: bool,
+    #[serde(default)]
+    had_fast_toggle_marker: bool,
+    #[serde(default)]
+    had_system_proxy_bypass: bool,
 }
 
 pub struct RuntimeManager {
@@ -70,6 +77,15 @@ impl RuntimeManager {
             crash_times: Vec::new(),
             crash_fused: false,
         };
+        // v0.3 及更早的 active 系统代理配置本身就是完整运行配置；升级时
+        // 可安全补写快切标记。旧 standby 使用精简配置，必须经控制面重建。
+        if manager.marker_path().is_file()
+            && manager.runtime_mode() == "active"
+            && manager.fast_toggle_marker_path().is_file() == false
+            && manager.desired_proxy_port().ok().flatten().is_some()
+        {
+            let _ = atomic_write(&manager.fast_toggle_marker_path(), b"ready\n");
+        }
         if manager.marker_path().is_file() && manager.config_path().is_file() {
             manager.start_runtime()?;
             if let Err(error) = manager.reconcile_system_proxy() {
@@ -91,6 +107,7 @@ impl RuntimeManager {
             "commit" => self.commit(&request.transaction_id),
             "rollback" => self.rollback(&request.transaction_id),
             "activate_system_proxy" => self.activate_system_proxy(&request.transaction_id),
+            "set_system_proxy_enabled" => self.set_system_proxy_enabled(request.enabled),
             "read_provider" => self.read_provider(&request.provider_name),
             "stop_runtime" => self.stop_runtime_command(),
             "start_runtime" => self.start_runtime_command(),
@@ -189,6 +206,7 @@ impl RuntimeManager {
                 "pending_transaction": self.pending.as_ref().map(|item| item.id.as_str()),
                 "config_sha256": hash,
                 "system_proxy_active": system_proxy::is_active(&self.base),
+                "fast_toggle_ready": self.fast_toggle_marker_path().is_file(),
                 "crash_fused": self.crash_fused,
             }),
         ))
@@ -215,6 +233,8 @@ impl RuntimeManager {
         if !sha256_bytes(&config).eq_ignore_ascii_case(&request.config_sha256) {
             return Err("服务配置校验失败".to_string());
         }
+        let bypass_domains =
+            system_proxy::normalize_bypass_domains(&request.system_proxy_bypass_domains)?;
 
         let id = transaction_id();
         let transaction_root = self.transactions_dir().join(&id);
@@ -225,6 +245,12 @@ impl RuntimeManager {
         copy_dir(&self.data_path(), &candidate_data)?;
         self.stage_providers(&candidate_data, &request.providers)?;
         atomic_write(&candidate.join("config.json"), &config)?;
+        atomic_write(
+            &candidate.join(SYSTEM_PROXY_BYPASS_FILE),
+            serde_json::to_vec(&bypass_domains)
+                .map_err(|e| format!("序列化系统代理绕过域名失败: {e}"))?
+                .as_slice(),
+        )?;
         self.validate_candidate(&candidate)?;
         self.log("候选配置与 provider 缓存校验通过，开始切换 Mihomo 运行时");
 
@@ -237,6 +263,8 @@ impl RuntimeManager {
             had_data: self.data_path().exists(),
             had_marker: self.marker_path().exists(),
             had_mode_marker: self.mode_path().exists(),
+            had_fast_toggle_marker: self.fast_toggle_marker_path().exists(),
+            had_system_proxy_bypass: self.system_proxy_bypass_path().exists(),
         };
         atomic_write(
             &self.pending_record_path(),
@@ -262,12 +290,36 @@ impl RuntimeManager {
                 fs::rename(self.mode_path(), rollback.join("runtime-mode"))
                     .map_err(|e| format!("备份运行模式失败: {e}"))?;
             }
+            if record.had_fast_toggle_marker {
+                fs::rename(
+                    self.fast_toggle_marker_path(),
+                    rollback.join("fast-toggle-ready.marker"),
+                )
+                .map_err(|e| format!("备份快切标记失败: {e}"))?;
+            }
+            if record.had_system_proxy_bypass {
+                fs::rename(
+                    self.system_proxy_bypass_path(),
+                    rollback.join(SYSTEM_PROXY_BYPASS_FILE),
+                )
+                .map_err(|e| format!("备份系统代理绕过域名失败: {e}"))?;
+            }
             fs::rename(candidate.join("config.json"), self.config_path())
                 .map_err(|e| format!("应用新配置失败: {e}"))?;
+            fs::rename(
+                candidate.join(SYSTEM_PROXY_BYPASS_FILE),
+                self.system_proxy_bypass_path(),
+            )
+            .map_err(|e| format!("应用系统代理绕过域名失败: {e}"))?;
             fs::rename(candidate_data, self.data_path())
                 .map_err(|e| format!("应用新数据失败: {e}"))?;
             atomic_write(&self.marker_path(), b"enabled\n")?;
             atomic_write(&self.mode_path(), runtime_mode.as_bytes())?;
+            if request.fast_toggle_ready {
+                atomic_write(&self.fast_toggle_marker_path(), b"ready\n")?;
+            } else {
+                let _ = remove_any(&self.fast_toggle_marker_path());
+            }
             self.start_runtime()?;
             if runtime_mode == "standby" || self.desired_proxy_port()?.is_none() {
                 system_proxy::restore(&self.base, &self.owner_sid)?;
@@ -287,6 +339,8 @@ impl RuntimeManager {
             had_data: record.had_data,
             had_marker: record.had_marker,
             had_mode_marker: record.had_mode_marker,
+            had_fast_toggle_marker: record.had_fast_toggle_marker,
+            had_system_proxy_bypass: record.had_system_proxy_bypass,
             deadline: Instant::now() + Duration::from_secs(TRANSACTION_TIMEOUT_SECS),
         });
         self.log("候选运行时已启动，等待控制面 commit 或 rollback");
@@ -334,6 +388,8 @@ impl RuntimeManager {
             had_data: pending.had_data,
             had_marker: pending.had_marker,
             had_mode_marker: pending.had_mode_marker,
+            had_fast_toggle_marker: pending.had_fast_toggle_marker,
+            had_system_proxy_bypass: pending.had_system_proxy_bypass,
         };
         Self::restore_record(&self.base, &record)?;
         let root = pending
@@ -528,11 +584,65 @@ impl RuntimeManager {
         let port = self
             .desired_proxy_port()?
             .ok_or_else(|| "候选配置不是系统代理接管模式".to_string())?;
-        system_proxy::activate(&self.base, &self.owner_sid, port)?;
+        let bypass_domains = self.system_proxy_bypass_domains()?;
+        system_proxy::activate(&self.base, &self.owner_sid, port, &bypass_domains)?;
         self.log("系统代理快照已保存并切换到 Mihomo mixed-port");
         Ok((
             "系统代理已进入候选事务".to_string(),
             json!({"system_proxy_active": true, "mixed_port": port}),
+        ))
+    }
+
+    fn set_system_proxy_enabled(
+        &mut self,
+        enabled: bool,
+    ) -> AppResult<(String, serde_json::Value)> {
+        if self.pending.is_some() {
+            return Err("配置事务尚未提交，不能快速切换系统代理".to_string());
+        }
+        if !self.fast_toggle_marker_path().is_file() {
+            return Err("当前运行配置不支持系统代理快速切换".to_string());
+        }
+        let running = self
+            .child
+            .as_mut()
+            .is_some_and(|child| child.try_wait().ok().flatten().is_none());
+        if !running {
+            return Err("Mihomo 常驻核心未运行，不能快速切换系统代理".to_string());
+        }
+        let port = self
+            .desired_proxy_port()?
+            .ok_or_else(|| "当前配置不是 Windows 系统代理模式".to_string())?;
+        if enabled {
+            atomic_write(&self.mode_path(), b"active")?;
+            let bypass_domains = self.system_proxy_bypass_domains()?;
+            if let Err(error) =
+                system_proxy::activate(&self.base, &self.owner_sid, port, &bypass_domains)
+            {
+                let _ = atomic_write(&self.mode_path(), b"standby");
+                return Err(error);
+            }
+            self.log("Windows 系统代理快速开启，Mihomo 常驻核心未重启");
+        } else {
+            atomic_write(&self.mode_path(), b"standby")?;
+            if let Err(error) = system_proxy::restore(&self.base, &self.owner_sid) {
+                let _ = atomic_write(&self.mode_path(), b"active");
+                return Err(error);
+            }
+            self.log("Windows 系统代理快速关闭，Mihomo 常驻核心继续运行");
+        }
+        Ok((
+            if enabled {
+                "Windows 系统代理已快速开启".to_string()
+            } else {
+                "Windows 系统代理已快速关闭".to_string()
+            },
+            json!({
+                "runtime_running": true,
+                "runtime_mode": if enabled { "active" } else { "standby" },
+                "system_proxy_active": enabled,
+                "mixed_port": port,
+            }),
         ))
     }
 
@@ -559,10 +669,22 @@ impl RuntimeManager {
     fn reconcile_system_proxy(&self) -> AppResult<()> {
         if self.marker_path().is_file() && self.runtime_mode() == "active" {
             if let Some(port) = self.desired_proxy_port()? {
-                return system_proxy::activate(&self.base, &self.owner_sid, port);
+                let bypass_domains = self.system_proxy_bypass_domains()?;
+                return system_proxy::activate(&self.base, &self.owner_sid, port, &bypass_domains);
             }
         }
         system_proxy::restore(&self.base, &self.owner_sid)
+    }
+
+    fn system_proxy_bypass_domains(&self) -> AppResult<Vec<String>> {
+        let path = self.system_proxy_bypass_path();
+        if !path.is_file() {
+            return Ok(Vec::new());
+        }
+        let data = fs::read(path).map_err(|e| format!("读取系统代理绕过域名失败: {e}"))?;
+        let values: Vec<String> =
+            serde_json::from_slice(&data).map_err(|e| format!("解析系统代理绕过域名失败: {e}"))?;
+        system_proxy::normalize_bypass_domains(&values)
     }
 
     fn stop_runtime(&mut self) -> AppResult<()> {
@@ -627,6 +749,16 @@ impl RuntimeManager {
             rollback.join("runtime-mode"),
             record.had_mode_marker,
         )?;
+        restore_one(
+            base.join("fast-toggle-ready.marker"),
+            rollback.join("fast-toggle-ready.marker"),
+            record.had_fast_toggle_marker,
+        )?;
+        restore_one(
+            base.join(SYSTEM_PROXY_BYPASS_FILE),
+            rollback.join(SYSTEM_PROXY_BYPASS_FILE),
+            record.had_system_proxy_bypass,
+        )?;
         let _ = remove_any(&base.join("pending.json"));
         Ok(())
     }
@@ -642,6 +774,12 @@ impl RuntimeManager {
     }
     fn mode_path(&self) -> PathBuf {
         self.base.join("runtime-mode")
+    }
+    fn fast_toggle_marker_path(&self) -> PathBuf {
+        self.base.join("fast-toggle-ready.marker")
+    }
+    fn system_proxy_bypass_path(&self) -> PathBuf {
+        self.base.join(SYSTEM_PROXY_BYPASS_FILE)
     }
     fn runtime_mode(&self) -> &'static str {
         if !self.marker_path().is_file() {

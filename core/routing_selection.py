@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from core import subscription_store
+from core import routing_auto_policy
 
 
 def provider_group_strategy(provider):
     return ('select' if provider.get('selection_mode') == 'manual'
+            else 'fallback' if routing_auto_policy.is_enabled(provider)
             else provider['strategy'])
 
 

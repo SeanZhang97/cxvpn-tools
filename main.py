@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """main.py - 应用入口 (pywebview 桌面窗口 + Web UI)"""
 import os
+import json
 import sys
 import threading
 import time
@@ -51,11 +52,30 @@ def _run_app():
         except Exception:
             pass
 
+    def open_page(page):
+        safe_page = json.dumps(str(page or 'overview'))
+        win.evaluate_js(f'void goToPage({safe_page})')
+
+    def notify_desktop_action():
+        win.evaluate_js(
+            "window.dispatchEvent(new CustomEvent('cxvpn:desktop-action'))")
+
     desktop = DesktopController(
         win,
         close_to_tray=lambda: api._cfg_get().get('close_to_tray', True),
         on_exit=exit_app,
         on_os_shutdown=api._os_shutdown_cleanup,
+        quick_snapshot=api.desktop_quick_snapshot,
+        quick_actions={
+            'toggle_proxy': api.desktop_toggle_routing,
+            'toggle_mode': api.desktop_toggle_traffic_mode,
+            'set_mode': api.desktop_set_traffic_mode,
+            'select_node': api.desktop_select_node,
+        },
+        hotkeys_enabled=lambda: api._cfg_get().get(
+            'global_hotkeys_enabled', False),
+        on_open_page=open_page,
+        on_action_complete=notify_desktop_action,
         log=api.log)
     api._attach_desktop(desktop)
     initial_ui_ready = threading.Event()

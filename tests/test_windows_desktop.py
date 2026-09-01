@@ -154,6 +154,28 @@ class WindowsDesktopTest(unittest.TestCase):
 
         controller.show_window.assert_called_once_with()
 
+    def test_global_hotkey_map_uses_fixed_ctrl_alt_shortcuts(self):
+        actions = windows_desktop.HOTKEY_ACTIONS
+
+        self.assertEqual(actions[1], (
+            'toggle_proxy', windows_desktop.MOD_CONTROL | windows_desktop.MOD_ALT,
+            ord('P')))
+        self.assertEqual(actions[2][0], 'toggle_mode')
+        self.assertEqual(actions[3][0], 'open_connections')
+
+    def test_open_page_restores_window_then_navigates(self):
+        calls = []
+        controller = windows_desktop.DesktopController(
+            window=None, close_to_tray=lambda: True, on_exit=lambda: None,
+            on_open_page=lambda page: calls.append(('open', page)))
+        controller._show_native = lambda: calls.append(('show', None))
+        controller._invoke = lambda action: action()
+
+        controller.open_page('connections')
+
+        self.assertEqual(calls, [
+            ('show', None), ('open', 'connections')])
+
     def test_form_closing_handler_hides_instead_of_exiting(self):
         controller = windows_desktop.DesktopController(
             window=None, close_to_tray=lambda: True, on_exit=lambda: None)

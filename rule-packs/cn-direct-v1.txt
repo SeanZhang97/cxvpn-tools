@@ -1,0 +1,91 @@
+# CX VPN TOOLS 国内域名后缀
+# UTF-8；每行只写一个域名后缀，不要填写协议、端口或路径。
+# 支持空行和以 # 开头的注释；重复项会按第一次出现的位置合并。
+# 此文件会自动叠加 local-direct-v1.txt，无需重复填写本地网段。
+# 修改后重启软件加载；代理已启用时再保存应用一次配置。
+
+# 通用中国域名
+cn
+
+# 搜索、门户与内容平台
+baidu.com
+bdstatic.com
+bcebos.com
+qq.com
+qpic.cn
+gtimg.com
+weixin.qq.com
+360.cn
+360.com
+163.com
+126.com
+netease.com
+youdao.com
+sina.com.cn
+weibo.com
+sogou.com
+sohu.com
+zhihu.com
+zhimg.com
+douban.com
+csdn.net
+gitee.com
+oschina.net
+
+# 新闻与视听
+cctv.com
+xinhuanet.com
+bilibili.com
+iqiyi.com
+qiyi.com
+youku.com
+douyin.com
+bytedance.com
+byteimg.com
+kuaishou.com
+xiaohongshu.com
+kugou.com
+
+# 电商、生活与出行
+aliyun.com
+alicdn.com
+aliyuncs.com
+alipay.com
+taobao.com
+tmall.com
+jd.com
+pinduoduo.com
+cainiao.com
+meituan.com
+dianping.com
+amap.com
+ctrip.com
+qunar.com
+eastmoney.com
+
+# 云服务、办公与设备厂商
+qcloud.com
+volcengine.com
+dingtalk.com
+xiaomi.com
+mi.com
+huawei.com
+huaweicloud.com
+kingsoft.com
+oppo.com
+vivo.com
+
+# AI 模型与 API 平台
+llm-api.net
+baidubce.com
+tencentcloudapi.com
+volces.com
+deepseek.com
+stepfun.com
+baichuan-ai.com
+xf-yun.com
+
+# 教育
+chaoxing.com
+wisweb.com
+cldisk.com

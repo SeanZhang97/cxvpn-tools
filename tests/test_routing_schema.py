@@ -13,9 +13,10 @@ from core import routing_rules
 class RoutingSchemaTests(unittest.TestCase):
     def test_new_install_defaults_to_system_proxy(self):
         value = routing.default_config()
-        self.assertEqual(value['schema_version'], 2)
+        self.assertEqual(value['schema_version'], 6)
         self.assertEqual(value['capture_mode'], 'system-proxy')
         self.assertEqual(value['builtin_rule_pack'], 'local-direct-v1')
+        self.assertEqual(value['dns_mode'], 'simple')
 
     def test_legacy_object_keeps_tun_and_user_only_rules(self):
         value = routing.normalize_config({
@@ -25,7 +26,8 @@ class RoutingSchemaTests(unittest.TestCase):
         })
         self.assertEqual(value['capture_mode'], 'tun')
         self.assertEqual(value['builtin_rule_pack'], 'off')
-        self.assertEqual(value['schema_version'], 2)
+        self.assertEqual(value['schema_version'], 6)
+        self.assertEqual(value['dns_mode'], 'advanced')
 
     def test_config_load_migrates_legacy_without_changing_path(self):
         with tempfile.TemporaryDirectory() as root:
@@ -41,6 +43,7 @@ class RoutingSchemaTests(unittest.TestCase):
         config = routing.normalize_config({
             **routing.default_config(),
             'physical_interface': 'Ethernet',
+            'dns_mode': 'advanced',
             'default_nameserver': ['223.5.5.5'],
             'proxy_server_nameserver': ['1.1.1.1'],
             'direct_nameserver': ['119.29.29.29'],
@@ -55,6 +58,61 @@ class RoutingSchemaTests(unittest.TestCase):
         self.assertTrue(generated['unified-delay'])
         self.assertTrue(generated['tcp-concurrent'])
 
+    def test_simple_dns_ignores_preserved_advanced_draft(self):
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'dns_mode': 'simple',
+            'dns_servers': ['9.9.9.9'],
+            'dns_enhanced_mode': 'redir-host',
+        })
+
+        generated = routing.build_mihomo_config(config, [])['dns']
+
+        self.assertEqual(generated['enhanced-mode'], 'fake-ip')
+        self.assertEqual(generated['nameserver'], ['223.5.5.5', '1.1.1.1'])
+        self.assertEqual(config['dns_servers'], ['9.9.9.9'])
+
+    def test_advanced_dns_generates_policy_and_validates_fake_ip_pool(self):
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'dns_mode': 'advanced',
+            'dns_enhanced_mode': 'fake-ip',
+            'dns_respect_rules': True,
+            'fake_ip_range': '198.19.0.1/16',
+            'fake_ip_filter': ['+.lan', '*.corp.example'],
+            'nameserver_policy': [{
+                'domain': '*.corp.example',
+                'servers': ['tls://dns.google'],
+            }],
+        })
+
+        generated = routing.build_mihomo_config(config, [])['dns']
+
+        self.assertTrue(generated['respect-rules'])
+        self.assertEqual(generated['fake-ip-range'], '198.19.0.0/16')
+        self.assertEqual(generated['fake-ip-filter'], ['+.lan', '*.corp.example'])
+        self.assertEqual(generated['nameserver-policy'], {
+            '+.corp.example': ['tls://dns.google']})
+
+        with self.assertRaisesRegex(routing.RoutingError, '198.18.0.0/15'):
+            routing.normalize_config({
+                **routing.default_config(),
+                'dns_mode': 'advanced', 'fake_ip_range': '10.0.0.0/16',
+            })
+
+    def test_redir_host_omits_fake_ip_runtime_fields(self):
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'dns_mode': 'advanced',
+            'dns_enhanced_mode': 'redir-host',
+        })
+
+        generated = routing.build_mihomo_config(config, [])['dns']
+
+        self.assertEqual(generated['enhanced-mode'], 'redir-host')
+        self.assertNotIn('fake-ip-range', generated)
+        self.assertNotIn('fake-ip-filter', generated)
+
     def test_rule_order_is_user_then_builtin_then_match(self):
         config = routing.normalize_config({
             **routing.default_config(),
@@ -67,9 +125,113 @@ class RoutingSchemaTests(unittest.TestCase):
         })
         rules = routing.build_mihomo_config(config, [])['rules']
         self.assertEqual(rules[0], 'DOMAIN-SUFFIX,example.com,REJECT')
-        self.assertEqual(rules[1:1 + len(routing_rules.LOCAL_DIRECT_V1)],
-                         routing_rules.rules_for('local-direct-v1'))
+        local_rules = routing_rules.rules_for('local-direct-v1')
+        self.assertEqual(rules[1:1 + len(local_rules)], local_rules)
         self.assertEqual(rules[-1], 'MATCH,PHYSICAL')
+
+    def test_builtin_rule_catalog_is_structured_readonly_and_complete(self):
+        catalog = routing_rules.catalog()
+
+        self.assertEqual(list(catalog), [
+            'off', 'local-direct-v1', 'cn-direct-v1'])
+        self.assertTrue(catalog['cn-direct-v1']['readonly'])
+        self.assertTrue(catalog['cn-direct-v1']['file_editable'])
+        self.assertEqual(
+            catalog['cn-direct-v1']['source_file'],
+            'rule-packs/cn-direct-v1.txt')
+        self.assertEqual(
+            catalog['cn-direct-v1']['rule_count'],
+            len(routing_rules.rules_for('cn-direct-v1')))
+        self.assertGreaterEqual(catalog['cn-direct-v1']['rule_count'], 73)
+        self.assertEqual(catalog['cn-direct-v1']['rules'][0], {
+            'index': 1,
+            'type': 'DOMAIN-SUFFIX',
+            'value': 'lan',
+            'outbound': 'PHYSICAL',
+            'options': [],
+        })
+        values = {
+            item['value'] for item in catalog['cn-direct-v1']['rules']
+        }
+        self.assertTrue({
+            'chaoxing.com', 'wisweb.com', 'cldisk.com', 'llm-api.net',
+            'aliyuncs.com', 'baidubce.com', 'tencentcloudapi.com',
+            'volces.com', 'deepseek.com', 'stepfun.com',
+            'baichuan-ai.com', 'xf-yun.com',
+        }.issubset(values))
+
+    def test_rule_pack_files_load_once_and_normalize_unicode_domains(self):
+        self.addCleanup(routing_rules.load_rule_packs)
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, 'local-direct-v1.txt'), 'w',
+                      encoding='utf-8') as stream:
+                stream.write(
+                    'DOMAIN-SUFFIX,例子.中国\n'
+                    'DOMAIN-WILDCARD,*.example.com\n'
+                    'IP-CIDR,10.0.0.1/8,no-resolve\n')
+            cn_path = os.path.join(root, 'cn-direct-v1.txt')
+            with open(cn_path, 'w', encoding='utf-8') as stream:
+                stream.write('例子.公司.cn\ne\u0301xample.com\n')
+            with mock.patch.object(routing_rules, 'RULE_PACK_DIR', root):
+                routing_rules.load_rule_packs()
+                rules = routing_rules.rules_for('cn-direct-v1')
+                self.assertIn(
+                    'DOMAIN-SUFFIX,xn--fsqu00a.xn--fiqs8s,PHYSICAL', rules)
+                self.assertIn(
+                    'DOMAIN-SUFFIX,xn--fsqu00a.xn--55qx5d.cn,PHYSICAL', rules)
+                self.assertIn(
+                    'DOMAIN-SUFFIX,xn--xample-9ua.com,PHYSICAL', rules)
+                self.assertIn(
+                    'DOMAIN-WILDCARD,*.example.com,PHYSICAL', rules)
+                self.assertIn(
+                    'IP-CIDR,10.0.0.0/8,PHYSICAL,no-resolve', rules)
+                with open(cn_path, 'w', encoding='utf-8') as stream:
+                    stream.write('changed.example\n')
+                self.assertNotIn(
+                    'DOMAIN-SUFFIX,changed.example,PHYSICAL',
+                    routing_rules.rules_for('cn-direct-v1'))
+                routing_rules.load_rule_packs()
+                self.assertIn(
+                    'DOMAIN-SUFFIX,changed.example,PHYSICAL',
+                    routing_rules.rules_for('cn-direct-v1'))
+
+    def test_invalid_non_bmp_rule_is_reported_without_breaking_catalog(self):
+        self.addCleanup(routing_rules.load_rule_packs)
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, 'local-direct-v1.txt'), 'w',
+                      encoding='utf-8') as stream:
+                stream.write('DOMAIN-SUFFIX,local\n')
+            with open(os.path.join(root, 'cn-direct-v1.txt'), 'w',
+                      encoding='utf-8') as stream:
+                stream.write('🇨🇳.example\n')
+            with mock.patch.object(routing_rules, 'RULE_PACK_DIR', root):
+                routing_rules.load_rule_packs()
+                with self.assertRaisesRegex(
+                        routing_rules.RulePackError, '第 1 行域名格式无效'):
+                    routing_rules.rules_for('cn-direct-v1')
+                detail = routing_rules.catalog()['cn-direct-v1']
+                self.assertEqual(detail['rules'], [])
+                self.assertIn('第 1 行域名格式无效', detail['error'])
+
+    def test_invalid_rule_pack_is_exposed_as_routing_error(self):
+        self.addCleanup(routing_rules.load_rule_packs)
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, 'local-direct-v1.txt'), 'w',
+                      encoding='utf-8') as stream:
+                stream.write('DOMAIN-SUFFIX,https://example.com\n')
+            with open(os.path.join(root, 'cn-direct-v1.txt'), 'w',
+                      encoding='utf-8') as stream:
+                stream.write('cn\n')
+            config = routing.normalize_config({
+                **routing.default_config(),
+                'physical_interface': 'Ethernet',
+                'builtin_rule_pack': 'local-direct-v1',
+            })
+            with mock.patch.object(routing_rules, 'RULE_PACK_DIR', root):
+                routing_rules.load_rule_packs()
+                with self.assertRaisesRegex(
+                        routing.RoutingError, '第 1 行域名格式无效'):
+                    routing.build_mihomo_config(config, [])
 
     def test_global_mode_only_generates_match(self):
         config = routing.normalize_config({
@@ -81,6 +243,38 @@ class RoutingSchemaTests(unittest.TestCase):
         })
         self.assertEqual(routing.build_mihomo_config(config, [])['rules'],
                          ['MATCH,PHYSICAL'])
+
+    def test_custom_bypass_precedes_global_match_and_enables_process_lookup(self):
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'physical_interface': 'Ethernet',
+            'traffic_mode': 'global',
+            'system_proxy_bypass': {
+                'domains': ['Internal.Example.com', '.internal.example.com'],
+                'processes': ['Updater.exe'],
+            },
+        })
+
+        generated = routing.build_mihomo_config(config, [])
+
+        self.assertEqual(config['system_proxy_bypass']['domains'], [
+            'internal.example.com'])
+        self.assertEqual(generated['find-process-mode'], 'strict')
+        self.assertEqual(generated['rules'], [
+            'DOMAIN-SUFFIX,internal.example.com,PHYSICAL',
+            'PROCESS-NAME,Updater.exe,PHYSICAL',
+            'MATCH,PHYSICAL',
+        ])
+        explained = routing.explain_domain(config, 'api.internal.example.com')
+        self.assertEqual(explained['source'], 'bypass')
+        self.assertEqual(explained['outbound'], 'physical')
+
+    def test_rejects_path_like_bypass_process(self):
+        with self.assertRaisesRegex(routing.RoutingError, '进程名称无效'):
+            routing.normalize_config({
+                **routing.default_config(),
+                'system_proxy_bypass': {'processes': [r'C:\\Tools\\app.exe']},
+            })
 
     def test_hit_explanation_identifies_all_layers(self):
         base = {
@@ -113,12 +307,19 @@ class RoutingSchemaTests(unittest.TestCase):
         manager._wait_native_ready = mock.Mock()
         manager._probe_connectivity = mock.Mock()
         config = routing.normalize_config({
-            **routing.default_config(), 'physical_interface': 'Ethernet'})
+            **routing.default_config(), 'physical_interface': 'Ethernet',
+            'system_proxy_bypass': {
+                'domains': ['chaoxing.com'], 'processes': []},
+        })
         with mock.patch.object(
                 routing, 'windows_system_proxy',
                 return_value='http://127.0.0.1:17890'):
             manager._install('candidate.json', config)
         manager._native_service.activate_system_proxy.assert_called_once_with('tx-system')
+        self.assertEqual(
+            manager._native_service.apply.call_args.kwargs[
+                'system_proxy_bypass_domains'],
+            ['chaoxing.com'])
         manager._native_service.commit.assert_called_once_with('tx-system')
         manager._native_service.rollback.assert_not_called()
 

@@ -12,10 +12,15 @@
 ## 涉及文件
 
 - `main.py`
+- `build.py`
+- `build_protected.py`
+- `打包纯净版.bat`
+- `AGENTS.md`
 - `core/windows_desktop.py`
 - `ui/index.html`
 - `ui/style.css`
 - `tests/test_ui_polish.js`
+- `tests/test_build_branding.py`
 - `doc/repository/README.md`
 - `doc/repository/knowledge/INDEX.md`
 - `doc/repository/knowledge/modules/CXVPN管理器.md`
@@ -28,12 +33,15 @@
 - HTML 页面标题与侧栏品牌标识同步更名。
 - 侧栏品牌区改为单行组合：`CX VPN` 与青色弱调 `TOOLS` 标签同基线排列，
   并统一图标尺寸、圆角、间距和垂直居中，解决原两行字号与字距失衡。
-- 打包目录、exe 文件名、开机自启注册表键和单实例互斥名保持不变，避免破坏现有升级、配置保留与单实例兼容性。
+- 普通打包、受保护打包和纯净分发包的目录、exe、spec 与 zip 名称统一为
+  `CX VPN TOOLS`。新目录首次生成时从旧产物迁移 `config.json`。
+- 单实例互斥名和本地路由数据目录继续使用稳定的内部 ID `CXVPNManager`，
+  避免更名后启动重复实例或丢失既有本地配置。
 
 ## 影响范围
 
-影响主窗口标题、托盘名称与菜单、HTML 标题及侧栏品牌字样；不改变程序包名、
-运行目录、配置路径、注册表键、互斥名或业务逻辑。
+影响主窗口标题、托盘名称与菜单、HTML 标题、侧栏品牌字样、打包目录、exe、
+spec 和纯净 zip 名称；不改变业务逻辑、单实例互斥名或本地路由数据目录。
 
 ## 验证情况
 
@@ -41,14 +49,20 @@
 - `uv run python -m unittest tests.test_windows_desktop`：12 个测试通过。
 - `node --check ui/app.js` 与 `node tests/test_ui_polish.js`：通过，覆盖页面标题、
   侧栏单行品牌结构、`TOOLS` 标签样式、窗口标题常量与旧名称清理。
+- `uv run python -m py_compile build.py build_protected.py tests/test_build_branding.py`：通过。
+- `uv run python -m unittest tests.test_build_branding`：3 个测试通过，覆盖普通打包、
+  受保护打包、纯净 zip 名称和旧配置迁移边界。
 - 本地浏览器按 216px 侧栏实际渲染检查：品牌区无裁切，44px 图标与文字垂直居中，
   文字组合宽约 110px，`CX VPN` 与 `TOOLS` 同基线显示。
-- `uv run --with pyinstaller python build.py`：通过，产物位于 `dist/CXVPN管理器/`，
-  exe 时间戳为 2026-09-01 11:20:31。
-- 打包前后 `config.json` 均为 2608 字节，SHA-256 均为
-  `59930E02162091DCA3B740DE4B81AFEB7F6E1DE34A85D9A6D84D523A9D935060`，用户配置未丢失。
+- `uv run --with pyinstaller python build.py`：通过，产物为
+  `dist/CX VPN TOOLS/CX VPN TOOLS.exe`，exe 时间戳为
+  2026-09-01 18:46:15。
+- 首次更名打包已从旧目录迁移 `config.json`；迁移前后均为 3609 字节，SHA-256 均为
+  `DDB595B2D42811DB0BC92275E9693698410390784A680A7067327E6B4CC531C2`，用户配置未丢失。
+- `dist` 中已只保留 `CX VPN TOOLS` 产物目录；旧目录、zip 和 spec 移入
+  `build_tmp/legacy-brand-artifacts/` 作可恢复备份。
 - 打包内 `_internal/ui/index.html` 已包含 `CX VPN TOOLS`；新版已自动启动，
-  进程 PID 25424、`Responding=True`，实际窗口标题为 `CX VPN TOOLS`。
+  进程 PID 31680、`Responding=True`，进程名、exe 文件名与窗口标题均为 `CX VPN TOOLS`。
 
 ## 注意事项
 

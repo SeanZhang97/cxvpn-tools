@@ -1,6 +1,6 @@
 # 知识库索引 INDEX
 
-最后验证: 2026-09-01 | 分支: 非 Git 工作区
+最后验证: 2026-09-01 | 分支: main
 
 ## modules
 
@@ -8,7 +8,7 @@
 |---|---|---|---|
 | CX VPN TOOLS | pywebview, WinForms, worker, vpn_service, 版本化状态流, wait_ui_state, 网络出口, IP, 续期, 开机自启, 系统托盘, 便携EXE, config | main.py, api.py, core/ui_state_stream.py, core/ip_info.py, core/, ui/, build.py | modules/CXVPN管理器.md |
 | 系统代理残留清扫 | 系统代理残留, proxy_guard, ProxyEnable, 脏标记, 开机自检, 关机清扫, CloseReason, 本地代理端口无人监听 | core/proxy_guard.py, api.py, core/windows_desktop.py, main.py | modules/系统代理残留清扫.md |
-| Windows 统一域名分流 | 网络代理, system-proxy, Proxy Guard, routing schema, 内置规则包, 节点测速, 手动选点, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 后端遥测中继, 实时流量, Mihomo, Named Pipe, Windows Service, TUN, DNS分层, proxy-provider, Windows VPN, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导 | core/routing.py, core/mihomo_telemetry.py, core/routing_rules.py, core/routing_service.py, routing-service/, core/routing_speedtest.py, core/routing_selection.py, core/routing_updates.py, core/subscription_store.py, api.py, ui/proxy.js, ui/routing.js, ui/routing_nodes.js, ui/routing_telemetry.js, runtime/routing/, build_runtime.py | modules/Windows统一域名分流.md |
+| Windows 统一域名分流 | 网络代理, 快速开关, 系统代理快切, 订阅, 节点, 智能优选, 地区故障转移, 仅故障切换, 延迟容差百分比, 首选节点, 线路关键词, 规则, 本地规则包, rule-packs, 连接, 核心日志, system-proxy, Proxy Guard, routing schema, 节点测速, 手动选点, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 后端遥测中继, 版本化等待, 实时流量, Mihomo, Named Pipe, Windows Service, TUN, DNS分层, DNS高级模式, nameserver-policy, proxy-provider, Windows VPN, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置备份, 配置历史, 诊断包, 托盘快捷操作, 全局快捷键, 轻量模式 | core/routing.py, core/routing_auto_policy.py, core/config_maintenance.py, core/mihomo_telemetry.py, core/mihomo_activity.py, core/routing_rules.py, core/routing_service.py, core/ui_state_stream.py, core/windows_desktop.py, routing-service/, core/routing_speedtest.py, core/routing_selection.py, core/routing_updates.py, core/subscription_store.py, rule-packs/, api.py, main.py, ui/app.js, ui/proxy.js, ui/routing.js, ui/routing_workspace.js, ui/routing_activity.js, ui/routing_nodes.js, ui/routing_telemetry.js, runtime/routing/, build.py, build_protected.py, build_runtime.py | modules/Windows统一域名分流.md |
 
 ## common
 

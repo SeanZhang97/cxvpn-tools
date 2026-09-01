@@ -16,8 +16,8 @@ from core.routing_support import binary_path, sha256_file
 
 
 SERVICE_BINARY = 'CXVPNRoutingHost.exe'
-SERVICE_VERSION = '0.3.0'
-PROTOCOL_VERSION = 3
+SERVICE_VERSION = '0.5.0'
+PROTOCOL_VERSION = 5
 PIPE_NAME = r'\\.\pipe\CXVPNRoutingService.v1'
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
@@ -63,7 +63,8 @@ class RoutingServiceClient:
             raise ServiceError('新路由服务版本与客户端不兼容，请重新安装最新版')
         raise ServiceError('路由服务安装完成，但 IPC 未在限定时间内就绪')
 
-    def apply(self, config_path, providers, runtime_mode='active'):
+    def apply(self, config_path, providers, runtime_mode='active',
+              fast_toggle_ready=False, system_proxy_bypass_domains=None):
         runtime_mode = str(runtime_mode or '').strip().lower()
         if runtime_mode not in {'active', 'standby'}:
             raise ServiceError('路由服务运行模式无效')
@@ -86,6 +87,9 @@ class RoutingServiceClient:
             'config_sha256': sha256_file(config_path),
             'providers': rows,
             'runtime_mode': runtime_mode,
+            'fast_toggle_ready': bool(fast_toggle_ready),
+            'system_proxy_bypass_domains': [
+                str(item) for item in (system_proxy_bypass_domains or [])],
         }, connect_timeout_ms=3000)
 
     def read_provider(self, provider_name):
@@ -117,6 +121,12 @@ class RoutingServiceClient:
         return self.request({
             'op': 'activate_system_proxy',
             'transaction_id': str(transaction_id or ''),
+        })
+
+    def set_system_proxy_enabled(self, enabled):
+        return self.request({
+            'op': 'set_system_proxy_enabled',
+            'enabled': bool(enabled),
         })
 
     def stop_runtime(self):

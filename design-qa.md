@@ -1,7 +1,7 @@
 # 网络代理与域名分流全链路 Design QA
 
 - 审查日期：2026-08-31
-- 审查对象：最终打包并启动的 `dist/CXVPN管理器/CXVPN管理器.exe`
+- 审查对象：最终打包并启动的 `dist/CX VPN TOOLS/CX VPN TOOLS.exe`
 - 窗口：1426 × 893 px，Windows 桌面深色主题
 - 运行状态：代理与统一分流未启用；1 个启用订阅；72 条本地缓存记录；未执行真实 TUN、UAC 或外部订阅请求
 - 最终网络代理首页：`C:\develop\workspace\cxvpn-manager\build_tmp\design-audit-2026-08-31\final-proxy-home-ready.png`

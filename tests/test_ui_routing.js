@@ -5,16 +5,73 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'ui', 'index.html'), 'utf8');
 const source = fs.readFileSync(path.join(root, 'ui', 'routing.js'), 'utf8');
+const activitySource = fs.readFileSync(path.join(root, 'ui', 'routing_activity.js'), 'utf8');
 const nodeTools = fs.readFileSync(path.join(root, 'ui', 'routing_nodes.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'ui', 'style.css'), 'utf8');
+const rulesCss = fs.readFileSync(path.join(root, 'ui', 'routing_rules.css'), 'utf8');
 const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(match => match[1]));
 const referenced = [...source.matchAll(/byId\('([^']+)'\)/g)].map(match => match[1]);
 
+const selectInventory = [...html.matchAll(/<select\b([^>]*)>/g)].map(match => ({
+  id: match[1].match(/id="([^"]+)"/)?.[1] || '',
+  smart: /class="[^"]*smart-select-native/.test(match[1]),
+}));
+assert.deepEqual(
+  selectInventory.filter(item => item.smart).map(item => item.id).sort(),
+  ['sms-email-provider', 'sms-method']);
+assert.deepEqual(
+  selectInventory.filter(item => !item.smart).map(item => item.id).sort(),
+  [
+    'builtin-rules-type', 'connections-sort', 'proxy-log-level', 'proxy-log-order',
+    'routing-builtin-pack', 'routing-capture-mode', 'routing-default', 'routing-interface',
+    'routing-auto-policy-tolerance-unit', 'routing-dns-enhanced', 'routing-dns-mode', 'routing-node-group', 'routing-node-sort',
+    'routing-proxy-strategy', 'routing-traffic-mode',
+  ].sort(),
+  '新增业务下拉框必须登记并接入自定义组件，禁止回退为原生 select');
+for (const id of [
+  'routing-capture-mode', 'routing-traffic-mode', 'routing-interface',
+  'routing-proxy-strategy', 'routing-default', 'routing-builtin-pack',
+  'routing-dns-mode', 'routing-dns-enhanced',
+]) assert.match(source, new RegExp(`'${id}'`));
+assert.match(source, /enhanceRoutingSelect\(byId\('builtin-rules-type'\), \{ compact: true \}\)/);
+assert.match(source, /enhanceRoutingSelect\(byId\('routing-node-sort'\), \{ compact: true \}\)/);
+assert.match(source, /enhanceRoutingSelect\(groupSelect, \{ compact: true \}\)/);
+assert.match(source, /enhanceSelect: enhanceRoutingSelect/);
+for (const id of ['connections-sort', 'proxy-log-level', 'proxy-log-order']) {
+  assert.match(activitySource, new RegExp(`'${id}'`));
+}
+assert.match(activitySource, /RoutingWorkspace\?\.enhanceSelect\?\.\(byId\(id\), \{ compact: true \}\)/);
+
 assert.deepEqual([...new Set(referenced.filter(id => !ids.has(id)))], []);
-assert.match(html, /data-page="routing"/);
+assert.doesNotMatch(html, /data-page="routing"/);
 assert.match(html, /id="page-routing"/);
+for (const page of ['subscriptions', 'nodes', 'rules', 'connections', 'logs']) {
+  assert.match(html, new RegExp(`data-page="${page}"`));
+  assert.match(html, new RegExp(`id="page-${page}"`));
+}
 assert.match(source, /preview_routing/);
 assert.match(source, /apply_routing/);
+assert.match(source, /schema_version: 6/);
+assert.match(html, /id="routing-dns-mode"/);
+assert.match(html, /id="routing-dns-advanced"/);
+assert.match(source, /validate_routing_dns/);
+assert.match(source, /parseNameserverPolicy/);
+assert.match(source, /DNS_RECOMMENDED/);
+assert.match(html, /id="routing-bypass-domains"/);
+assert.match(html, /id="routing-bypass-processes"/);
+assert.match(html, /不经过系统代理的域名/);
+assert.match(html, /每行一个域名；系统代理模式不经过本地 mixed-port/);
+assert.match(source, /system_proxy_bypass/);
+assert.match(source, /function splitMaintenanceLines[\s\S]*?\.split\(\/\\r\?\\n\/\)/);
+assert.match(source, /bypass → user → builtin → MATCH/);
+assert.match(source, /export_config_backup/);
+assert.match(source, /preview_config_restore/);
+assert.match(source, /restore_config_backup/);
+assert.match(source, /get_routing_config_history/);
+assert.match(source, /restore_routing_config_history/);
+assert.match(source, /export_routing_diagnostics/);
+assert.match(html, /登录、VPN、邮箱、VLM 和 Controller 凭据始终不会导出/);
+assert.match(css, /\.routing-config-history::-webkit-scrollbar-thumb/);
 assert.match(source, /get_routing_proxies/);
 assert.match(source, /select_routing_proxy/);
 assert.match(source, /preview_routing_match/);
@@ -26,6 +83,16 @@ assert.match(source, /原节点失效需重选/);
 assert.match(source, /已失效，请重新选择/);
 assert.match(source, /preview_routing_provider/);
 assert.match(source, /function previewProvider/);
+assert.match(source, /function fetchProvider/);
+assert.match(source, /fetch\.onclick = \(\) => fetchProvider\(provider\)/);
+assert.match(source, /state \|\| runtimeStatus\?\.core_running/);
+assert.match(source, /refreshProvider\(provider\.id, true\)/);
+assert.match(source, /正在尝试备用下载路径/);
+const previewFlow = source.slice(
+  source.indexOf('async function previewProvider'),
+  source.indexOf('async function importProviderYaml'));
+assert.doesNotMatch(previewFlow, /catch \(error\)[\s\S]*providerPreviews\.delete\(provider\.id\)/);
+assert.match(previewFlow, /已保留上次节点列表/);
 assert.match(source, /function downloadRouteOptions/);
 assert.match(source, /'auto', '智能自动更新（推荐）'/);
 assert.match(source, /Windows 系统代理/);
@@ -78,7 +145,7 @@ assert.match(source, /自动优选/);
 assert.match(source, /selection_mode/);
 assert.match(source, /selected_node/);
 assert.match(source, /auto_update/);
-assert.match(source, /save_proxy_preference\(\s*providerId, mode, nodeName, \{ \.\.\.provider \}\)/);
+assert.match(source, /save_proxy_preference\(\s*providerId, mode, nodeName, \{ \.\.\.provider \}, policy\)/);
 assert.match(source, /TEST_POLL_MAX_MS/);
 assert.match(source, /cancel_routing_test_job\(context\.jobId\)/);
 assert.match(source, /provider_nodes/);
@@ -97,11 +164,21 @@ assert.match(html, /data-routing-workbench="nodes"/);
 assert.match(html, /role="tablist"/);
 assert.match(html, /role="tabpanel"/);
 assert.match(html, /id="routing-test-domain"/);
+assert.match(html, /id="builtin-rules-list"/);
+assert.match(html, /id="builtin-rules-search"/);
+assert.match(html, /id="builtin-rules-type"/);
+assert.match(source, /function renderBuiltinRules/);
+assert.match(source, /setup\?\.builtin_rule_packs\?\.\[packId\]/);
+assert.match(html, /本地规则包/);
+assert.match(source, /detail\.source_file/);
+assert.match(source, /当前为全局模式：这些规则仍保留在配置中/);
+assert.match(rulesCss, /\.builtin-rule-row/);
+assert.match(rulesCss, /\.builtin-rules-list/);
 assert.match(html, /id="routing-node-grid"/);
 assert.match(html, /id="routing-node-regions"/);
 assert.match(html, /id="routing-node-sort"/);
 assert.match(html, /id="btn-routing-locate-current"/);
-assert.match(html, /<script src="routing_nodes\.js"><\/script>\s*<script src="routing_telemetry\.js"><\/script>\s*<script src="routing\.js"><\/script>/);
+assert.match(html, /<script src="routing_nodes\.js"><\/script>\s*<script src="routing_telemetry\.js"><\/script>\s*<script src="routing_workspace\.js"><\/script>\s*<script src="routing\.js"><\/script>\s*<script src="proxy\.js"><\/script>\s*<script src="routing_activity\.js"><\/script>/);
 assert.match(source, /nodeTools\.regionOptions/);
 assert.match(source, /nodeTools\.sortNodes/);
 assert.match(source, /function locateCurrentNode/);
@@ -111,6 +188,27 @@ assert.match(html, /id="routing-test-progress"/);
 assert.match(html, /id="routing-test-progress-bar"/);
 assert.match(html, /id="btn-routing-test-cancel"/);
 assert.match(html, /id="btn-routing-auto-select"/);
+assert.match(html, /id="routing-auto-policy"/);
+assert.match(html, /id="routing-auto-policy-stages"/);
+assert.match(html, /data-auto-fallback="reject"/);
+assert.match(html, /data-auto-fallback="all"/);
+assert.match(source, /function renderAutoPolicy/);
+assert.match(source, /function validateAutoPolicyDraft/);
+assert.match(source, /preferred_keywords/);
+assert.match(source, /latency_tolerance/);
+assert.match(source, /latency_tolerance_unit/);
+assert.match(source, /selection_mode === 'failure'/);
+assert.match(source, /preferred_node/);
+assert.match(source, /createKeywordEditor/);
+assert.doesNotMatch(source, /autoPolicyWords/);
+assert.doesNotMatch(source, /preferred_keywords \|\| \[\]\)\.join\(/);
+assert.match(source, /enhanceRoutingSelect\(region, \{ compact: true \}\)/);
+assert.match(source, /enhanceRoutingSelect\(mode, \{ compact: true \}\)/);
+assert.match(source, /enhanceRoutingSelect\(preferredNode, \{ compact: true \}\)/);
+assert.match(source, /enhanceRoutingSelect\(byId\('routing-auto-policy-tolerance-unit'\), \{ compact: true \}\)/);
+assert.match(css, /\.routing-auto-policy-stage/);
+assert.match(css, /\.routing-auto-policy-stage \.field\s*\{[^}]*width:\s*auto/s);
+assert.match(css, /\.routing-auto-policy-keywords\s*\{[^}]*grid-template-columns:\s*1fr 1fr/s);
 assert.match(html, /id="routing-dirty"/);
 assert.match(source, /'url-test': '自动测速'/);
 assert.match(source, /match_type: 'suffix'/);

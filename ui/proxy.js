@@ -84,6 +84,28 @@
     return preferenceNodeName(node, provider, allowNameFallback) === expected;
   }
 
+  function testAgeLabel(value) {
+    const raw = Number(value || 0);
+    if (!Number.isFinite(raw) || raw <= 0) return '历史测速';
+    const testedAt = raw < 1e12 ? raw * 1000 : raw;
+    const age = Math.max(0, Date.now() - testedAt);
+    const minute = 60 * 1000;
+    if (age < minute) return '刚刚测速';
+    if (age < 60 * minute) return `${Math.floor(age / minute)} 分钟前测速`;
+    if (age < 24 * 60 * minute) return `${Math.floor(age / (60 * minute))} 小时前测速`;
+    if (age < 7 * 24 * 60 * minute) return `${Math.floor(age / (24 * 60 * minute))} 天前测速`;
+    return `${new Date(testedAt).toLocaleDateString('zh-CN')} 测速`;
+  }
+
+  function targetNodeTestSummary(node) {
+    if (!node) return '需要重新选择';
+    const age = testAgeLabel(node.tested_at);
+    if (node.tested && node.alive === false) return `${age} · 不可用`;
+    if (Number(node.delay || 0) > 0) return `${node.delay} ms · ${age} · 待启用`;
+    if (node.tested) return `${age} · 未测得延迟`;
+    return '尚未测速 · 待启用';
+  }
+
   function runtimeUsesPreference(group, provider) {
     const selectedNode = String(provider?.selected_node || '').trim();
     if (!group || !selectedNode) return false;
@@ -347,7 +369,7 @@
       ? targetNode?.display_name || provider.selected_node || '尚未选择'
       : provider ? '自动优选' : '等待选择');
     setText('proxy-node-delay', provider?.selection_mode === 'manual'
-      ? manualCurrent ? '当前使用' : targetNode?.delay ? `${targetNode.delay} ms · 待启用` : targetNode ? '待启用' : '需要重新选择'
+      ? manualCurrent ? '当前使用' : targetNodeTestSummary(targetNode)
       : running && node ? `${node.display_name || node.name} · 当前使用` : '启动后自动选择');
     setText('proxy-provider-count', `${providers.length} 个`);
     setText('proxy-node-count', `${summary.visible || cache.total} 个`);
@@ -376,21 +398,23 @@
     return result;
   }
 
-  async function applyConfig(config, message, progressText = '正在应用…', failureTitle = '代理操作未完成') {
+  async function applyConfig(config, message, progressText = '正在应用…',
+    failureTitle = '代理操作未完成', submit = null) {
     setOperationNotice();
     busy = true;
     busyLabel = progressText;
     sync();
     try {
-      const result = await backend().apply_routing(config);
+      const result = await (submit ? submit() : backend().apply_routing(config));
       if (result?.ok === false) throw new Error(result.msg || message);
-      await window.RoutingWorkspace.refresh(true);
+      window.RoutingWorkspace?.acceptApplyResult?.(result);
+      void window.RoutingWorkspace?.refreshBackground?.(true);
       toast({ ok: true, msg: result.msg || message });
       return true;
     } catch (error) {
       const detail = typeof friendlyError === 'function' ? friendlyError(error) : String(error);
       setOperationNotice(failureTitle, detail);
-      toast({ ok: false, msg: detail });
+      if (!proxyHomeVisible()) toast({ ok: false, msg: failureTitle });
       return false;
     } finally {
       busy = false;
@@ -444,7 +468,10 @@
     }
     const repairing = phase === 'degraded' && nextEnabled;
     const nativeServiceReady = cachedStatus.installed
-      && cachedStatus.service_backend === 'native';
+      && cachedStatus.service_backend === 'native'
+      && !cachedStatus.service_update_required;
+    const fastToggleReady = config.capture_mode === 'system-proxy'
+      && cachedStatus.fast_toggle_ready && cachedStatus.core_running;
     const needsUac = nextEnabled ? !nativeServiceReady
       : cachedStatus.service_backend === 'legacy';
     const draftNotice = nextEnabled && cached.dirty
@@ -456,54 +483,22 @@
         ? `${repairing ? '将重新检查并修复代理服务' : config.capture_mode === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, selectedMode)}。${draftNotice}确认后会自动检查节点和网络，失败会恢复原设置。${config.capture_mode === 'tun' ? '请先关闭其他代理软件的 TUN 模式。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
         : needsUac
           ? '将停止并迁移旧版 Mihomo TUN 服务，系统恢复使用 Windows 当前路由。该操作需要 UAC。'
-          : '将停止 Mihomo 运行时并恢复 Windows 当前路由；路由服务会保留，以便下次免 UAC 启动。',
+          : fastToggleReady
+            ? '将关闭 Windows 系统代理接管；Mihomo 节点核心继续待机。'
+            : '将停止 Mihomo 运行时并恢复 Windows 当前路由；路由服务会保留，以便下次免 UAC 启动。',
       confirmText: needsUac ? (nextEnabled ? '授权并开启' : '授权并关闭')
         : nextEnabled ? (repairing ? '确认修复' : '确认开启') : '确认关闭',
       tone: 'notice',
       kicker: nextEnabled ? '网络接管确认' : '停止网络接管',
     });
     if (!confirmed) return;
-    busy = true;
-    busyLabel = nextEnabled ? '正在检查配置…' : '正在检查状态…';
-    sync();
-    let latest;
-    try {
-      latest = await latestSetup();
-    } catch (error) {
-      busy = false;
-      busyLabel = '';
-      sync();
-      toast({ ok: false, msg: typeof friendlyError === 'function' ? friendlyError(error) : String(error) });
-      return;
-    }
-    const freshConfig = clone(latest.config);
-    const freshPhase = servicePhase(freshConfig, latest.status || {});
-    const stillEnable = forceDisable ? false : freshPhase !== 'running';
-    if (stillEnable !== nextEnabled) {
-      busy = false;
-      busyLabel = '';
-      sync();
-      toast({ ok: false, tone: 'warning', msg: '代理状态刚刚发生变化，请确认当前状态后重试' });
-      return;
-    }
-    const freshProvider = targetProvider(freshConfig);
-    const freshGuard = usesProxy(freshConfig)
-      ? selectionGuard(latest, freshProvider, preferredGroup(latest.proxy_groups || [], freshProvider))
-      : { valid: true, reason: '' };
-    if (nextEnabled && !freshGuard.valid) {
-      busy = false;
-      busyLabel = '';
-      sync();
-      toast({ ok: false, tone: 'warning', msg: freshGuard.reason });
-      return;
-    }
-    freshConfig.enabled = nextEnabled;
-    if (nextEnabled) freshConfig.traffic_mode = selectedMode;
     await applyConfig(
-      freshConfig,
+      config,
       nextEnabled ? (repairing ? '代理服务已修复' : '代理已开启') : '代理已关闭',
       nextEnabled ? '正在启动代理…' : '正在关闭代理…',
-      nextEnabled ? '代理未开启，系统路由已恢复' : '代理关闭未完成');
+      nextEnabled ? '代理未开启，系统路由已恢复' : '代理关闭未完成',
+      () => backend().set_routing_enabled(
+        nextEnabled, nextEnabled ? selectedMode : ''));
   }
 
   async function changeMode(mode) {
@@ -533,13 +528,13 @@
 
   async function openNodes(groupId = '', origin = null) {
     if (groupId) selectedGroupId = groupId;
-    returnTarget = origin?.page === 'routing'
-      ? { page: 'routing', tab: origin.tab || 'providers' }
+    returnTarget = ['routing', 'subscriptions', 'rules'].includes(origin?.page)
+      ? { page: origin.page, tab: origin.tab || 'overview' }
       : { page: 'proxy', tab: 'home' };
     setText('btn-proxy-nodes-back', returnTarget.page === 'routing'
-      ? '返回域名分流' : '返回网络代理');
-    if (!byId('page-proxy')?.classList.contains('active')) await goToPage('proxy');
-    setView('nodes');
+      ? '返回高级分流' : returnTarget.page === 'subscriptions'
+        ? '返回订阅' : returnTarget.page === 'rules' ? '返回规则' : '返回网络代理');
+    await goToPage('nodes');
     await window.RoutingWorkspace?.load?.();
     window.RoutingWorkspace?.openNodes?.(selectedGroupId);
     const select = byId('routing-node-group');
@@ -551,31 +546,34 @@
   }
 
   function openHome() {
+    if (!byId('page-proxy')?.classList.contains('active')) void goToPage('proxy');
     setView('home');
     sync();
   }
 
   function leaveNodes() {
-    if (returnTarget.page === 'routing') {
-      document.querySelector('#nav [data-page="routing"]')?.click();
-      setTimeout(() => window.RoutingWorkspace?.openTab?.(returnTarget.tab), 0);
+    if (returnTarget.page !== 'proxy') {
+      void goToPage(returnTarget.page);
+      if (returnTarget.page === 'routing') {
+        setTimeout(() => window.RoutingWorkspace?.openTab?.(returnTarget.tab), 0);
+      }
       return;
     }
+    void goToPage('proxy');
     openHome();
   }
 
   function openSubscriptions() {
-    document.querySelector('#nav [data-page="routing"]')?.click();
-    setTimeout(() => window.RoutingWorkspace?.openTab?.('providers'), 0);
+    void goToPage('subscriptions');
   }
 
   function openAdvancedRouting() {
-    document.querySelector('#nav [data-page="routing"]')?.click();
-    setTimeout(() => window.RoutingWorkspace?.openTab?.('rules'), 0);
+    void goToPage('routing');
+    setTimeout(() => window.RoutingWorkspace?.openTab?.('overview'), 0);
   }
 
   function reviewRoutingDraft() {
-    document.querySelector('#nav [data-page="routing"]')?.click();
+    void goToPage('routing');
   }
 
   function bindModeKeyboard(button) {
@@ -619,10 +617,14 @@
       bindModeKeyboard(button);
     });
     byId('routing-node-group')?.addEventListener('change', syncNodeStats);
-    document.querySelector('#nav [data-page="proxy"]')?.addEventListener('click', async () => {
+    document.querySelector('#nav [data-page="proxy"]')?.addEventListener('click', () => {
       setView('home');
-      await window.RoutingWorkspace?.load?.();
       sync();
+      void window.RoutingWorkspace?.loadForProxyHome?.().then(sync);
+    });
+    document.querySelector('#nav [data-page="nodes"]')?.addEventListener('click', () => {
+      returnTarget = { page: 'proxy', tab: 'home' };
+      setText('btn-proxy-nodes-back', '返回网络代理');
     });
     window.addEventListener('cxvpn:pagechange', sync);
     window.addEventListener('cxvpn:uistate', event => {

@@ -6,6 +6,8 @@ require(path.join(__dirname, '..', 'ui', 'routing_nodes.js'));
 
 const tools = global.RoutingNodeTools;
 assert.ok(tools);
+assert.equal(tools.REGION_LABELS.JP, '日本');
+assert.equal(tools.REGION_LABELS.US, '美国');
 
 assert.deepEqual(tools.splitNodeLabel({ name: '[订阅] 🇯🇵 日本东京' }), {
   text: '[订阅] 日本东京', country: 'JP',

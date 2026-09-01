@@ -8,6 +8,16 @@ from core.ui_state_stream import UiStateStream
 
 
 class UiStateStreamTests(unittest.TestCase):
+    def test_runtime_interval_is_bounded_and_wakes_sampler(self):
+        stream = UiStateStream(lambda: {}, mock.Mock(), interval=0.5)
+
+        self.assertTrue(stream.set_interval(1.5))
+        self.assertEqual(stream._interval, 1.5)
+        self.assertTrue(stream._poke.is_set())
+        self.assertTrue(stream.set_interval(99))
+        self.assertEqual(stream._interval, 5.0)
+        self.assertFalse(stream.set_interval('invalid'))
+
     def test_versions_change_only_when_snapshot_changes(self):
         value = {'text': '中文 e\u0301 🇯🇵', 'count': 1}
         stream = UiStateStream(lambda: dict(value), mock.Mock(), interval=0.02)

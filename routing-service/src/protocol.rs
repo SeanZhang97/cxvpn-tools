@@ -15,6 +15,12 @@ pub struct Request {
     #[serde(default)]
     pub runtime_mode: String,
     #[serde(default)]
+    pub fast_toggle_ready: bool,
+    #[serde(default)]
+    pub system_proxy_bypass_domains: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
     pub provider_name: String,
 }
 

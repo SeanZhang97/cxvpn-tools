@@ -76,16 +76,19 @@ class _FrameReader:
         return final, opcode, payload
 
 
-def _open_websocket(config, timeout=3):
+def _open_websocket(config, timeout=3, path='/traffic'):
     port = int(config.get('controller_port') or 0)
     secret = str(config.get('controller_secret') or '')
     if not (1024 <= port <= 65535 and secret):
         raise ValueError('Mihomo controller configuration is incomplete')
+    path = str(path or '')
+    if not path.startswith('/') or '\r' in path or '\n' in path:
+        raise ValueError('Mihomo websocket path is invalid')
     connection = socket.create_connection(('127.0.0.1', port), timeout=timeout)
     connection.settimeout(1)
     key = base64.b64encode(os.urandom(16)).decode('ascii')
     request = (
-        'GET /traffic HTTP/1.1\r\n'
+        f'GET {path} HTTP/1.1\r\n'
         f'Host: 127.0.0.1:{port}\r\n'
         'Upgrade: websocket\r\n'
         'Connection: Upgrade\r\n'
