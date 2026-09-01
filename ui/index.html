@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CX VPN TOOLS</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-mark"><img src="logo.png" alt=""></div>
+      <div class="logo-text"><h1>CX VPN <span>TOOLS</span></h1></div>
+    </div>
+    <nav id="nav">
+      <button type="button" data-page="overview" class="active" aria-current="page"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg><span>总览</span></button>
+      <button type="button" data-page="vpns"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 2v20"/></svg><span>VPN 配置</span></button>
+      <button type="button" data-page="proxy"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg><span>网络代理</span></button>
+      <button type="button" data-page="routing"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 6h8M7 8l4 8M17 8l-4 8"/></svg><span>域名分流</span></button>
+      <button type="button" data-page="cx"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>超星账号</span></button>
+      <button type="button" data-page="vlm"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m4 20 11-11"/><path d="m12.5 6.5 5 5"/><path d="M18 2v4M16 4h4"/><path d="M6 5v3M4.5 6.5h3"/><path d="M19 15v4M17 17h4"/></svg><span>自动化配置</span></button>
+      <button type="button" data-page="browser"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg><span>浏览器</span></button>
+      <button type="button" data-page="help"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.5 2.5 0 1 1 3.7 2.2c-1 .6-1.5 1.1-1.5 2.3"/><path d="M12 17h.01"/></svg><span>帮助说明</span></button>
+      <button type="button" data-page="logs"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg><span>运行日志</span></button>
+    </nav>
+    <div class="side-foot"><div id="side-state" class="pill off">调度未启动</div></div>
+  </aside>
+
+  <main id="main-content">
+    <section id="page-overview" class="page active overview-page">
+      <div class="overview-heading">
+        <header>
+          <h2>连接与授权</h2>
+        </header>
+        <div class="overview-service">
+          <span>后台调度</span>
+          <i aria-hidden="true"></i>
+          <strong id="ov-service">正在检查</strong>
+        </div>
+      </div>
+
+      <section class="status-ribbon" aria-label="运行状态概览">
+        <div class="ribbon-state">
+          <span>网络状态</span>
+          <i aria-hidden="true"></i>
+          <strong id="ov-network-state">正在检查</strong>
+        </div>
+        <svg class="ribbon-line" aria-hidden="true" viewBox="0 0 520 28" preserveAspectRatio="none">
+          <path d="M0 17 C28 17 34 14 50 14 S75 10 89 11 S105 18 120 16 S143 7 161 9 S178 15 194 14 S210 11 224 13 S242 18 258 15 S280 10 296 12 S313 20 329 16 S350 14 365 15 S386 8 404 11 S424 18 440 15 S459 13 476 15 S498 19 520 15"/>
+        </svg>
+        <div class="ribbon-metric">
+          <span>当前已连接</span>
+          <strong id="ov-conn" class="off">0 个</strong>
+        </div>
+        <div class="ribbon-metric">
+          <span>授权有效期</span>
+          <strong id="ov-hours">待同步</strong>
+        </div>
+      </section>
+
+      <div class="overview-workspace">
+        <section class="connection-stage">
+          <div class="connection-hero">
+            <div class="connection-focus">
+              <span class="label">默认 VPN</span>
+              <h3 id="ov-name">—</h3>
+              <div id="ov-default-status" class="connection-state off">未连接</div>
+              <div class="default-connection-summary">
+                <p>上次连接 <strong id="ov-last-connection">—</strong></p>
+                <div class="default-profile-meta">
+                  <span>协议：<strong id="ov-default-type">—</strong></span>
+                  <i aria-hidden="true"></i>
+                  <span>服务器：<strong id="ov-default-server">—</strong></span>
+                </div>
+              </div>
+              <p id="ov-conn-detail" class="connection-issue hidden"></p>
+              <div class="connection-actions">
+                <button id="btn-connect" class="btn primary">连接默认 VPN</button>
+                <button id="btn-disconnect" class="btn ghost">断开默认 VPN</button>
+                <button id="btn-disconnect-all" class="btn danger hidden">断开全部</button>
+              </div>
+            </div>
+
+            <section class="ip-overview" aria-labelledby="ip-overview-title">
+              <header class="ip-overview-head">
+                <div class="ip-title-line">
+                  <h3 id="ip-overview-title">网络出口</h3>
+                  <span class="ip-freshness"><i aria-hidden="true"></i><span id="ip-status">检测中</span></span>
+                </div>
+                <button id="btn-refresh-ip" class="ip-refresh" type="button" aria-label="刷新网络出口信息" title="刷新网络出口信息"></button>
+              </header>
+              <div class="ip-local-row">
+                <span class="ip-kind">内网</span>
+                <strong id="ip-local-address">—</strong>
+                <button class="ip-copy" type="button" data-ip-target="ip-local-address" data-ip-label="内网 IP" aria-label="复制内网 IP" title="复制内网 IP"></button>
+                <span id="ip-local-detail" class="ip-side-detail">正在读取</span>
+              </div>
+              <div class="ip-egress-grid">
+                <article class="ip-egress-item">
+                  <span class="ip-kind">公网出口</span>
+                  <div class="ip-address-line">
+                    <strong id="ip-domestic-address">—</strong>
+                    <button class="ip-copy" type="button" data-ip-target="ip-domestic-address" data-ip-label="公网出口 IP" aria-label="复制公网出口 IP" title="复制公网出口 IP"></button>
+                  </div>
+                  <p id="ip-domestic-location">正在查询位置</p>
+                  <p id="ip-domestic-provider">—</p>
+                </article>
+                <article class="ip-egress-item">
+                  <span class="ip-kind">国外出口</span>
+                  <div class="ip-address-line">
+                    <strong id="ip-overseas-address">—</strong>
+                    <button class="ip-copy" type="button" data-ip-target="ip-overseas-address" data-ip-label="国外出口 IP" aria-label="复制国外出口 IP" title="复制国外出口 IP"></button>
+                  </div>
+                  <p id="ip-overseas-location">正在查询位置</p>
+                  <p id="ip-overseas-provider">—</p>
+                </article>
+              </div>
+            </section>
+          </div>
+          <div class="connection-collection">
+            <div class="collection-heading">
+              <h3>活动连接</h3>
+              <span id="ov-active-count">0 / 5 个已连接</span>
+            </div>
+            <div id="ov-route-warning" class="connection-warning hidden"></div>
+            <div id="ov-active-connections" class="active-connections">
+              <div class="connection-empty">当前没有已连接的 VPN</div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="automation-matrix">
+          <div class="automation-heading">
+            <svg class="section-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m10 3 1.2 3.8L15 8l-3.8 1.2L10 13 8.8 9.2 5 8l3.8-1.2L10 3Z"/><path d="m18 12 .9 2.1L21 15l-2.1.9L18 18l-.9-2.1L15 15l2.1-.9L18 12Z"/></svg>
+            <div>
+              <h3>自动化设置</h3>
+              <p>让 VPN 在后台自动为你服务</p>
+            </div>
+          </div>
+          <div class="setting-row">
+            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg></span>
+            <div>
+              <strong>自动续期</strong>
+              <p>定期检查并更新全部授权</p>
+            </div>
+            <label class="switch compact-switch"><input id="ov-auto" type="checkbox"><i></i></label>
+          </div>
+          <div class="setting-row">
+            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m10 13 4-4"/><path d="M7.5 15.5 5 18a3.5 3.5 0 0 0 5 5l3-3" transform="translate(0 -2)"/><path d="m11 6 3-3a3.5 3.5 0 0 1 5 5l-2.5 2.5"/></svg></span>
+            <div>
+              <strong>自动连接</strong>
+              <p>默认 VPN 断线后自动拨号并按策略重试</p>
+            </div>
+            <label class="switch compact-switch"><input id="ov-autoconn" type="checkbox"><i></i></label>
+          </div>
+          <div class="setting-row">
+            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg></span>
+            <div>
+              <strong>开机自启</strong>
+              <p>登录 Windows 后静默驻留系统托盘</p>
+            </div>
+            <label class="switch compact-switch"><input id="ov-startup" type="checkbox" disabled><i></i></label>
+          </div>
+          <div class="setting-row automation-last-setting">
+            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M12 6v9M8.5 11.5 12 15l3.5-3.5"/></svg></span>
+            <div>
+              <strong>关闭到托盘</strong>
+              <p>关闭主窗口后继续执行后台自动化</p>
+            </div>
+            <label class="switch compact-switch"><input id="ov-tray" type="checkbox"><i></i></label>
+          </div>
+          <button id="btn-repair" class="maintenance-link">
+            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5-5L7 4l3 3 2.7-2.7a4 4 0 0 1-5 5L2 15l4 4 5.7-5.7a4 4 0 0 0 5-5L14 11l-3-3 3.7-1.7Z"/></svg></span>
+            <span><strong id="repair-title">修复 VPN 服务</strong><small id="repair-detail">连接长时间卡住时使用</small></span>
+            <svg class="maintenance-arrow" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+        </aside>
+      </div>
+
+      <article id="renew-card" class="renewal-strip">
+        <div class="renewal-intro">
+          <div class="renewal-title-line">
+            <h3>授权状态</h3>
+            <span id="ov-renew-state" class="status-badge neutral">等待处理</span>
+          </div>
+          <p>授权有效期 <strong id="ov-renew-hours">待同步</strong></p>
+          <span id="ov-renew" class="hidden">—</span>
+        </div>
+        <div class="renewal-flow">
+          <div class="renewal-progress-head">
+            <span id="ov-renew-title">等待自动化任务</span>
+            <span id="ov-renew-step">0 / 5</span>
+          </div>
+          <progress id="ov-renew-progress" class="renewal-progress" max="4" value="0"></progress>
+          <ol id="ov-renew-stages" class="renewal-stages" aria-label="授权处理阶段">
+            <li data-step="1"><span>授权检测</span><small>待执行</small></li>
+            <li data-step="2"><span>账号验证</span><small>待执行</small></li>
+            <li data-step="3"><span>授权更新</span><small>待执行</small></li>
+            <li data-step="4"><span>策略同步</span><small>待执行</small></li>
+            <li data-step="5"><span>就绪</span><small>待执行</small></li>
+          </ol>
+          <p id="ov-renew-detail" class="renewal-detail">根据当前状态自动执行首次授权或续期</p>
+        </div>
+        <div class="renewal-action">
+          <button id="btn-renew" class="btn accent">立即处理授权</button>
+          <span class="action-hint">授权流程执行期间可随时中断</span>
+        </div>
+      </article>
+    </section>
+
+    <section id="page-vpns" class="page standard-page">
+      <header><h2>VPN 配置</h2><p>管理 Windows VPN，并可逐条连接、切换或同时连接</p></header>
+      <div class="page-toolbar">
+        <div class="vpn-summary">
+          <span class="summary-icon">VPN</span>
+          <div><strong id="vpn-count">正在读取</strong><p id="vpn-connected-count">检查系统连接状态</p></div>
+        </div>
+        <div class="toolbar-actions">
+          <button id="btn-refresh-vpn" class="btn ghost">刷新</button>
+          <button id="btn-add-vpn" class="btn primary">＋ 新增 VPN</button>
+        </div>
+      </div>
+      <div class="card table-card">
+        <table>
+          <thead><tr><th>名称</th><th>服务器</th><th>类型</th><th>状态</th><th class="right">操作</th></tr></thead>
+          <tbody id="vpn-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="page-proxy" class="page standard-page proxy-page">
+      <div class="proxy-view active" data-proxy-view="home">
+        <div class="proxy-heading">
+          <header><span class="routing-eyebrow">BUILT-IN MIHOMO PROXY</span><h2>网络代理</h2><p>订阅、选点，然后一键连接</p></header>
+          <div class="proxy-service-state"><span id="proxy-service-dot" aria-hidden="true"></span><strong id="proxy-service-label" role="status" aria-live="polite" aria-atomic="true">正在检查服务</strong><button id="btn-proxy-refresh" class="btn ghost" type="button">刷新</button></div>
+        </div>
+
+        <section class="proxy-connect-card" aria-labelledby="proxy-state-title">
+          <div class="proxy-connect-main">
+            <div class="proxy-orbit" aria-hidden="true"><img src="logo.png" alt=""></div>
+            <div class="proxy-connect-copy">
+              <span class="proxy-state-kicker">系统流量</span>
+              <h3 id="proxy-state-title" aria-live="polite" aria-atomic="true">代理未开启</h3>
+              <p id="proxy-state-detail">当前网络保持 Windows 原始路由</p>
+              <div class="proxy-connect-actions">
+                <button id="btn-proxy-toggle" class="btn primary proxy-toggle" type="button" disabled>正在读取配置…</button>
+                <button id="btn-proxy-disable" class="btn ghost proxy-disable hidden" type="button">关闭配置</button>
+              </div>
+              <div id="proxy-operation-notice" class="proxy-operation-notice hidden" role="alert" aria-live="assertive" aria-atomic="true">
+                <span><strong id="proxy-operation-title">代理操作未完成</strong><small id="proxy-operation-detail"></small></span>
+                <button id="btn-proxy-operation-dismiss" type="button" aria-label="关闭代理操作提示">关闭</button>
+              </div>
+              <div id="proxy-draft-notice" class="proxy-draft-notice hidden" role="status">
+                <span><strong>高级分流有未保存草稿</strong><small>首页以已保存配置为基线；当前流量模式会在开启时应用，其他草稿不会自动包含。</small></span>
+                <button id="btn-proxy-review-draft" type="button">查看草稿</button>
+              </div>
+              <div id="proxy-selection-warning" class="proxy-selection-warning hidden" role="alert">
+                <span id="proxy-selection-warning-text">手动模式需要先选择一个有效节点。</span>
+                <button id="btn-proxy-choose-node" type="button">去选择节点</button>
+              </div>
+            </div>
+          </div>
+          <div class="proxy-current-stack">
+            <button id="proxy-current-provider" class="proxy-current-row" type="button">
+              <span><small>当前订阅</small><strong id="proxy-provider-name">尚未配置</strong></span><em id="proxy-provider-meta">前往添加订阅</em>
+            </button>
+            <button id="proxy-current-node" class="proxy-current-row" type="button">
+              <span><small>当前节点</small><strong id="proxy-node-name">等待选择</strong></span><em id="proxy-node-delay">查看节点</em>
+            </button>
+          </div>
+        </section>
+
+        <div class="proxy-dashboard-grid">
+          <section class="proxy-summary-card">
+            <header><h3>订阅概览</h3><button id="btn-proxy-manage" type="button">管理订阅</button></header>
+            <dl class="proxy-summary-list">
+              <div><dt>已启用订阅</dt><dd id="proxy-provider-count">0 个</dd></div>
+              <div><dt>可选节点</dt><dd id="proxy-node-count">0 个</dd></div>
+              <div><dt>缓存状态</dt><dd id="proxy-cache-state">尚无缓存</dd></div>
+            </dl>
+            <div id="proxy-subscription-health" class="proxy-subscription-health hidden" role="status" aria-live="polite"></div>
+          </section>
+          <section class="proxy-mode-card">
+            <header><h3>流量策略</h3><span id="proxy-mode-status">规则模式</span></header>
+            <div class="proxy-mode-switch" role="radiogroup" aria-label="代理连接模式">
+              <button type="button" class="active" data-proxy-mode="rule" role="radio" aria-checked="true">规则模式</button>
+              <button type="button" data-proxy-mode="global" role="radio" aria-checked="false">全局模式</button>
+            </div>
+            <p id="proxy-mode-detail">按域名分流规则匹配，未命中流量走当前代理。</p>
+            <dl class="proxy-summary-list proxy-routing-dimensions">
+              <div><dt>系统接管</dt><dd id="proxy-capture-status">系统代理</dd></div>
+              <div><dt>默认出口</dt><dd id="proxy-default-outbound">物理网络</dd></div>
+              <div><dt>规则构成</dt><dd id="proxy-rule-composition">0 / 0 / 1</dd></div>
+            </dl>
+          </section>
+          <section class="proxy-traffic-card">
+            <header><h3>服务状态</h3><div class="proxy-status-pair" role="status" aria-live="polite" aria-atomic="true"><span id="proxy-session-state">正在检查</span><span id="proxy-stream-state" class="proxy-stream-state">等待服务</span></div></header>
+            <div class="proxy-traffic-values">
+              <div><small>配置状态</small><strong id="proxy-config-state">未启用</strong></div>
+              <div><small>服务进程</small><strong id="proxy-runtime-state">未运行</strong></div>
+              <div><small>节点检测</small><strong id="proxy-health-state">尚未测速</strong></div>
+              <div><small>活动连接</small><strong id="proxy-active-connections">0</strong></div>
+              <div><small>实时上行</small><strong id="proxy-upload-rate">0 B/s</strong></div>
+              <div><small>实时下行</small><strong id="proxy-download-rate">0 B/s</strong></div>
+            </div>
+            <p class="proxy-traffic-foot"><span>主要规则命中</span><strong id="proxy-rule-hits">暂无</strong></p>
+          </section>
+        </div>
+
+        <section class="proxy-recent-card">
+          <header><h3>当前连接</h3><span id="proxy-current-mode">规则模式</span></header>
+          <div class="proxy-recent-row"><span class="proxy-health-dot"></span><strong id="proxy-recent-node">尚未连接代理节点</strong><span id="proxy-recent-delay">-- ms</span><small id="proxy-recent-source">等待服务启动</small></div>
+        </section>
+
+        <div class="proxy-shortcuts">
+          <button id="btn-proxy-subscriptions" type="button"><strong>管理订阅</strong><small>添加、更新或切换订阅</small><span>打开</span></button>
+          <button id="btn-proxy-nodes" type="button"><strong>查看全部节点</strong><small>搜索、测速并选择节点</small><span>打开</span></button>
+          <button id="btn-proxy-routing" type="button"><strong>高级分流</strong><small>配置域名与 Windows VPN 出口</small><span>打开</span></button>
+        </div>
+      </div>
+
+      <div class="proxy-view" data-proxy-view="nodes">
+        <div class="proxy-subpage-heading">
+          <button id="btn-proxy-nodes-back" class="btn ghost" type="button">返回网络代理</button>
+          <div><span class="routing-eyebrow">PROXY NODE LIBRARY</span><h2>全部节点</h2><p>按订阅筛选、测速并选择实际代理节点</p></div>
+          <div class="proxy-node-stats"><strong id="proxy-node-total">0</strong><span id="proxy-node-total-label">节点</span><strong id="proxy-node-alive-total">0</strong><span>可用</span></div>
+        </div>
+        <p id="routing-node-feedback" class="form-feedback routing-node-feedback" role="status" aria-live="polite"></p>
+        <section class="card routing-nodes-card proxy-nodes-card">
+          <div class="routing-rules-head"><div><h3>节点列表</h3><p>自动策略会展示当前选择；手动策略下可点击节点切换。</p></div><button id="btn-routing-nodes-refresh" class="btn ghost">刷新列表</button></div>
+          <div id="routing-node-toolbar" class="routing-node-toolbar">
+            <div class="field grow"><label for="routing-node-group">订阅 / 代理组</label><select id="routing-node-group"></select></div>
+            <div class="field grow"><label for="routing-node-search">搜索节点</label><input id="routing-node-search" placeholder="输入节点名称或类型"></div>
+            <label class="routing-filter-check"><input id="routing-node-alive" type="checkbox"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m7.5 12.5 3 3 6.5-7"/></svg></i><span>仅显示可用</span></label>
+            <button id="btn-routing-auto-select" class="btn ghost" type="button">自动优选</button>
+            <button id="btn-routing-group-test" class="btn ghost">全部测速</button>
+          </div>
+          <div id="routing-node-filterbar" class="routing-node-filterbar">
+            <div class="routing-region-control"><span>地区</span><div id="routing-node-regions" class="routing-region-list" role="group" aria-label="按地区筛选节点"></div></div>
+            <div class="routing-node-ordering">
+              <div class="field"><label for="routing-node-sort">排序</label><select id="routing-node-sort">
+                <option value="default">订阅原始顺序</option>
+                <option value="current">当前节点优先</option>
+                <option value="delay">延迟从低到高</option>
+                <option value="multiplier">倍率从低到高</option>
+                <option value="name">名称 A–Z</option>
+              </select></div>
+              <button id="btn-routing-locate-current" class="btn ghost" type="button">定位当前节点</button>
+            </div>
+          </div>
+          <section id="routing-test-progress" class="routing-test-progress hidden" aria-labelledby="routing-test-progress-title" aria-live="polite">
+            <div class="routing-test-progress-head">
+              <div><strong id="routing-test-progress-title">节点测速</strong><span id="routing-test-progress-message">准备开始</span></div>
+              <button id="btn-routing-test-cancel" class="btn mini ghost" type="button">停止测速</button>
+            </div>
+            <progress id="routing-test-progress-bar" max="1" value="0">0%</progress>
+            <div class="routing-test-progress-stats">
+              <span>进度 <strong id="routing-test-progress-count">0 / 0</strong></span>
+              <span>可用 <strong id="routing-test-progress-alive">0</strong></span>
+              <span>不可用 <strong id="routing-test-progress-failed">0</strong></span>
+            </div>
+          </section>
+          <div id="routing-node-summary" class="routing-node-summary"></div>
+          <div id="routing-node-metadata" class="routing-node-metadata hidden" aria-label="订阅信息"></div>
+          <div id="routing-node-grid" class="routing-node-grid"></div>
+          <div id="routing-nodes-empty" class="routing-empty hidden">尚无节点，可返回订阅管理点击“获取节点”。</div>
+        </section>
+      </div>
+    </section>
+
+    <section id="page-routing" class="page standard-page routing-page">
+      <div class="routing-hero">
+        <header><span class="routing-eyebrow">WINDOWS TRAFFIC ROUTER</span><h2>统一域名分流</h2><p>让每个域名按规则选择物理网络、代理订阅或指定 Windows VPN</p></header>
+        <div class="routing-status">
+          <div>
+            <span id="routing-state" class="pill off">正在读取</span>
+            <p id="routing-state-detail">检查后台分流服务和网络接口</p>
+          </div>
+          <button id="btn-routing-refresh" class="btn ghost" title="重新读取配置和运行状态">刷新状态</button>
+        </div>
+      </div>
+
+      <div id="routing-conflict" class="routing-alert hidden"></div>
+
+      <nav class="routing-tabs" role="tablist" aria-label="域名分流配置">
+        <button id="routing-tab-overview" type="button" class="active" role="tab" aria-selected="true" aria-controls="routing-panel-overview" data-routing-tab="overview"><b>概览</b><small>运行状态与基础设置</small></button>
+        <button id="routing-tab-rules" type="button" role="tab" aria-selected="false" aria-controls="routing-panel-rules" tabindex="-1" data-routing-tab="rules"><b>分流规则 <span id="routing-tab-rule-count">0</span></b><small>域名匹配与默认出口</small></button>
+        <button id="routing-tab-providers" type="button" role="tab" aria-selected="false" aria-controls="routing-panel-providers" tabindex="-1" data-routing-tab="providers"><b>订阅管理 <span id="routing-tab-provider-count">0</span></b><small>订阅源与节点策略</small></button>
+        <button type="button" class="routing-workbench-link" data-routing-workbench="nodes"><b>打开节点工作台 <span id="routing-tab-node-count">0</span></b><small>独立页面 · 测速与选点</small></button>
+      </nav>
+
+      <div id="routing-panel-overview" class="routing-tab-panel active" role="tabpanel" aria-labelledby="routing-tab-overview" data-routing-panel="overview">
+        <div id="routing-overview-metrics" class="routing-metrics"></div>
+        <div class="routing-grid">
+          <section class="card routing-settings-card">
+          <div class="settings-card-head">
+            <span class="settings-symbol">01</span>
+            <div><h3>分流引擎</h3><p>首次安装或升级服务时请求 Windows UAC；日常启停和切换节点无需重复授权。</p></div>
+          </div>
+          <div class="routing-toggle-row">
+            <div><strong>启用统一分流</strong><span>接管系统流量并按下方有序规则匹配</span></div>
+            <label class="switch compact-switch"><input id="routing-enabled" type="checkbox" aria-label="启用统一分流"><i></i></label>
+          </div>
+          <div class="routing-form-grid">
+            <div class="field grow"><label for="routing-capture-mode">网络接管方式</label><select id="routing-capture-mode"><option value="system-proxy">Windows 系统代理（推荐）</option><option value="tun">TUN（高级）</option></select></div>
+            <div class="field grow"><label for="routing-traffic-mode">流量策略</label><select id="routing-traffic-mode"><option value="rule">规则模式</option><option value="global">全局模式（仅 MATCH）</option></select></div>
+            <div class="field grow"><label for="routing-interface">物理直连接口</label><select id="routing-interface"></select></div>
+            <div class="field grow"><label for="routing-mixed-port">本地 mixed-port</label><input id="routing-mixed-port" type="number" min="1024" max="65535"></div>
+            <div class="field grow"><label for="routing-dns">默认查询 nameserver</label><input id="routing-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
+            <div class="field grow"><label for="routing-default-dns">引导解析 default-nameserver</label><input id="routing-default-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
+            <div class="field grow"><label for="routing-proxy-dns">节点域名 proxy-server-nameserver</label><input id="routing-proxy-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
+            <div class="field grow"><label for="routing-direct-dns">直连域名 direct-nameserver</label><input id="routing-direct-dns" placeholder="223.5.5.5, 119.29.29.29"></div>
+          </div>
+          <div class="routing-engine-extra">
+            <div class="field grow"><label for="routing-proxy-strategy">聚合代理池策略</label><select id="routing-proxy-strategy"></select></div>
+          </div>
+          <div id="routing-all-node" class="routing-runtime-choice hidden"></div>
+          </section>
+
+          <section class="card routing-check-card">
+          <div class="settings-card-head">
+            <span class="settings-symbol">02</span>
+            <div><h3>配置检查</h3><p>根据当前网络与配置动态判断是否具备启用条件。</p></div>
+          </div>
+          <div id="routing-checks" class="routing-checks"></div>
+          </section>
+        </div>
+      </div>
+
+      <div id="routing-panel-rules" class="routing-tab-panel" role="tabpanel" aria-labelledby="routing-tab-rules" aria-hidden="true" data-routing-panel="rules">
+        <section class="card routing-default-card">
+          <div class="routing-rules-head"><div><h3>默认出口与命中测试</h3><p>规则从上到下匹配；未命中时使用默认出口。仅支持域名，不支持 URL 路径。</p></div></div>
+          <div class="routing-rule-tools">
+            <div class="field grow"><label for="routing-default">未命中规则的默认出口</label><select id="routing-default"></select></div>
+            <div class="field grow"><label for="routing-builtin-pack">只读内置规则包</label><select id="routing-builtin-pack"><option value="off">off</option><option value="local-direct-v1">local-direct-v1</option><option value="cn-direct-v1">cn-direct-v1（离线）</option></select></div>
+            <div class="field grow"><label for="routing-test-domain">测试一个域名</label><div class="routing-test-input"><input id="routing-test-domain" placeholder="例如：mh.chaoxing.com"><button id="btn-routing-test" class="btn ghost">查看命中</button></div></div>
+          </div>
+          <p id="routing-rule-composition" class="routing-node-feedback">用户规则 0 条 · 内置规则 0 条 · 实际规则 1 条；顺序固定为 user → builtin → MATCH。</p>
+          <div id="routing-test-result" class="routing-test-result hidden"></div>
+        </section>
+        <section class="card routing-rules-card">
+          <div class="routing-rules-head"><div><h3>有序域名规则</h3><p>精确域名、域名后缀和通配符均可配置；越靠上优先级越高。</p></div><button id="btn-routing-add" class="btn ghost">＋ 添加规则</button></div>
+          <div id="routing-rules" class="routing-rules"></div>
+          <div id="routing-rules-empty" class="routing-empty">尚未添加规则，全部流量使用默认出口。</div>
+        </section>
+      </div>
+
+      <div id="routing-panel-providers" class="routing-tab-panel" role="tabpanel" aria-labelledby="routing-tab-providers" aria-hidden="true" data-routing-panel="providers">
+        <section class="card routing-providers-card">
+          <div class="routing-rules-head"><div><h3>代理订阅</h3><p>添加后可直接获取并预览节点，无需启用 TUN；保存应用后才参与实际分流。</p></div><button id="btn-routing-provider-add" class="btn ghost">＋ 添加订阅</button></div>
+          <div id="routing-providers" class="routing-providers"></div>
+          <div id="routing-providers-empty" class="routing-empty">尚未添加代理订阅，仅可使用物理网络或 Windows VPN。</div>
+        </section>
+      </div>
+
+      <div class="routing-savebar">
+        <div class="routing-save-copy"><span id="routing-dirty" class="routing-dirty hidden">有未保存的修改</span><p id="routing-feedback" class="form-feedback" aria-live="polite"></p><small id="routing-save-hint">更改设置后，可先预检再保存应用</small></div>
+        <button id="btn-routing-discard" class="btn ghost hidden">放弃修改</button>
+        <button id="btn-routing-preview" class="btn ghost">仅预检</button>
+        <button id="btn-routing-apply" class="btn primary">保存并应用</button>
+      </div>
+    </section>
+
+    <section id="page-cx" class="page settings-page">
+      <header><h2>超星账号</h2><p>登录 remote.chaoxing.com 并接收短信验证码</p></header>
+      <div class="card settings-card">
+        <div class="settings-card-head">
+          <span class="settings-symbol">01</span>
+          <div><h3>登录账号与处理周期</h3><p>用于登录授权页面，并按设定周期检查授权状态。</p></div>
+        </div>
+        <div class="row align-end">
+          <div class="field grow"><label>手机号</label>
+            <input id="cx-phone" placeholder="手机号"></div>
+          <div class="field"><label>续期间隔 (小时)</label>
+            <input id="cx-hours" type="number" step="0.5" min="1" max="8"></div>
+          <button id="btn-save-cx" class="btn primary">保存</button>
+        </div>
+        <p class="muted">短信验证码的接收来源请前往“自动化配置”选择。</p>
+        <p id="cx-result" class="form-feedback" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section id="page-vlm" class="page settings-page automation-page">
+      <header><h2>自动化配置</h2><p>验证码接收来源与图形验证码识别服务</p></header>
+      <div class="settings-stack">
+      <div class="card settings-card">
+        <div class="settings-card-head">
+          <span class="settings-symbol">SMS</span>
+          <div><h3>短信验证码接收</h3><p>每次授权流程只使用一种接收方式，手动输入始终保留。</p></div>
+        </div>
+        <label>接收方式</label>
+        <div class="smart-select method-select">
+          <select id="sms-method" class="smart-select-native" tabindex="-1" aria-hidden="true">
+            <option value="phone_link">Windows 手机连接（蓝牙）</option>
+            <option value="email">邮箱转发（IMAP）</option>
+          </select>
+          <button type="button" class="smart-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+            <span class="smart-select-current"></span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>
+          </button>
+          <div class="smart-select-menu hidden" role="listbox">
+            <button type="button" role="option" data-value="phone_link" data-label="Windows 手机连接（蓝牙）">
+              <span class="smart-select-mark">BT</span><span><strong>Windows 手机连接</strong><small>通过蓝牙同步 Windows 通知</small></span><i>✓</i>
+            </button>
+            <button type="button" role="option" data-value="email" data-label="邮箱转发（IMAP）">
+              <span class="smart-select-mark">@</span><span><strong>邮箱转发</strong><small>通过 IMAP SSL 拉取手机转发的验证码邮件</small></span><i>✓</i>
+            </button>
+          </div>
+        </div>
+        <p id="sms-method-hint" class="settings-guidance source-guidance"></p>
+        <div id="sms-email-fields" class="email-settings hidden">
+          <div class="row align-end">
+            <div class="field"><label>邮箱服务商</label>
+              <div class="smart-select compact">
+                <select id="sms-email-provider" class="smart-select-native" tabindex="-1" aria-hidden="true">
+                  <option value="custom">自定义</option>
+                  <option value="qq">QQ 邮箱</option>
+                  <option value="163">163 邮箱</option>
+                  <option value="gmail">Gmail</option>
+                  <option value="icloud">iCloud 邮箱</option>
+                </select>
+                <button type="button" class="smart-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+                  <span class="smart-select-current"></span>
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>
+                </button>
+                <div class="smart-select-menu hidden" role="listbox">
+                  <button type="button" role="option" data-value="custom" data-label="自定义"><span class="smart-select-mark">···</span><span><strong>自定义</strong></span><i>✓</i></button>
+                  <button type="button" role="option" data-value="qq" data-label="QQ 邮箱"><span class="smart-select-mark">Q</span><span><strong>QQ 邮箱</strong></span><i>✓</i></button>
+                  <button type="button" role="option" data-value="163" data-label="163 邮箱"><span class="smart-select-mark">163</span><span><strong>163 邮箱</strong></span><i>✓</i></button>
+                  <button type="button" role="option" data-value="gmail" data-label="Gmail"><span class="smart-select-mark">G</span><span><strong>Gmail</strong></span><i>✓</i></button>
+                  <button type="button" role="option" data-value="icloud" data-label="iCloud 邮箱"><span class="smart-select-mark">i</span><span><strong>iCloud 邮箱</strong></span><i>✓</i></button>
+                </div>
+              </div>
+            </div>
+            <div class="field grow"><label>IMAP 服务器</label>
+              <input id="sms-email-host" placeholder="imap.example.com"></div>
+            <div class="field port-field"><label>SSL 端口</label>
+              <input id="sms-email-port" type="number" min="1" max="65535" value="993"></div>
+          </div>
+          <div class="row align-end">
+            <div class="field grow"><label>邮箱账号</label>
+              <input id="sms-email-user" autocomplete="off" placeholder="name@example.com"></div>
+            <div class="field grow"><label>授权码 / 应用专用密码</label>
+              <div class="inp-wrap">
+                <input id="sms-email-password" type="password" autocomplete="off" placeholder="不是网页登录密码">
+                <button id="btn-sms-eye" class="eye" type="button" data-secret-label="授权码" aria-label="显示授权码" aria-pressed="false" title="显示授权码"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2.8 12s3.2-5 9.2-5 9.2 5 9.2 5-3.2 5-9.2 5-9.2-5-9.2-5Z"/><circle cx="12" cy="12" r="2.5"/></svg></button>
+              </div>
+            </div>
+          </div>
+          <div class="row align-end">
+            <div class="field"><label>邮箱目录</label>
+              <input id="sms-email-mailbox" placeholder="INBOX"></div>
+            <div class="field grow"><label>主题包含（推荐）</label>
+              <input id="sms-email-subject" placeholder="超星验证码"></div>
+            <div class="field grow"><label>发件人包含（可选）</label>
+              <input id="sms-email-sender" placeholder="留空则不限制"></div>
+          </div>
+          <p class="muted">请在快捷指令中使用固定邮件主题。程序仅只读检查流程启动后到达的新邮件，不改变已读状态；授权码会随便携配置保存在本机。</p>
+        </div>
+        <div class="row">
+          <button id="btn-save-sms" class="btn primary">保存接收方式</button>
+          <button id="btn-test-sms-email" class="btn accent hidden">测试邮箱连接</button>
+        </div>
+        <p id="sms-settings-result" class="form-feedback" aria-live="polite"></p>
+      </div>
+      <div class="card settings-card">
+        <div class="settings-card-head">
+          <span class="settings-symbol">AI</span>
+          <div><h3>视觉识别服务</h3><p>用于自动定位图标验证码；未完整配置时将直接转为人工验证。</p></div>
+        </div>
+        <p class="settings-guidance">Base URL、API Key、模型名称三项均完整时才会调用模型；缺少任意一项都不会发起外部请求。</p>
+        <label>Base URL</label>
+        <input id="vlm-base" placeholder="http://host/v1">
+        <label>API Key</label>
+        <div class="inp-wrap">
+          <input id="vlm-key" type="password" placeholder="API Key">
+          <button id="btn-eye" class="eye" type="button" data-secret-label="API Key" aria-label="显示 API Key" aria-pressed="false" title="显示 API Key"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2.8 12s3.2-5 9.2-5 9.2 5 9.2 5-3.2 5-9.2 5-9.2-5-9.2-5Z"/><circle cx="12" cy="12" r="2.5"/></svg></button>
+        </div>
+        <label>模型名称</label>
+        <input id="vlm-model" placeholder="qwen3.8-max">
+        <div class="row">
+          <button id="btn-save-vlm" class="btn primary">保存</button>
+          <button id="btn-test-vlm" class="btn accent">测试连通性</button>
+        </div>
+        <p id="vlm-result" class="form-feedback" aria-live="polite"></p>
+      </div>
+      </div>
+    </section>
+
+    <section id="page-browser" class="page browser-page">
+      <div class="browser-workspace">
+        <div class="browser-commandbar">
+          <div class="browser-heading">浏览器</div>
+          <div id="br-state" class="browser-state off"><span></span>未启动</div>
+          <div id="br-url" class="browser-url">https://remote.chaoxing.com/vpn</div>
+          <div class="browser-command-actions">
+            <button id="btn-br-open" class="btn primary" type="button">打开浏览器</button>
+            <button id="btn-br-automation" class="btn accent" type="button">执行自动化</button>
+            <button id="btn-br-reload" class="btn ghost hidden" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="browser-native-host">
+          <div id="browser-empty" class="browser-empty">
+            <div class="browser-empty-title">浏览器尚未启动</div>
+            <p>启动后可在此完成登录、验证码和授权操作。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-help" class="page content-page">
+      <header><h2>帮助说明</h2><p>完整使用指南</p></header>
+      <div class="card quickstart-card">
+        <div class="help-card-head">
+          <div><span class="label">QUICK START</span><h3>四步完成基础配置</h3></div>
+          <span class="help-badge">首次使用</span>
+        </div>
+        <div class="quick-steps">
+          <div class="quick-step"><span>1</span><strong>填写账号</strong><p>在“超星账号”中填写接收短信的手机号。</p></div>
+          <div class="quick-step"><span>2</span><strong>新增 VPN</strong><p>直接填写服务器与可选凭据，第一条配置自动成为默认 VPN。</p></div>
+          <div class="quick-step"><span>3</span><strong>配置自动化</strong><p>选择短信接收来源，并按需配置 AI 图形验证码识别。</p></div>
+          <div class="quick-step"><span>4</span><strong>处理授权</strong><p>在总览中立即处理授权，或开启自动续期。</p></div>
+        </div>
+      </div>
+      <div class="help-sections">
+        <details class="help-section" open>
+          <summary><span><b>01</b>选择短信验证码接收方式</span><em>二选一</em></summary>
+          <div class="help-body">
+            <p class="help-callout">前往“自动化配置 → 短信验证码接收”选择一种来源。无论选择哪种方式，浏览器和工具弹窗中的手动输入都会保留。</p>
+            <h4>方式 A：Windows 手机连接（蓝牙）</h4>
+            <ol>
+              <li>电脑打开“设置 → 蓝牙和设备 → 移动设备”，或直接打开“手机连接”App，并按引导配对 iPhone。</li>
+              <li>两端登录同一微软账号并扫码配对，开启<b>通知同步</b>，保持蓝牙连接。</li>
+              <li>手机收到短信时，确认 Windows 右下角能弹出同款通知；出现通知即代表工具可以自动捕获。</li>
+              <li>通知被清除或过期后不可回溯；工具使用实时捕获，不读取历史短信。</li>
+            </ol>
+            <h4>方式 B：iPhone 快捷指令邮箱</h4>
+            <ol>
+              <li>先在邮箱网页端开启 IMAP，生成<b>授权码或应用专用密码</b>；它不是网页登录密码。建议使用专用邮箱。</li>
+              <li>在 iPhone“快捷指令 → 自动化”中新建“信息”自动化，“信息包含”填写“超星学习通”，并选择<b>立即运行</b>。</li>
+              <li>添加“发送电子邮件”动作：收件人填写接收邮箱，主题固定为“超星验证码”，正文选择<b>快捷指令输入</b>。</li>
+              <li>展开邮件动作并关闭<b>显示撰写表单</b>；首次后台发送如询问权限，请允许快捷指令发送邮件。</li>
+              <li>在软件“自动化配置”选择“邮箱转发（IMAP）”，选服务商并填写账号、授权码。主题必须与快捷指令完全对应，然后保存并点击“测试邮箱连接”。</li>
+              <li>软件使用 SSL 只读拉取流程启动后到达的新邮件，不依赖邮件未读状态，也不会把邮件标为已读。</li>
+            </ol>
+            <h4>方式 C：Android SmsForwarder 邮箱转发</h4>
+            <ol>
+              <li>从项目官方 GitHub Releases 下载并安装 <b>pppscn/SmsForwarder</b>；安装前请自行确认来源和所需权限。</li>
+              <li>首次打开后授予读取短信权限，并按系统提示允许后台运行、忽略电池优化。部分品牌还需开启自启动、后台高耗电权限，并在最近任务中锁定 App。</li>
+              <li>进入“发送通道 → ＋ → 邮箱”，QQ 邮箱填写：SMTP 服务器 <b>smtp.qq.com</b>、端口 <b>465</b>、开启 SSL；发件账号填写 QQ 邮箱，密码填写邮箱授权码，收件人可以填写同一邮箱。</li>
+              <li>进入“转发规则 → 短信”，设置内容包含“超星学习通”（也可以按发件人过滤），发送通道选择刚创建的邮箱通道。</li>
+              <li>邮件标题固定填写“超星验证码”，正文填写 SmsForwarder 提供的短信正文占位符，例如 <b>{短信内容}</b>。占位符名称以当前 App 版本显示为准。</li>
+              <li>电脑端无需安装额外脚本：在“自动化配置”选择“邮箱转发（IMAP）”，填写同一邮箱的 IMAP 信息，并保持主题为“超星验证码”。保存后先点击“测试邮箱连接”。</li>
+              <li>用测试短信确认“手机收到短信 → 邮箱收到转发邮件 → 授权流程取得验证码”完整链路。若锁屏后失效，优先检查 SmsForwarder 的自启动、后台权限和电池优化设置。</li>
+            </ol>
+            <p class="help-callout help-note">常见问题：iPhone 弹出邮件编辑页说明“显示撰写表单”未关闭；Android 邮件未发出时检查转发规则、SMTP 授权码和后台保活；邮件已到但软件未捕获时，核对固定主题、IMAP 是否开启以及授权码是否有效。</p>
+          </div>
+        </details>
+        <details class="help-section">
+          <summary><span><b>02</b>VPN 配置与凭据</span><em>连接必需</em></summary>
+          <div class="help-body"><ol>
+            <li>可直接在“VPN 配置”中新增、编辑或删除 PPTP、L2TP、IKEv2 连接，无需先进入 Windows 设置。</li>
+            <li>新增时可同时填写登录凭据；L2TP 使用预共享密钥时也可在同一弹窗中填写。</li>
+            <li>Windows 设置中保存的 VPN 密码不会暴露为明文；首次接管已有 VPN 时，需要在本工具中补录一次账号密码。</li>
+            <li>没有工具凭据时直接点击“连接”，软件会在拨号前停止并自动打开凭据弹框，不会提交空密码或弹出 Windows 登录窗口。</li>
+            <li>新增或补录账号密码时只保存到工具并同步 Windows，不自动拨号、不启动网页授权；随后点击“连接”才会执行远端认证。</li>
+            <li>错误 691 通常表示凭据错误或授权到期；若超星更换了 VPN 密码，请在“凭据”中更新。</li>
+          </ol></div>
+        </details>
+        <details class="help-section">
+          <summary><span><b>03</b>授权、验证码与内置浏览器</span><em>自动化</em></summary>
+          <div class="help-body"><ol>
+            <li>“立即处理授权”会根据远端状态，对未激活项目执行首次授权，对已有项目执行续期。</li>
+            <li>模型配置完整时优先自动识别；未配置或配置不完整时会跳过 AI，直接弹出人工验证。</li>
+            <li>自动识别多次未通过也会转为人工点击；程序在托盘时会自动恢复主窗口并提醒。</li>
+            <li>短信验证码按“自动化配置”中选择的来源捕获；也可以在浏览器或工具弹框中输入，先获取到的方式生效。</li>
+            <li>浏览器左下角展示真实进度；进度卡可收起，网络请求抽屉可查看 fetch/XHR 请求与响应。</li>
+            <li>接口返回成功后，远端列表会立即显示“已授权/续期完成”和成功提示；无需刷新，避免会话页面跳回登录。</li>
+          </ol></div>
+        </details>
+        <details class="help-section">
+          <summary><span><b>04</b>自动连接与日常使用</span><em>可选</em></summary>
+          <div class="help-body"><ol>
+            <li>“自动连接”默认关闭；关闭时仍可在总览中手动连接 VPN，授权处理不受影响。</li>
+            <li>“默认 VPN”只决定总览快捷入口和自动重连；其它 VPN 可在配置页直接连接或断开。</li>
+            <li>已有连接时连接另一条，可选择“切换连接”或“同时连接”；并行连接后工具会提示默认路由和网段重叠风险。</li>
+            <li>“自动续期”会按设置周期检查并更新网页授权，与 Windows VPN 的自动拨号策略相互独立。</li>
+            <li>网络波动类错误会按 5～30 分钟退避重试；配置、证书或本机服务错误会暂停自动重试，并在总览显示处理建议。</li>
+            <li>修改 VPN 配置、更新凭据、续期成功或完成服务修复后，暂停状态会自动解除。</li>
+            <li>连接长时间卡住时，可在总览右侧使用“修复 VPN 服务”，并允许 Windows UAC 授权。</li>
+          </ol></div>
+        </details>
+        <details class="help-section">
+          <summary><span><b>05</b>开机自启与分发</span><em>高级</em></summary>
+          <div class="help-body"><ol>
+            <li>在总览的“自动化策略”中开启“开机自启”；下次登录 Windows 后程序会静默进入托盘。</li>
+            <li>点击主窗口关闭按钮默认只隐藏到托盘；单击托盘图标恢复，使用托盘菜单“退出”才会彻底结束。</li>
+            <li>分发时压缩整个工具文件夹；对方需使用 Win10/11、Edge WebView2，并自行填写本机配置。</li>
+            <li>分发前请清空手机号、VPN 凭据、邮箱授权码和模型 API Key，避免泄露敏感信息。</li>
+          </ol></div>
+        </details>
+      </div>
+    </section>
+
+    <section id="page-logs" class="page standard-page logs-page">
+      <header><h2>运行日志</h2><p>后台活动与授权处理记录</p></header>
+      <div class="card log-shell">
+        <div class="log-toolbar">
+          <div class="log-meta"><span class="live-indicator">实时</span><span id="log-count">0 条记录</span></div>
+          <button id="btn-copy-logs" class="btn mini ghost" disabled>复制日志</button>
+        </div>
+        <div id="log-empty" class="log-empty">
+          <span class="log-empty-icon">≣</span>
+          <strong>暂无运行日志</strong>
+          <p>后台活动和授权处理记录会实时显示在这里</p>
+        </div>
+        <pre id="logbox" class="logbox hidden"></pre>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="credmodal" class="modal hidden">
+  <div class="modal-card modal-card-wide cred-card">
+    <div class="modal-heading"><span class="modal-kicker">VPN CREDENTIAL</span><h3 id="cred-title">VPN 凭据</h3></div>
+    <div class="modal-callout">
+      <strong>什么时候需要输入？</strong>
+      <p>Windows 不允许读取已保存密码的明文。首次接管已有 VPN 时请在此补录一次；若本弹框由“连接”触发，保存后会继续连接，主动维护凭据时只同步、不拨号。</p>
+    </div>
+    <p id="cred-status" class="credential-status"></p>
+    <label>用户名</label><input id="c-user" placeholder="VPN 账号">
+    <label>密码</label>
+    <div class="inp-wrap">
+      <input id="c-pass" type="password" placeholder="VPN 密码">
+      <button id="c-eye" class="eye" type="button" data-secret-label="VPN 密码" aria-label="显示 VPN 密码" aria-pressed="false" title="显示 VPN 密码"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2.8 12s3.2-5 9.2-5 9.2 5 9.2 5-3.2 5-9.2 5-9.2-5-9.2-5Z"/><circle cx="12" cy="12" r="2.5"/></svg></button>
+    </div>
+    <p id="cred-result" class="form-feedback" aria-live="polite"></p>
+    <div class="modal-actions">
+      <button id="btn-cred-cancel" class="btn ghost">取消</button>
+      <button id="btn-cred-ok" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="connectmodal" class="modal hidden">
+  <div class="modal-card modal-card-wide connect-mode-card">
+    <div class="modal-heading"><span class="modal-kicker">CONNECTION MODE</span><h3 id="connect-title">选择连接方式</h3></div>
+    <p id="connect-message" class="modal-lead"></p>
+    <div class="modal-callout">
+      <strong>同时连接提示</strong>
+      <p id="connect-warning">多个 VPN 可能同时修改默认路由或使用重叠网段。</p>
+    </div>
+    <div class="connect-mode-options">
+      <button id="btn-connect-switch" class="mode-option" type="button">
+        <strong>切换连接</strong><span>断开当前 VPN，再连接所选 VPN（推荐）</span>
+      </button>
+      <button id="btn-connect-parallel" class="mode-option" type="button">
+        <strong>同时连接</strong><span>保留当前连接，并在连接后检查路由冲突</span>
+      </button>
+    </div>
+    <div class="modal-actions">
+      <button id="btn-connect-cancel" class="btn ghost">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="capmodal" class="modal hidden">
+  <div class="modal-card captcha-card">
+    <div class="modal-heading"><span class="modal-kicker">SECURITY CHECK</span><h3>人工安全验证</h3></div>
+    <p class="modal-lead">按照下方提示的图标顺序，依次点击主图中的 3 个图标。</p>
+    <div id="cap-wrap"><img id="cap-img" alt=""><div id="cap-marks"></div></div>
+    <div id="cap-tipwrap"><span>点击顺序:</span><img id="cap-tip" alt=""></div>
+    <div class="modal-actions">
+      <button id="btn-cap-reset" class="btn ghost">重置</button>
+      <button id="btn-cap-submit" class="btn primary">提交</button>
+    </div>
+  </div>
+</div>
+
+<div id="smsmodal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sms-title">
+  <div class="modal-card sms-card">
+    <div class="modal-heading"><span id="sms-kicker" class="modal-kicker">SMS VERIFICATION</span><h3 id="sms-title">短信验证码</h3></div>
+    <p id="sms-lead" class="modal-lead">正在等待“手机连接”同步验证码，捕获成功后会自动继续。</p>
+    <div class="modal-callout compact"><p id="sms-callout">未连接手机时，可直接输入收到的验证码。关闭弹框不会停止后台自动捕获。</p></div>
+    <input id="sms-code" placeholder="短信验证码" inputmode="numeric" maxlength="8">
+    <div class="modal-actions">
+      <button id="btn-sms-close" class="btn ghost">关闭</button>
+      <button id="btn-sms-submit" class="btn primary">提交</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card vpn-modal-card">
+    <div class="modal-heading"><span class="modal-kicker">VPN PROFILE</span><h3 id="modal-title">新增 VPN</h3></div>
+    <label>名称</label><input id="m-name" placeholder="如: 中经云pptp">
+    <label>服务器地址</label><input id="m-server" placeholder="vpn.example.com">    <label>类型</label>
+    <div class="dd">
+      <button type="button" id="m-type-btn" class="dd-btn">Automatic</button>
+      <div id="m-type-list" class="dd-list hidden">
+        <a data-v="Automatic">Automatic</a><a data-v="Pptp">Pptp</a>
+        <a data-v="L2tp">L2tp</a><a data-v="Ikev2">Ikev2</a>
+      </div>
+    </div>
+    <div id="m-l2tp-fields" class="hidden">
+      <label>L2TP 预共享密钥（可选）</label>
+      <div class="inp-wrap"><input id="m-l2tp-key" type="password" autocomplete="off" placeholder="使用证书认证时留空">
+        <button id="m-l2tp-eye" class="eye" type="button" data-secret-label="预共享密钥" aria-label="显示预共享密钥" aria-pressed="false" title="显示预共享密钥"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2.8 12s3.2-5 9.2-5 9.2 5 9.2 5-3.2 5-9.2 5-9.2-5-9.2-5Z"/><circle cx="12" cy="12" r="2.5"/></svg></button></div>
+    </div>
+    <div class="vpn-routing-settings">
+      <div class="credential-section-head"><strong>远程默认网关</strong><span>控制连接后的全隧道与分流</span></div>
+      <div class="gateway-setting">
+        <div><strong>IPv4 默认网关</strong><span>开启后 IPv4 流量优先经过此 VPN</span></div>
+        <label class="switch compact-switch"><input id="m-ipv4-gateway" type="checkbox"><i></i></label>
+      </div>
+      <div class="gateway-setting">
+        <div><strong>IPv6 默认网关</strong><span>开启后 IPv6 流量优先经过此 VPN</span></div>
+        <label class="switch compact-switch"><input id="m-ipv6-gateway" type="checkbox"><i></i></label>
+      </div>
+      <p class="credential-note">修改已连接的 VPN 时，断开并重新连接后路由设置才会完全生效。</p>
+    </div>
+    <div id="m-credential-fields" class="vpn-create-credentials">
+      <div class="credential-section-head"><strong>登录凭据（可选）</strong><span>填写后保存到软件并同步 Windows</span></div>
+      <div class="modal-field-grid">
+        <div><label>用户名</label><input id="m-user" autocomplete="username" placeholder="VPN 用户名"></div>
+        <div><label>密码</label><div class="inp-wrap"><input id="m-pass" type="password" autocomplete="current-password" placeholder="VPN 密码">
+          <button id="m-pass-eye" class="eye" type="button" data-secret-label="VPN 密码" aria-label="显示 VPN 密码" aria-pressed="false" title="显示 VPN 密码"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2.8 12s3.2-5 9.2-5 9.2 5 9.2 5-3.2 5-9.2 5-9.2-5-9.2-5Z"/><circle cx="12" cy="12" r="2.5"/></svg></button></div></div>
+      </div>
+      <p class="credential-note">IKEv2/EAP 由软件调用 Windows 系统连接能力并使用已保存凭据，无需进入系统设置或重复确认。</p>
+    </div>
+    <p id="m-result" class="form-feedback" aria-live="polite"></p>
+    <div class="modal-actions">
+      <button id="btn-modal-cancel" class="btn ghost">取消</button>
+      <button id="btn-modal-ok" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+<div id="confirmmodal" class="modal hidden" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+  <div class="modal-card confirm-card">
+    <span id="confirm-kicker" class="modal-kicker danger-kicker">危险操作</span>
+    <div class="confirm-heading"><span id="confirm-icon" class="confirm-icon">!</span><h3 id="confirm-title">确认操作</h3></div>
+    <p id="confirm-message" class="confirm-message"></p>
+    <div class="modal-actions">
+      <button id="btn-confirm-cancel" class="btn ghost">取消</button>
+      <button id="btn-confirm-ok" class="btn danger danger-solid">确认</button>
+    </div>
+  </div>
+</div>
+<div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+<script src="app.js"></script>
+<script src="routing_nodes.js"></script>
+<script src="routing_telemetry.js"></script>
+<script src="routing.js"></script>
+<script src="proxy.js"></script>
+</body>
+</html>

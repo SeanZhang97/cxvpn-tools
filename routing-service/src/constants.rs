@@ -1,0 +1,11 @@
+pub const SERVICE_ID: &str = "CXVPNRoutingService";
+pub const SERVICE_DISPLAY_NAME: &str = "CXVPN 统一分流服务";
+pub const SERVICE_DESCRIPTION: &str = "CXVPN 管理器的 Mihomo 路由控制服务";
+pub const SERVICE_BINARY: &str = "CXVPNRoutingHost.exe";
+pub const MIHOMO_BINARY: &str = "mihomo.exe";
+pub const PIPE_NAME: &str = r"\\.\pipe\CXVPNRoutingService.v1";
+pub const PROTOCOL_VERSION: u32 = 3;
+pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const MIHOMO_SHA256: &str = "F55B3028D9160BEB9044F21B05DD7405B46524614A19642D6291492F5F985761";
+pub const MAX_REQUEST_BYTES: u32 = 192 * 1024 * 1024;
+pub const TRANSACTION_TIMEOUT_SECS: u64 = 90;

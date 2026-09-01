@@ -1,0 +1,208 @@
+use crate::{
+    constants::{
+        MIHOMO_BINARY, MIHOMO_SHA256, SERVICE_BINARY, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME,
+        SERVICE_ID,
+    },
+    util::{atomic_write, program_data_dir, sha256_file, AppResult},
+};
+use std::{
+    fs,
+    path::Path,
+    process::{Command, Output},
+    thread,
+    time::Duration,
+};
+
+pub fn install(owner_sid: &str) -> AppResult<()> {
+    validate_owner_sid(owner_sid)?;
+    let source_service =
+        std::env::current_exe().map_err(|e| format!("读取服务程序路径失败: {e}"))?;
+    let source_dir = source_service
+        .parent()
+        .ok_or_else(|| "服务程序目录无效".to_string())?;
+    let source_mihomo = source_dir.join(MIHOMO_BINARY);
+    if !source_mihomo.is_file() {
+        return Err("安装包缺少 mihomo.exe".to_string());
+    }
+    if !sha256_file(&source_mihomo)?.eq_ignore_ascii_case(MIHOMO_SHA256) {
+        return Err("安装包中的 Mihomo 完整性校验失败".to_string());
+    }
+
+    let base = program_data_dir();
+    fs::create_dir_all(&base).map_err(|e| format!("创建服务目录失败: {e}"))?;
+    let target_service = base.join(SERVICE_BINARY);
+    let target_mihomo = base.join(MIHOMO_BINARY);
+    let service_backup = base.join("CXVPNRoutingHost.previous.exe");
+    let owner_backup = base.join("owner.previous.sid");
+    let old_host_available = target_service.is_file();
+    let old_winsw = base.join(format!("{SERVICE_ID}.exe"));
+    let old_winsw_available =
+        old_winsw.is_file() && base.join(format!("{SERVICE_ID}.xml")).is_file();
+    if old_host_available {
+        fs::copy(&target_service, &service_backup)
+            .map_err(|e| format!("备份旧服务程序失败: {e}"))?;
+    }
+    if base.join("owner.sid").is_file() {
+        let _ = fs::copy(base.join("owner.sid"), &owner_backup);
+    }
+
+    stop_and_delete_service();
+    let result = (|| -> AppResult<()> {
+        fs::copy(&source_service, &target_service).map_err(|e| format!("复制服务程序失败: {e}"))?;
+        if !target_mihomo.is_file()
+            || !sha256_file(&target_mihomo)?.eq_ignore_ascii_case(MIHOMO_SHA256)
+        {
+            fs::copy(&source_mihomo, &target_mihomo)
+                .map_err(|e| format!("复制 Mihomo 失败: {e}"))?;
+        }
+        if !sha256_file(&target_mihomo)?.eq_ignore_ascii_case(MIHOMO_SHA256) {
+            return Err("复制后的 Mihomo 完整性校验失败".to_string());
+        }
+        atomic_write(&base.join("owner.sid"), owner_sid.as_bytes())?;
+        harden_acl(&base)?;
+        create_service(&target_service)?;
+        start_service()?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        stop_and_delete_service();
+        if old_host_available && service_backup.is_file() {
+            let _ = fs::copy(&service_backup, &target_service);
+            if owner_backup.is_file() {
+                let _ = fs::copy(&owner_backup, base.join("owner.sid"));
+            }
+            let _ = create_service(&target_service).and_then(|_| start_service());
+        } else if old_winsw_available {
+            let _ = run_checked(&old_winsw, &["install"]);
+            let _ = run_checked(&old_winsw, &["start"]);
+        }
+        return Err(format!("安装新路由服务失败，已尝试恢复旧服务: {error}"));
+    }
+    let _ = fs::remove_file(service_backup);
+    let _ = fs::remove_file(owner_backup);
+    Ok(())
+}
+
+pub fn uninstall() -> AppResult<()> {
+    stop_and_delete_service();
+    Ok(())
+}
+
+fn create_service(binary: &Path) -> AppResult<()> {
+    let quoted = format!("\"{}\"", binary.display());
+    run_sc(&[
+        "create",
+        SERVICE_ID,
+        "binPath=",
+        &quoted,
+        "start=",
+        "auto",
+        "DisplayName=",
+        SERVICE_DISPLAY_NAME,
+    ])?;
+    run_sc(&["description", SERVICE_ID, SERVICE_DESCRIPTION])?;
+    let _ = run_sc(&[
+        "failure",
+        SERVICE_ID,
+        "reset=",
+        "3600",
+        "actions=",
+        "restart/10000/restart/30000/restart/60000",
+    ]);
+    let _ = run_sc(&["failureflag", SERVICE_ID, "1"]);
+    let _ = run_sc(&["sidtype", SERVICE_ID, "unrestricted"]);
+    Ok(())
+}
+
+fn start_service() -> AppResult<()> {
+    let _ = run_sc(&["start", SERVICE_ID]);
+    for _ in 0..30 {
+        let output = run_output("sc.exe", &["query", SERVICE_ID])?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && text.contains("RUNNING") {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    Err("Windows Service 未进入 Running 状态".to_string())
+}
+
+fn stop_and_delete_service() {
+    let query = run_output("sc.exe", &["query", SERVICE_ID]);
+    if !query.as_ref().is_ok_and(|value| value.status.success()) {
+        return;
+    }
+    let _ = run_output("sc.exe", &["stop", SERVICE_ID]);
+    for _ in 0..40 {
+        if let Ok(output) = run_output("sc.exe", &["query", SERVICE_ID]) {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if text.contains("STOPPED") {
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    let _ = run_output("sc.exe", &["delete", SERVICE_ID]);
+    for _ in 0..40 {
+        if run_output("sc.exe", &["query", SERVICE_ID]).is_ok_and(|value| !value.status.success()) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn harden_acl(base: &Path) -> AppResult<()> {
+    let value = base.to_string_lossy().into_owned();
+    run_checked(
+        Path::new("icacls.exe"),
+        &[
+            &value,
+            "/inheritance:r",
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+        ],
+    )?;
+    Ok(())
+}
+
+fn run_sc(args: &[&str]) -> AppResult<Output> {
+    run_checked(Path::new("sc.exe"), args)
+}
+
+fn run_checked(program: &Path, args: &[&str]) -> AppResult<Output> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("无法执行 {}: {e}", program.display()))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(if output.stderr.is_empty() {
+            &output.stdout
+        } else {
+            &output.stderr
+        });
+        return Err(format!("{} 执行失败: {}", program.display(), detail.trim()));
+    }
+    Ok(output)
+}
+
+fn run_output(program: &str, args: &[&str]) -> AppResult<Output> {
+    Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("无法执行 {program}: {e}"))
+}
+
+fn validate_owner_sid(value: &str) -> AppResult<()> {
+    if value.starts_with("S-1-")
+        && value.len() <= 184
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'S')
+    {
+        Ok(())
+    } else {
+        Err("当前 Windows 用户 SID 无效".to_string())
+    }
+}

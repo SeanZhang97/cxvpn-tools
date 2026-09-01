@@ -1,0 +1,32 @@
+# Python local environment and caches
+.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local user configuration and runtime state
+/config.json
+/config.*.tmp
+/webview_data/
+/browser_data*/
+/captcha_cache/
+/routing_data/
+
+# Logs and diagnostics
+*.log
+
+# Build outputs and generated metadata
+/build_tmp/
+/dist/
+/*.spec
+/routing-service/target/
+/runtime/routing/CXVPNRoutingHost.exe
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
