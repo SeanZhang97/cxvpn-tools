@@ -277,7 +277,7 @@ class RoutingReliabilityTests(unittest.TestCase):
         manager._start_standby_runtime = mock.Mock()
 
         result = manager.apply(
-            {'enabled': False, 'schema_version': 6,
+            {'enabled': False, 'schema_version': 7,
              'capture_mode': 'system-proxy'}, defer_standby=True,
             allow_fast_toggle=True)
 

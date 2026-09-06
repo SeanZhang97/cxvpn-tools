@@ -13,6 +13,8 @@ assert.doesNotMatch(app, /async function poll\s*\(/);
 assert.match(app, /wait_ui_state\(uiStateVersion, 25\)/);
 assert.match(app, /get_ui_state_snapshot\(\)/);
 assert.match(app, /cxvpn:uistate/);
+assert.match(app, /if \(snapshot\.ip_info\) renderIpInfo\(snapshot\.ip_info\)/);
+assert.doesNotMatch(app, /for \(let attempt = 0; info\?\.loading/);
 assert.match(app, /uiStateRetryMs = Math\.min\(15000/);
 assert.match(proxy, /set_routing_telemetry_active/);
 assert.match(proxy, /event\.detail\?\.routing_telemetry/);

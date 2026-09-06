@@ -9,7 +9,7 @@ import sys
 import unicodedata
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 BUILTIN_PACKS = {'off', 'local-direct-v1', 'cn-direct-v1'}
 BUILTIN_PACK_ORDER = ('off', 'local-direct-v1', 'cn-direct-v1')
 RULE_PACK_DIR_NAME = 'rule-packs'
@@ -159,13 +159,15 @@ def _cn_rules():
 
 _RULES_BY_PACK = {'off': []}
 _ERRORS_BY_PACK = {}
+_CN_DIRECT_SUFFIXES = []
 
 
 def load_rule_packs():
     """软件启动时加载一次规则文件，运行期间使用同一份内存快照。"""
-    global _RULES_BY_PACK, _ERRORS_BY_PACK
+    global _RULES_BY_PACK, _ERRORS_BY_PACK, _CN_DIRECT_SUFFIXES
     loaded = {'off': []}
     errors = {}
+    cn_suffixes = []
     try:
         local = _local_rules()
     except RulePackError as exc:
@@ -175,11 +177,14 @@ def load_rule_packs():
     else:
         loaded['local-direct-v1'] = local
         try:
-            loaded['cn-direct-v1'] = local + _cn_rules()
+            cn_rules = _cn_rules()
+            loaded['cn-direct-v1'] = local + cn_rules
+            cn_suffixes = [raw.split(',', 2)[1] for raw in cn_rules]
         except RulePackError as exc:
             errors['cn-direct-v1'] = str(exc)
     _RULES_BY_PACK = loaded
     _ERRORS_BY_PACK = errors
+    _CN_DIRECT_SUFFIXES = cn_suffixes
 
 
 def rules_for(pack_id):
@@ -188,6 +193,13 @@ def rules_for(pack_id):
     if pack_id in _ERRORS_BY_PACK:
         raise RulePackError(_ERRORS_BY_PACK[pack_id])
     return list(_RULES_BY_PACK.get(pack_id, []))
+
+
+def cn_direct_suffixes():
+    """返回启动时加载的国内域名后缀，不包含 local-direct-v1 的本地规则。"""
+    if 'cn-direct-v1' in _ERRORS_BY_PACK:
+        raise RulePackError(_ERRORS_BY_PACK['cn-direct-v1'])
+    return list(_CN_DIRECT_SUFFIXES)
 
 
 def _metadata(pack_id):
@@ -213,6 +225,10 @@ def detail(pack_id):
         rules = []
         result['error'] = str(exc)
     result['rule_count'] = len(rules)
+    result['system_proxy_domain_count'] = (
+        len(_CN_DIRECT_SUFFIXES) if pack_id == 'cn-direct-v1' else 0)
+    result['system_proxy_domains'] = (
+        list(_CN_DIRECT_SUFFIXES) if pack_id == 'cn-direct-v1' else [])
     result['rules'] = [{
         'index': index,
         'type': parts[0],
@@ -226,6 +242,7 @@ def detail(pack_id):
 def summary(pack_id):
     result = detail(pack_id)
     result.pop('rules', None)
+    result.pop('system_proxy_domains', None)
     return result
 
 

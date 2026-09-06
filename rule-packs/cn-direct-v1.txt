@@ -1,4 +1,4 @@
-# CX VPN TOOLS 国内域名后缀
+# CXVPNTools 国内域名后缀
 # UTF-8；每行只写一个域名后缀，不要填写协议、端口或路径。
 # 支持空行和以 # 开头的注释；重复项会按第一次出现的位置合并。
 # 此文件会自动叠加 local-direct-v1.txt，无需重复填写本地网段。
@@ -87,5 +87,7 @@ xf-yun.com
 
 # 教育
 chaoxing.com
+aichaoxing.com
+sslibrary.com
 wisweb.com
 cldisk.com

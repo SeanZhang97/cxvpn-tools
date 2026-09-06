@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""build.py - PyInstaller 打包 (onedir 便携版)
+"""build.py - PyInstaller 打包 CXVPNTools (onedir 便携版)
 
-产物: dist/CX VPN TOOLS/ 整个文件夹可打 zip 分发。
+产物: dist/CXVPNTools/ 整个文件夹可打 zip 分发。
 首次构建带控制台窗口便于排错, 稳定后把 --noconsole 打开。
 """
 import os
@@ -13,13 +13,15 @@ import PyInstaller.__main__
 from build_runtime import build_routing_service
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-APP_NAME = 'CX VPN TOOLS'
-LEGACY_APP_NAME = 'CXVPN管理器'
+APP_NAME = 'CXVPNTools'
+LEGACY_APP_NAMES = ('CX VPN TOOLS', 'CXVPN管理器')
 DIST_DIR = os.path.join(BASE, 'dist')
 DIST_ROOT = os.path.join(DIST_DIR, APP_NAME)
 DIST_CFG = os.path.join(DIST_ROOT, 'config.json')
-LEGACY_DIST_CFG = os.path.join(
-    DIST_DIR, LEGACY_APP_NAME, 'config.json')
+LEGACY_DIST_ROOTS = [
+    os.path.join(DIST_DIR, name) for name in LEGACY_APP_NAMES]
+LEGACY_DIST_CFG = [
+    os.path.join(root, 'config.json') for root in LEGACY_DIST_ROOTS]
 RULE_PACK_FILES = ('local-direct-v1.txt', 'cn-direct-v1.txt')
 SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
 DIST_RULE_PACK_DIR = os.path.join(DIST_ROOT, 'rule-packs')
@@ -29,7 +31,7 @@ build_routing_service()
 # 重打包前保留用户配置, 构建后恢复
 saved_cfg = None
 source_cfg = next(
-    (path for path in (DIST_CFG, LEGACY_DIST_CFG) if os.path.exists(path)),
+    (path for path in (DIST_CFG, *LEGACY_DIST_CFG) if os.path.exists(path)),
     None)
 if source_cfg:
     saved_cfg = os.path.join(BASE, 'build_tmp', 'config.json.keep')
@@ -37,9 +39,12 @@ if source_cfg:
     shutil.copy2(source_cfg, saved_cfg)
 saved_rule_packs = {}
 for filename in RULE_PACK_FILES:
-    path = os.path.join(DIST_RULE_PACK_DIR, filename)
-    if os.path.isfile(path):
-        with open(path, 'rb') as stream:
+    source = next((path for path in (
+        os.path.join(DIST_RULE_PACK_DIR, filename),
+        *(os.path.join(root, 'rule-packs', filename)
+          for root in LEGACY_DIST_ROOTS)) if os.path.isfile(path)), None)
+    if source:
+        with open(source, 'rb') as stream:
             saved_rule_packs[filename] = stream.read()
 
 args = [

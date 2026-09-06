@@ -78,6 +78,8 @@ class RoutingConfigTests(unittest.TestCase):
             item for item in generated['proxy-groups']
             if item['name'] == 'PROXY')
         self.assertEqual(primary_group['type'], 'url-test')
+        self.assertEqual(primary_group['proxies'], ['PROXY-default'])
+        self.assertNotIn('use', primary_group)
         self.assertEqual(
             generated['proxy-providers']['provider-default']['override'],
             {'additional-prefix': '[默认订阅] ', 'interface-name': '以太网'})
@@ -145,6 +147,9 @@ class RoutingConfigTests(unittest.TestCase):
 
         groups = {item['name']: item for item in generated['proxy-groups']}
         self.assertEqual(groups['PROXY']['type'], 'fallback')
+        self.assertEqual(groups['PROXY']['proxies'], [
+            'PROXY-alpha', 'PROXY-beta'])
+        self.assertNotIn('use', groups['PROXY'])
         self.assertEqual(groups['PROXY-beta']['type'], 'select')
         self.assertNotIn('url', groups['PROXY-beta'])
         self.assertEqual(generated['rules'][0],

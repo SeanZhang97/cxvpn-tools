@@ -1,4 +1,4 @@
-# CX VPN TOOLS 本地直连规则
+# CXVPNTools 本地直连规则
 # UTF-8；每行格式：规则类型,匹配值[,no-resolve]
 # 支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-WILDCARD、IP-CIDR、IP-CIDR6。
 # 出口固定为 PHYSICAL，无需写入文件；空行和以 # 开头的行会被忽略。

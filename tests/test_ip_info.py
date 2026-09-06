@@ -1,4 +1,5 @@
 import unittest
+import threading
 from unittest import mock
 
 from core import ip_info
@@ -183,6 +184,40 @@ class IpInfoTests(unittest.TestCase):
         self.assertTrue(result['local']['ok'])
         self.assertFalse(result['domestic']['ok'])
         self.assertTrue(result['overseas']['ok'])
+
+    @mock.patch('core.ip_info.query_overseas')
+    @mock.patch('core.ip_info.query_domestic')
+    @mock.patch('core.ip_info.query_local')
+    def test_collect_publishes_fast_result_before_slow_queries_finish(
+            self, local, domestic, overseas):
+        release_slow = threading.Event()
+        fast_published = threading.Event()
+        published = []
+        local.return_value = {'ok': True, 'ip': '192.168.1.2'}
+
+        def slow_result():
+            release_slow.wait(1)
+            return {'ok': False, 'error': 'timeout'}
+
+        domestic.side_effect = slow_result
+        overseas.side_effect = slow_result
+
+        def on_result(name, result):
+            published.append((name, result))
+            if name == 'local':
+                fast_published.set()
+
+        collector = threading.Thread(
+            target=lambda: ip_info.collect_ip_info(on_result=on_result))
+        collector.start()
+        self.assertTrue(fast_published.wait(0.5))
+        self.assertTrue(collector.is_alive())
+        self.assertEqual(published[0][0], 'local')
+        release_slow.set()
+        collector.join(1)
+        self.assertFalse(collector.is_alive())
+        self.assertEqual(len(published), 3)
+        self.assertTrue(all(isinstance(result, dict) for _, result in published))
 
 
 if __name__ == '__main__':

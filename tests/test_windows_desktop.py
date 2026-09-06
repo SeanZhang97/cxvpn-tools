@@ -39,12 +39,17 @@ class _FakeRegistry:
 
 
 class _FakeKernel32:
-    def __init__(self, last_error=0):
+    def __init__(self, last_error=0, errors=None):
         self.last_error = last_error
+        self.errors = list(errors or [])
         self.closed = []
+        self.created = []
 
-    def CreateMutexW(self, _attributes, _owner, _name):
-        return 123
+    def CreateMutexW(self, _attributes, _owner, name):
+        self.created.append(name)
+        if self.errors:
+            self.last_error = self.errors[len(self.created) - 1]
+        return 122 + len(self.created)
 
     def GetLastError(self):
         return self.last_error
@@ -79,11 +84,12 @@ class _FakeUser32:
 class WindowsDesktopTest(unittest.TestCase):
     def test_startup_command_quotes_frozen_executable(self):
         command = windows_desktop.startup_command(
-            executable=r'C:\Program Files\CX VPN\CXVPN管理器.exe',
+            executable=r'C:\Program Files\CXVPNTools\CXVPNTools.exe',
             frozen=True)
 
         self.assertEqual(
-            r'"C:\Program Files\CX VPN\CXVPN管理器.exe" --startup', command)
+            r'"C:\Program Files\CXVPNTools\CXVPNTools.exe" --startup',
+            command)
 
     def test_source_startup_command_includes_main(self):
         command = windows_desktop.startup_command(
@@ -95,7 +101,7 @@ class WindowsDesktopTest(unittest.TestCase):
 
     def test_enable_disable_startup_uses_current_command(self):
         registry = _FakeRegistry()
-        command = r'"C:\App\CXVPN管理器.exe" --startup'
+        command = r'C:\App\CXVPNTools.exe --startup'
 
         windows_desktop.set_startup_enabled(
             True, registry=registry, command=command)
@@ -103,11 +109,54 @@ class WindowsDesktopTest(unittest.TestCase):
             registry=registry, command=command))
         self.assertFalse(windows_desktop.is_startup_enabled(
             registry=registry,
-            command=r'"D:\Moved\CXVPN管理器.exe" --startup'))
+            command=r'D:\Moved\CXVPNTools.exe --startup'))
 
         windows_desktop.set_startup_enabled(False, registry=registry)
         self.assertFalse(windows_desktop.is_startup_enabled(
             registry=registry, command=command))
+
+    def test_startup_brand_migration_removes_legacy_run_values(self):
+        registry = _FakeRegistry()
+        for name in windows_desktop.LEGACY_APP_NAMES:
+            registry.values[name] = r'C:\Old\CX VPN TOOLS.exe --startup'
+
+        windows_desktop.set_startup_enabled(
+            True, registry=registry,
+            command=r'C:\App\CXVPNTools.exe --startup')
+
+        self.assertEqual(
+            registry.values[windows_desktop.APP_NAME],
+            r'C:\App\CXVPNTools.exe --startup')
+        self.assertTrue(all(
+            name not in registry.values
+            for name in windows_desktop.LEGACY_APP_NAMES))
+
+    def test_startup_brand_migration_preserves_enabled_state(self):
+        registry = _FakeRegistry()
+        registry.values['CX VPN TOOLS'] = (
+            r'C:\Old\CX VPN TOOLS.exe --startup')
+
+        migrated = windows_desktop.migrate_legacy_startup_registration(
+            registry=registry,
+            command=r'C:\App\CXVPNTools.exe --startup')
+
+        self.assertTrue(migrated)
+        self.assertEqual(
+            r'C:\App\CXVPNTools.exe --startup',
+            registry.values[windows_desktop.APP_NAME])
+        self.assertNotIn('CX VPN TOOLS', registry.values)
+
+    def test_startup_brand_migration_keeps_existing_current_value(self):
+        registry = _FakeRegistry()
+        registry.values[windows_desktop.APP_NAME] = 'current-command'
+        registry.values['CXVPN管理器'] = 'legacy-command'
+
+        windows_desktop.migrate_legacy_startup_registration(
+            registry=registry, command='replacement-command')
+
+        self.assertEqual(
+            'current-command', registry.values[windows_desktop.APP_NAME])
+        self.assertNotIn('CXVPN管理器', registry.values)
 
     def test_only_user_close_is_hidden_to_tray(self):
         self.assertTrue(windows_desktop.should_hide_to_tray('UserClosing'))
@@ -124,7 +173,11 @@ class WindowsDesktopTest(unittest.TestCase):
         self.assertTrue(guard.acquire())
         guard.close()
 
-        self.assertEqual([123], kernel32.closed)
+        self.assertEqual(
+            [windows_desktop.INSTANCE_MUTEX,
+             *windows_desktop.LEGACY_INSTANCE_MUTEXES],
+            kernel32.created)
+        self.assertEqual([124, 123], kernel32.closed)
 
     def test_single_instance_guard_rejects_duplicate(self):
         kernel32 = _FakeKernel32(windows_desktop.ERROR_ALREADY_EXISTS)
@@ -132,6 +185,14 @@ class WindowsDesktopTest(unittest.TestCase):
 
         self.assertFalse(guard.acquire())
         self.assertEqual([123], kernel32.closed)
+
+    def test_single_instance_guard_rejects_running_legacy_version(self):
+        kernel32 = _FakeKernel32(errors=[
+            0, windows_desktop.ERROR_ALREADY_EXISTS])
+        guard = windows_desktop.SingleInstanceGuard(kernel32=kernel32)
+
+        self.assertFalse(guard.acquire())
+        self.assertEqual([124, 123], kernel32.closed)
 
     def test_existing_window_is_shown_and_activated(self):
         user32 = _FakeUser32(iconic=True)

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import threading
 import unittest
 from unittest import mock
 
@@ -52,6 +53,43 @@ class ApiStateStreamTests(unittest.TestCase):
         self.assertTrue(target.set_routing_telemetry_active(True))
         target._ui_state_stream.wait.assert_called_once_with(3, 12)
         target.routing_telemetry.set_active.assert_called_once_with(True)
+
+    def test_ui_snapshot_contains_current_ip_info(self):
+        target = api.Api.__new__(api.Api)
+        target._lock = threading.Lock()
+        target._log_version = 7
+        target._ip_info_lock = threading.Lock()
+        target._ip_info = {
+            'loading': True,
+            'local': {'ok': True, 'ip': '192.168.1.2'},
+        }
+        target._manual = None
+        target._sms_ui = False
+        target._sms_ui_id = 0
+        target.get_state = mock.Mock(return_value={})
+        target.vpn_status = mock.Mock(return_value={})
+        target.get_browser = mock.Mock(return_value={})
+        target.routing_telemetry = mock.Mock()
+        target.routing_telemetry.snapshot.return_value = {}
+
+        snapshot = target._build_ui_snapshot()
+
+        self.assertTrue(snapshot['ip_info']['loading'])
+        self.assertEqual(snapshot['ip_info']['local']['ip'], '192.168.1.2')
+
+    def test_force_refresh_queues_while_ip_query_is_running(self):
+        target = api.Api.__new__(api.Api)
+        target._ip_info_lock = threading.Lock()
+        target._ip_info_refresh_queued = False
+        target._ip_info = {'loading': True, 'checked_at': 1}
+        target.log = mock.Mock()
+
+        snapshot = target.get_ip_info(force_refresh=True)
+
+        self.assertTrue(snapshot['loading'])
+        self.assertTrue(target._ip_info_refresh_queued)
+        target.log.assert_called_once_with(
+            '[ip] 网络出口发生新刷新请求，已排队等待当前任务结束')
 
 
 if __name__ == '__main__':

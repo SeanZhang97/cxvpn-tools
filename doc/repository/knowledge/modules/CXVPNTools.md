@@ -1,12 +1,12 @@
-# CX VPN TOOLS
+# CXVPNTools
 
 模块: 业务工具 | 入口: `main.py`（pywebview 窗口）| 后端桥接: `api.py`
 后台线程: `core/worker.py` | 连接编排: `core/vpn_service.py` | 构建: `build.py` | 界面: `ui/`
 内置浏览器: `core/browser_win.py`（WebView2 原生窗口 + JS 桥接）
-最后验证: 2026-09-01 | 分支: 非 Git 工作区
+最后验证: 2026-09-03 | 分支: main
 
-侧栏品牌区使用单行 `CX VPN` + `TOOLS` 标签组合，与 44px 图标垂直居中；
-`TOOLS` 使用青色弱调标签，不再作为字距过宽的第二行副标题。
+侧栏品牌区使用单行 `CXVPN` + `Tools` 组合，与 44px 图标垂直居中；
+产品名、窗口标题、可执行文件与打包目录统一为 `CXVPNTools`。
 
 ## 架构与调用链
 
@@ -36,8 +36,10 @@
   路径并附带 `--startup`；该模式使用 pywebview `hidden=True` 静默启动。托盘基于
   已有 WinForms 消息循环创建 `NotifyIcon`，左键单击或菜单恢复窗口，菜单可显式退出；
   关闭到托盘不发送驻留气泡，人工验证码等需要介入的功能提醒仍会发送。入口使用
-  `Local\CXVPNManager.Singleton.v1` 命名互斥保证单实例；重复启动只查找、恢复并置前
-  标题为“CX VPN TOOLS”的既有窗口，不会创建第二个 Api、worker 或托盘图标。
+  `Local\CXVPNTools.Singleton.v1` 命名互斥保证单实例；同时持有旧
+  `Local\CXVPNManager.Singleton.v1` 以阻止新旧版本并行。重复启动优先查找标题为
+  `CXVPNTools` 的窗口，并兼容唤醒旧版 `CX VPN TOOLS` / `CXVPN管理器`窗口，
+  不会创建第二个 Api、worker 或托盘图标。
   仅 `CloseReason.UserClosing` 且 `close_to_tray=true` 时拦截关闭；关机、注销和显式
   退出必须放行。`CloseReason.WindowsShutDown/TaskManagerClosing` 会先经
   `on_os_shutdown` 同步清扫本地系统代理残留（见 `modules/系统代理残留清扫.md`），
@@ -242,7 +244,7 @@
   collect-submodules webview（2026-08-27 起不再 collect playwright）；
   打包 `runtime/routing` 中锁定版本的 Mihomo/WinSW 与许可证；重打包前自动备份并恢复
   dist 下 config.json。
-- 分发: 整个 `dist/CX VPN TOOLS` 文件夹 zip；目标机需 Win10/11 + Edge + WebView2
+- 分发: 整个 `dist/CXVPNTools` 文件夹 zip；目标机需 Win10/11 + Edge + WebView2
   + 已配对 Phone Link。
 - 图标: make_icon.py 生成黑底圆角流星 icon.ico 与 ui/logo.png；
   改图标后需删除 build_tmp 强制重嵌 EXE 图标（PyInstaller 缓存不感知 icon 变化）。
@@ -259,6 +261,12 @@
 代理服务、启停和遥测连接状态由后端状态流异步更新，相关低频状态区必须使用
 `aria-live="polite"`/`role="status"` 播报；实时上下行速率不得放入 live region，避免高频
 WebSocket 帧持续打断屏幕阅读器。
+代理状态卡片左侧品牌图标以 `ui/assets/chaoxing-original.png` 的超星原始 Logo 为品牌事实来源，
+最终使用同坐标的纯线框、四条能量路径和星星 PNG 图层；外围是独立的完整双轨网络圆环 PNG，
+基础圆环必须连续包裹 Logo，运行高光和节点可分层旋转，不得退回方形应用图标、块状白色标记或
+两侧分散的装饰弧。`ui/proxy.js` 仅在运行状态确认为 `running` 时为 `#proxy-orbit` 添加
+`is-active`，由 CSS 表现圆环双向运动、底部充能、路径向上流光、星星点亮和环形脉冲；异常/未知
+状态降低饱和度，全局 `prefers-reduced-motion` 负责动画降级。
 代理开启属于可能改变 Windows 路由的事务，失败时必须同时保留短时 toast 和代理首页内的持久
 错误反馈；标题需要明确“代理未开启，系统路由已恢复”，正文展示后端已脱敏的具体原因，并允许
 用户手动关闭。不能只依赖约数秒后消失的 toast，否则节点实时检测或服务启动失败后用户无法复查。
@@ -276,7 +284,10 @@ WebSocket 帧持续打断屏幕阅读器。
 中部左侧突出默认 VPN、最近连接、协议/服务器和连接主操作，并在同一行展示「网络出口」卡片；
 卡片分别显示默认 IPv4 路由对应的本机物理网卡地址、国内探测点看到的公网出口和海外探测点
 看到的国外出口，支持逐项复制与手动刷新。`Api.get_ip_info()` 使用五分钟缓存和守护线程刷新，
-连接路由变化后前端触发强制刷新；刷新进行中再次发生路由变化时必须排队补做一次强制刷新。
+连接路由变化后前端触发强制刷新；刷新进行中再次发生路由变化时由后端排队补做一次强制刷新。
+三路查询并发执行并按实际完成顺序逐项写入缓存，每完成一路就唤醒既有 `wait_ui_state`
+版本化状态订阅，前端从快照中的 `ip_info` 立即局部回显；不得为 IP 刷新另建 WebSocket，
+也不得用 500ms 跨桥轮询等待整批结果。
 国内探测始终绕过 Windows 系统代理并跟随默认 IPv4 路由：超星 VPN 开启远程默认网关并连接时
 应反映其北京公网出口，关闭默认网关或断开后应恢复本地成都运营商出口；该结果与国外代理节点
 出口相互独立。Cloudflare `/cdn-cgi/trace` 海外探测需通用识别活跃的

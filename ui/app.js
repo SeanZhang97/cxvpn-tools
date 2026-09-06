@@ -28,8 +28,6 @@ let vpnLoadIncludesForceRefresh = false;
 let lastRenewalStatus = null;
 let repairWasActive = false;
 let repairStateReady = false;
-let ipInfoRequestInFlight = false;
-let ipInfoForceRefreshQueued = false;
 let lastIpRouteSignature = null;
 
 const $ = (id) => document.getElementById(id);
@@ -1325,6 +1323,7 @@ async function syncVpnUi({ forceRefresh = false, refreshConfig = false } = {}) {
 function applyUiStateSnapshot(snapshot) {
   if (!snapshot) return;
   updateOverview(snapshot.state || {}, snapshot.vpn_status || {});
+  if (snapshot.ip_info) renderIpInfo(snapshot.ip_info);
   blockingModalSync = blockingModalSync
     .then(() => syncBlockingModals(snapshot.captcha, snapshot.sms))
     .catch(error => console.error('阻塞弹窗状态同步失败', error));
@@ -1795,28 +1794,12 @@ function renderIpInfo(info = {}) {
 }
 
 async function refreshIpInfo(forceRefresh = false) {
-  if (ipInfoRequestInFlight) {
-    ipInfoForceRefreshQueued ||= !!forceRefresh;
-    return;
-  }
-  ipInfoRequestInFlight = true;
   try {
-    let info = await api().get_ip_info(!!forceRefresh);
+    const info = await api().get_ip_info(!!forceRefresh);
     renderIpInfo(info);
-    for (let attempt = 0; info?.loading && attempt < 16; attempt += 1) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      info = await api().get_ip_info(false);
-      renderIpInfo(info);
-    }
   } catch (e) {
     console.error('网络出口信息刷新失败', e);
     renderIpInfo({});
-  } finally {
-    ipInfoRequestInFlight = false;
-    if (ipInfoForceRefreshQueued) {
-      ipInfoForceRefreshQueued = false;
-      void refreshIpInfo(true);
-    }
   }
 }
 

@@ -7,11 +7,11 @@
 
 流程:
 1. Nuitka --module 把 api.py 与 core/*.py(除包 __init__)编译为 .pyd;
-2. 生成 CX VPN TOOLS-protected.spec(独立文件名, 不与 build.py 的 spec 冲突):
+2. 生成 CXVPNTools-protected.spec(独立文件名, 不与 build.py 的 spec 冲突):
    - 依赖分析仍基于 .py 源码, 第三方/标准库收集与 build.py 完全一致;
    - 打包输出时把业务模块的 pyc 全部替换为第 1 步的 .pyd, 产物内不留业务源码;
    - spec 内断言校验, 残留源码或 .pyd 缺失时直接中止, 绝不静默产出裸包。
-3. 产物与 build.py 相同: dist/CX VPN TOOLS/(onedir 便携目录), 打包前后
+3. 产物与 build.py 相同: dist/CXVPNTools/(onedir 便携目录), 打包前后
    自动备份/恢复用户配置。
 
 唯一仍以字节码随包的业务文件是入口 main.py(PyInstaller 入口必须是真实脚本),
@@ -36,13 +36,15 @@ import PyInstaller.__main__
 from build_runtime import build_routing_service
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-APP_NAME = 'CX VPN TOOLS'
-LEGACY_APP_NAME = 'CXVPN管理器'
+APP_NAME = 'CXVPNTools'
+LEGACY_APP_NAMES = ('CX VPN TOOLS', 'CXVPN管理器')
 DIST_DIR = os.path.join(BASE, 'dist')
 DIST_ROOT = os.path.join(DIST_DIR, APP_NAME)
 DIST_CFG = os.path.join(DIST_ROOT, 'config.json')
-LEGACY_DIST_CFG = os.path.join(
-    DIST_DIR, LEGACY_APP_NAME, 'config.json')
+LEGACY_DIST_ROOTS = [
+    os.path.join(DIST_DIR, name) for name in LEGACY_APP_NAMES]
+LEGACY_DIST_CFG = [
+    os.path.join(root, 'config.json') for root in LEGACY_DIST_ROOTS]
 RULE_PACK_FILES = ('local-direct-v1.txt', 'cn-direct-v1.txt')
 SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
 DIST_RULE_PACK_DIR = os.path.join(DIST_ROOT, 'rule-packs')
@@ -199,7 +201,7 @@ def main():
     build_routing_service()
     saved_cfg = None
     source_cfg = next(
-        (path for path in (DIST_CFG, LEGACY_DIST_CFG)
+        (path for path in (DIST_CFG, *LEGACY_DIST_CFG)
          if os.path.exists(path)), None)
     if source_cfg:
         saved_cfg = os.path.join(WORK, 'config.json.keep')
@@ -207,9 +209,12 @@ def main():
         shutil.copy2(source_cfg, saved_cfg)
     saved_rule_packs = {}
     for filename in RULE_PACK_FILES:
-        path = os.path.join(DIST_RULE_PACK_DIR, filename)
-        if os.path.isfile(path):
-            with open(path, 'rb') as stream:
+        source = next((path for path in (
+            os.path.join(DIST_RULE_PACK_DIR, filename),
+            *(os.path.join(root, 'rule-packs', filename)
+              for root in LEGACY_DIST_ROOTS)) if os.path.isfile(path)), None)
+        if source:
+            with open(source, 'rb') as stream:
                 saved_rule_packs[filename] = stream.read()
     try:
         staged = compile_business_code()

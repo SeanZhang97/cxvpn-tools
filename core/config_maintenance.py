@@ -14,6 +14,9 @@ from core import config as cfgmod
 from core import routing
 
 
+LEGACY_ROUTING_DATA_DIR = 'CXVPNManager'
+
+
 BACKUP_VERSION = 1
 HISTORY_LIMIT = 12
 MAX_IMPORT_BYTES = 2 * 1024 * 1024
@@ -264,6 +267,10 @@ def diagnostic_bundle(config, app_logs, core_logs=None, service=None,
             'outbound_types': outbounds,
             'bypass_domain_count': len(
                 normalized['system_proxy_bypass']['domains']),
+            'include_cn_direct': bool(
+                normalized['system_proxy_bypass']['include_cn_direct']),
+            'effective_system_proxy_bypass_domain_count': len(
+                routing.system_proxy_bypass_domains(normalized)),
             'bypass_process_count': len(
                 normalized['system_proxy_bypass']['processes']),
         },
@@ -285,7 +292,8 @@ class ConfigHistory:
     def __init__(self, root=None):
         base = root or os.path.join(
             os.environ.get('LOCALAPPDATA') or cfgmod.BASE,
-            'CXVPNManager', 'routing', 'history')
+            # 用户数据目录本轮不迁移，继续读取既有历史位置。
+            LEGACY_ROUTING_DATA_DIR, 'routing', 'history')
         self.root = base
 
     @staticmethod

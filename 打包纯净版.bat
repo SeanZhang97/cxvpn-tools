@@ -2,7 +2,7 @@
 rem Build a clean distribution archive without local credentials or sessions.
 setlocal
 set "ROOT=%~dp0"
-set "APP_NAME=CX VPN TOOLS"
+set "APP_NAME=CXVPNTools"
 set "APP_DIR=%ROOT%dist\%APP_NAME%"
 set "OUT=%ROOT%dist\%APP_NAME%-clean.zip"
 set "TAR=%SystemRoot%\System32\tar.exe"

@@ -4,8 +4,8 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-APP_NAME = 'CX VPN TOOLS'
-LEGACY_APP_NAME = 'CXVPN管理器'
+APP_NAME = 'CXVPNTools'
+LEGACY_APP_NAMES = ('CX VPN TOOLS', 'CXVPN管理器')
 
 
 class BuildBrandingTest(unittest.TestCase):
@@ -14,16 +14,18 @@ class BuildBrandingTest(unittest.TestCase):
             source = (ROOT / relative).read_text(encoding='utf-8')
             self.assertIn(APP_NAME, source, relative)
 
-    def test_legacy_name_is_only_used_for_config_migration(self):
+    def test_legacy_names_are_only_used_for_config_migration(self):
         build_source = (ROOT / 'build.py').read_text(encoding='utf-8')
         protected_source = (
             ROOT / 'build_protected.py').read_text(encoding='utf-8')
         batch_source = (ROOT / '打包纯净版.bat').read_text(
             encoding='utf-8')
 
-        self.assertIn("LEGACY_APP_NAME = 'CXVPN管理器'", build_source)
-        self.assertIn("LEGACY_APP_NAME = 'CXVPN管理器'", protected_source)
-        self.assertNotIn(LEGACY_APP_NAME, batch_source)
+        expected = "LEGACY_APP_NAMES = ('CX VPN TOOLS', 'CXVPN管理器')"
+        self.assertIn(expected, build_source)
+        self.assertIn(expected, protected_source)
+        for legacy in LEGACY_APP_NAMES:
+            self.assertNotIn(legacy, batch_source)
 
     def test_expected_output_paths_are_documented(self):
         build_source = (ROOT / 'build.py').read_text(encoding='utf-8')
@@ -35,6 +37,15 @@ class BuildBrandingTest(unittest.TestCase):
             "SPEC_PATH = os.path.join(BASE, APP_NAME + '-protected.spec')",
             protected_source)
         self.assertIn("APP_NAME + '.exe'", protected_source)
+
+    def test_desktop_identity_uses_exact_product_name(self):
+        source = (ROOT / 'core' / 'windows_desktop.py').read_text(
+            encoding='utf-8')
+
+        self.assertIn("APP_NAME = 'CXVPNTools'", source)
+        self.assertIn("WINDOW_TITLE = 'CXVPNTools'", source)
+        self.assertIn(
+            r"INSTANCE_MUTEX = r'Local\CXVPNTools.Singleton.v1'", source)
 
     def test_rule_pack_files_are_distributed_and_preserved(self):
         for filename in ('local-direct-v1.txt', 'cn-direct-v1.txt'):

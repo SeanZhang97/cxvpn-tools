@@ -183,11 +183,92 @@ h3 { font-size: 14px; margin-bottom: 6px; }
   border-right: 1px solid rgba(255,255,255,.075);
 }
 .proxy-orbit {
-  width: 126px; height: 126px; flex: none; display: grid; place-items: center;
-  border: 1px solid rgba(99,102,241,.42); border-radius: 50%;
-  background: rgba(8,14,31,.72); box-shadow: inset 0 0 34px rgba(99,102,241,.15), 0 0 30px rgba(34,211,238,.05);
+  position: relative; width: 138px; height: 138px; flex: none; isolation: isolate;
+  border-radius: 50%;
 }
-.proxy-orbit img { width: 72px; height: 72px; border-radius: 20px; object-fit: cover; box-shadow: 0 12px 28px rgba(0,0,0,.32); }
+.proxy-orbit-layer {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
+  pointer-events: none; user-select: none; transform-origin: 50% 50%;
+}
+.proxy-orbit-pulse { z-index: 0; opacity: 0; filter: blur(.4px) brightness(1.24); }
+.proxy-orbit-base { z-index: 1; opacity: .38; filter: saturate(.72) brightness(.74); }
+.proxy-orbit-motion { z-index: 2; opacity: 0; }
+.proxy-orbit-motion-primary {
+  filter: saturate(1.18) brightness(1.12) drop-shadow(0 0 3px rgba(34,211,238,.38));
+}
+.proxy-orbit-motion-secondary {
+  z-index: 3; filter: hue-rotate(28deg) saturate(1.05) brightness(.8);
+}
+.proxy-logo-base,
+.proxy-logo-charge,
+.proxy-logo-scan,
+.proxy-star-ignite { inset: 0; width: 100%; height: 100%; }
+.proxy-logo-base {
+  z-index: 4; opacity: .48;
+  filter: saturate(.72) brightness(.82) drop-shadow(0 5px 9px rgba(2,6,23,.45));
+}
+.proxy-logo-charge {
+  z-index: 5; opacity: 0;
+  filter: saturate(1.2) brightness(1.18) drop-shadow(0 0 4px rgba(34,211,238,.52));
+}
+.proxy-logo-scan {
+  z-index: 6; opacity: 0;
+  filter: brightness(1.5) drop-shadow(0 0 6px rgba(34,211,238,.88));
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,.24) 34%, #000 46%, #000 54%, rgba(0,0,0,.24) 66%, transparent 100%);
+  -webkit-mask-repeat: no-repeat; -webkit-mask-size: 100% 220%;
+  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,.24) 34%, #000 46%, #000 54%, rgba(0,0,0,.24) 66%, transparent 100%);
+  mask-repeat: no-repeat; mask-size: 100% 220%;
+}
+.proxy-star-ignite {
+  z-index: 7; opacity: .18;
+  filter: brightness(.72) drop-shadow(0 0 3px rgba(99,102,241,.3));
+}
+.proxy-orbit.is-active .proxy-orbit-base { opacity: .54; }
+.proxy-orbit.is-active .proxy-orbit-motion-primary {
+  opacity: .82; animation: proxy-orbit-clockwise 9.2s linear infinite;
+}
+.proxy-orbit.is-active .proxy-orbit-motion-secondary {
+  opacity: .24; animation: proxy-orbit-counterclockwise 14.8s linear -5.2s infinite;
+}
+.proxy-orbit.is-active .proxy-orbit-pulse { animation: proxy-orbit-pulse 6.4s ease-out infinite; }
+.proxy-orbit.is-active .proxy-logo-base { opacity: .62; }
+.proxy-orbit.is-active .proxy-logo-charge { animation: proxy-logo-charge 6.4s ease-out infinite; }
+.proxy-orbit.is-active .proxy-logo-scan { animation: proxy-logo-scan 6.4s cubic-bezier(.4,0,.2,1) infinite; }
+.proxy-orbit.is-active .proxy-star-ignite { animation: proxy-star-ignite 6.4s ease-out infinite; }
+.proxy-orbit.is-warning { filter: saturate(.35); }
+@keyframes proxy-orbit-clockwise {
+  to { transform: rotate(360deg); }
+}
+@keyframes proxy-orbit-counterclockwise {
+  from { transform: rotate(22deg) scale(.985); }
+  to { transform: rotate(-338deg) scale(.985); }
+}
+@keyframes proxy-orbit-pulse {
+  0%, 61% { opacity: 0; transform: scale(.975); }
+  66% { opacity: .52; transform: scale(1); }
+  78% { opacity: 0; transform: scale(1.075); }
+  100% { opacity: 0; transform: scale(1.075); }
+}
+@keyframes proxy-logo-charge {
+  0%, 10% { opacity: 0; clip-path: inset(97% 0 0); }
+  18% { opacity: .86; }
+  58% { opacity: 1; clip-path: inset(0 0 0); }
+  76% { opacity: .4; }
+  100% { opacity: 0; clip-path: inset(0 0 0); }
+}
+@keyframes proxy-logo-scan {
+  0%, 10% { opacity: 0; -webkit-mask-position: 0 150%; mask-position: 0 150%; }
+  15% { opacity: 1; -webkit-mask-position: 0 122%; mask-position: 0 122%; }
+  45% { opacity: 1; -webkit-mask-position: 0 28%; mask-position: 0 28%; }
+  58% { opacity: .92; -webkit-mask-position: 0 -32%; mask-position: 0 -32%; }
+  64%, 100% { opacity: 0; -webkit-mask-position: 0 -32%; mask-position: 0 -32%; }
+}
+@keyframes proxy-star-ignite {
+  0%, 53% { opacity: .16; transform: scale(.97); filter: brightness(.74) drop-shadow(0 0 3px rgba(99,102,241,.28)); }
+  62% { opacity: 1; transform: scale(1.045); filter: brightness(1.68) drop-shadow(0 0 7px rgba(34,211,238,.95)) drop-shadow(0 0 15px rgba(99,102,241,.64)); }
+  70% { opacity: .86; transform: scale(1); filter: brightness(1.28) drop-shadow(0 0 6px rgba(34,211,238,.72)); }
+  82%, 100% { opacity: .24; transform: scale(.985); filter: brightness(.9) drop-shadow(0 0 3px rgba(99,102,241,.3)); }
+}
 .proxy-connect-copy { min-width: 0; }
 .proxy-state-kicker { color: #7182a7; font-size: 9.5px; font-weight: 750; letter-spacing: 1.7px; }
 .proxy-connect-copy h3 { margin-top: 8px; color: #f3f6ff; font-size: 25px; font-weight: 680; }
@@ -323,8 +404,7 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 @media (min-height: 900px) and (min-width: 1121px) {
   .proxy-connect-card { min-height: 264px; }
   .proxy-connect-main { gap: 34px; padding: 38px 40px; }
-  .proxy-orbit { width: 142px; height: 142px; }
-  .proxy-orbit img { width: 82px; height: 82px; border-radius: 22px; }
+  .proxy-orbit { width: 154px; height: 154px; }
   .proxy-connect-copy h3 { font-size: 27px; }
   .proxy-connect-copy p { margin-top: 8px; font-size: 12px; }
   .proxy-connect-actions { margin-top: 24px; }
@@ -345,8 +425,7 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 @media (max-width: 1120px) {
   .proxy-connect-card { grid-template-columns: 1.1fr .9fr; }
   .proxy-connect-main { gap: 20px; padding: 24px; }
-  .proxy-orbit { width: 104px; height: 104px; }
-  .proxy-orbit img { width: 62px; height: 62px; }
+  .proxy-orbit { width: 134px; height: 134px; }
   .proxy-dashboard-grid { grid-template-columns: 1fr 1fr; }
   .proxy-traffic-card { grid-column: 1 / -1; }
 }
@@ -1048,6 +1127,21 @@ th:last-child { width: 326px; }
 .routing-backup-option span, .routing-backup-option strong, .routing-backup-option small { display: block; }
 .routing-backup-option strong { color: #dbe3f3; font-size: 11px; }
 .routing-backup-option small { margin-top: 3px; color: #8d8a7e; font-size: 9.5px; line-height: 1.45; }
+.routing-option-switch { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 16px; min-height: 62px; margin: 12px 0; padding: 10px 12px; border: 1px solid rgba(129,140,248,.12); border-radius: 10px; background: rgba(6,11,25,.28); cursor: pointer; transition: border-color .16s, background .16s; }
+.routing-option-switch:hover { border-color: rgba(129,140,248,.24); background: rgba(99,102,241,.045); }
+.routing-option-switch > span, .routing-option-switch strong, .routing-option-switch small { display: block; min-width: 0; }
+.routing-option-switch strong { color: #dbe3f3; font-size: 11px; }
+.routing-option-switch small { margin-top: 3px; color: #7f8ca5; font-size: 9.5px; line-height: 1.45; }
+.routing-option-switch > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.routing-option-switch > i { position: relative; width: 38px; height: 22px; border: 1px solid rgba(148,163,184,.18); border-radius: 999px; background: #25314a; transition: border-color .16s, background .16s; }
+.routing-option-switch > i::after { content: ''; position: absolute; width: 16px; height: 16px; top: 2px; left: 2px; border-radius: 50%; background: #8996ab; transition: transform .16s, background .16s; }
+.routing-option-switch > input:checked + i { border-color: rgba(34,211,238,.34); background: rgba(34,211,238,.3); }
+.routing-option-switch > input:checked + i::after { transform: translateX(16px); background: #a5f3fc; }
+.routing-option-switch > input:focus-visible + i { outline: 2px solid rgba(34,211,238,.7); outline-offset: 3px; }
+.routing-option-switch:has(> input:checked) { border-color: rgba(34,211,238,.16); background: rgba(34,211,238,.03); }
+.routing-cn-bypass-option { margin-top: 0; }
+.routing-cn-bypass-option small { color: #7895a2; }
+.routing-backup-urls-option small { color: #8b8990; }
 .routing-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 11px; border-top: 1px solid rgba(255,255,255,.065); }
 .routing-history-head strong { font-size: 11.5px; }
 .routing-config-history { display: grid; max-height: 214px; gap: 7px; margin-top: 8px; overflow-y: auto; padding-right: 4px; scrollbar-color: rgba(129,140,248,.52) rgba(8,13,28,.42); scrollbar-width: thin; }

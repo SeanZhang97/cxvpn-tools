@@ -149,7 +149,7 @@ class RoutingCommitTests(unittest.TestCase):
         instance.cfg['routing'] = {
             'enabled': False,
             'default_outbound': 'physical',
-            'schema_version': 6,
+            'schema_version': 7,
             'capture_mode': 'system-proxy',
             'controller_port': 19090,
             'controller_secret': 'stable-controller-secret',

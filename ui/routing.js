@@ -29,10 +29,13 @@
   const TEST_POLL_MS = 250;
   const TEST_POLL_MAX_MS = 5000;
   const DNS_RECOMMENDED = Object.freeze({
-    dns_enhanced_mode: 'fake-ip', dns_respect_rules: false,
-    dns_servers: ['223.5.5.5', '1.1.1.1'],
-    default_nameserver: ['223.5.5.5', '1.1.1.1'],
-    proxy_server_nameserver: ['223.5.5.5', '1.1.1.1'],
+    dns_enhanced_mode: 'fake-ip', dns_respect_rules: true,
+    dns_servers: ['223.5.5.5', '119.29.29.29'],
+    default_nameserver: ['223.5.5.5', '119.29.29.29'],
+    proxy_server_nameserver: [
+      'https://dns.alidns.com/dns-query',
+      'https://doh.pub/dns-query',
+    ],
     direct_nameserver: ['223.5.5.5', '119.29.29.29'],
     fake_ip_range: '198.18.0.0/16',
     fake_ip_filter: ['+.lan', '+.local', 'localhost.ptlogin2.qq.com'],
@@ -928,9 +931,33 @@
     const builtinCount = builtin?.rule_count ?? 0;
     const bypass = routingConfig?.system_proxy_bypass || {};
     const bypassCount = (bypass.domains?.length || 0) + (bypass.processes?.length || 0);
-    const actual = bypassCount + (routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length + builtinCount) + 1;
-    byId('routing-rule-composition').textContent = `自定义绕过 ${bypassCount} 条 · 用户规则 ${routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length} 条 · 内置规则 ${routingConfig?.traffic_mode === 'global' ? 0 : builtinCount} 条（${routingConfig?.builtin_rule_pack || 'off'}） · 最多 ${actual} 条；顺序固定为 bypass → user → builtin → MATCH，重复项会自动合并。`;
+    const hasCnFallback = !!bypass.include_cn_direct;
+    const actual = bypassCount + (routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length + builtinCount) + (hasCnFallback ? 1 : 0) + 1;
+    const flow = `bypass → user → builtin${hasCnFallback ? ' → GEOIP(CN)' : ''} → MATCH`;
+    byId('routing-rule-composition').textContent = `自定义绕过 ${bypassCount} 条 · 用户规则 ${routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length} 条 · 内置规则 ${routingConfig?.traffic_mode === 'global' ? 0 : builtinCount} 条（${routingConfig?.builtin_rule_pack || 'off'}） · 最多 ${actual} 条；顺序固定为 ${flow}，重复项会自动合并。`;
     renderBuiltinRules();
+  }
+
+  function cnSystemProxyDomains() {
+    const detail = setup?.builtin_rule_packs?.['cn-direct-v1'];
+    return Array.isArray(detail?.system_proxy_domains) ? detail.system_proxy_domains : [];
+  }
+
+  function renderCnBypassSummary() {
+    const target = byId('routing-bypass-cn-direct-summary');
+    if (!target) return;
+    const detail = setup?.builtin_rule_packs?.['cn-direct-v1'];
+    if (detail?.error) {
+      target.textContent = `cn-direct-v1 当前不可用：${detail.error}`;
+      return;
+    }
+    const manual = splitMaintenanceLines(byId('routing-bypass-domains')?.value);
+    const referenced = routingConfig?.system_proxy_bypass?.include_cn_direct
+      ? cnSystemProxyDomains() : [];
+    const merged = new Set([...manual, ...referenced].map(item => item.toLocaleLowerCase()));
+    target.textContent = routingConfig?.system_proxy_bypass?.include_cn_direct
+      ? `已知的 ${merged.size} 个域名后缀直接绕过系统代理；其余域名解析为中国 IP 时也会直连。`
+      : `启用后引用 cn-direct-v1 的 ${cnSystemProxyDomains().length} 个域名后缀，并按中国 IP 兜底。`;
   }
 
   function renderDnsMode() {
@@ -984,8 +1011,10 @@
     ['routing-dns-mode', 'routing-dns-enhanced'].forEach(id => enhanceRoutingSelect(byId(id)));
     renderDnsMode();
     const bypass = routingConfig.system_proxy_bypass || {};
+    byId('routing-bypass-cn-direct').checked = !!bypass.include_cn_direct;
     byId('routing-bypass-domains').value = (bypass.domains || []).join('\n');
     byId('routing-bypass-processes').value = (bypass.processes || []).join('\n');
+    renderCnBypassSummary();
     renderProviders();
     renderAllProxyChoice();
     renderRules();
@@ -1619,12 +1648,19 @@
     const metadata = parts.metadata.filter(node => !term
       || `${node.display_name || node.name} ${node.type}`.toLowerCase().includes(term));
     const grid = byId('routing-node-grid');
-    grid.replaceChildren(...nodes.map(node => {
-      const card = document.createElement('article');
+    const existingCards = new Map([...grid.children]
+      .filter(card => card.matches('.routing-node[data-node-key]'))
+      .map(card => [card.dataset.nodeKey, card]));
+    const renderedCards = new Set();
+    nodes.forEach((node, index) => {
+      const nodeKey = String(node.name || '');
+      const card = existingCards.get(nodeKey) || document.createElement('article');
+      card.dataset.nodeKey = nodeKey;
       const { preferenceName, manualSelected, runtimeSelected, selected } = nodeSelection(node);
       const nodeState = node.state || (node.tested ? 'completed' : activeTest ? 'pending' : '');
       card.className = `routing-node${selected ? ' selected' : ''}${nodeState ? ` ${nodeState}` : ''}${node.tested && node.alive === false ? ' offline' : ''}`;
       if (selected) card.setAttribute('aria-current', 'true');
+      else card.removeAttribute('aria-current');
       const head = document.createElement('div');
       const identity = document.createElement('span'); identity.className = 'routing-node-identity';
       const label = splitNodeLabel(node);
@@ -1654,9 +1690,14 @@
         : !preferenceName ? '运行节点缺少 display_name，无法安全保存原始节点名'
         : group.preview ? '保存为待启用节点，不会立即连接' : '保存为该订阅的手动节点偏好';
       choose.onclick = () => saveProxyPreference(provider.id, 'manual', preferenceName);
-      action.append(badge, choose); card.append(head, meta, action);
-      return card;
-    }));
+      action.append(badge, choose); card.replaceChildren(head, meta, action);
+      const current = grid.children[index];
+      if (current !== card) grid.insertBefore(card, current || null);
+      renderedCards.add(card);
+    });
+    [...grid.children].forEach(card => {
+      if (!renderedCards.has(card)) card.remove();
+    });
     const metadataRoot = byId('routing-node-metadata');
     if (metadataRoot) {
       metadataRoot.classList.toggle('hidden', metadata.length === 0);
@@ -1928,17 +1969,32 @@
     } finally { setBusy(false); renderNodes(); }
   }
 
-  function providerReferences(providerId) {
+  function providerReferencePlan(providerId, includeDisabledRules = false) {
     const value = `proxy:${providerId}`;
-    const direct = (routingConfig.default_outbound === value ? 1 : 0) +
-      (routingConfig.rules || []).filter(rule => rule.enabled !== false && rule.outbound === value).length;
-    const enabled = (routingConfig.proxy_providers || []).filter(item => item.enabled);
-    const removingLastEnabled = enabled.length === 1 && enabled[0].id === providerId;
-    const aggregate = removingLastEnabled
-      ? (routingConfig.default_outbound === 'proxy' ? 1 : 0) +
-        (routingConfig.rules || []).filter(rule => rule.enabled !== false && rule.outbound === 'proxy').length
-      : 0;
-    return direct + aggregate;
+    const provider = (routingConfig.proxy_providers || []).find(item => item.id === providerId);
+    const remaining = (routingConfig.proxy_providers || [])
+      .filter(item => item.enabled && item.id !== providerId);
+    const aggregateBecomesInvalid = !!provider?.enabled && remaining.length === 0;
+    const affected = outbound => outbound === value || (aggregateBecomesInvalid && outbound === 'proxy');
+    const rules = (routingConfig.rules || []).filter(rule =>
+      (includeDisabledRules || rule.enabled !== false) && affected(rule.outbound));
+    return {
+      count: (affected(routingConfig.default_outbound) ? 1 : 0) + rules.length,
+      replacement: remaining.length ? 'proxy' : 'block',
+      replacementLabel: remaining.length ? `“全部代理订阅”（剩余 ${remaining.length} 个）` : '“阻止连接”',
+      affected,
+    };
+  }
+
+  function replaceProviderReferences(plan, includeDisabledRules = false) {
+    if (plan.affected(routingConfig.default_outbound)) {
+      routingConfig.default_outbound = plan.replacement;
+    }
+    (routingConfig.rules || []).forEach(rule => {
+      if ((includeDisabledRules || rule.enabled !== false) && plan.affected(rule.outbound)) {
+        rule.outbound = plan.replacement;
+      }
+    });
   }
 
   function providerIsSaved(provider) {
@@ -2049,10 +2105,11 @@
       enabledInput.disabled = busy;
       enabledInput.setAttribute('aria-label', `${provider.name || `订阅 ${index + 1}`}启用状态`);
       enabledInput.onchange = async () => {
-        const references = providerReferences(provider.id);
-        if (!enabledInput.checked && references) {
-          const confirmed = await confirmAction({ title: '停用被引用的订阅', message: `有 ${references} 个出口正在引用“${provider.name}”。停用后配置将无法通过预检，需同时修改这些出口。`, confirmText: '仍然停用' });
+        const plan = providerReferencePlan(provider.id);
+        if (!enabledInput.checked && plan.count) {
+          const confirmed = await confirmAction({ title: '停用被引用的订阅', message: `有 ${plan.count} 个生效出口正在引用“${provider.name}”。停用后将自动改为${plan.replacementLabel}，是否继续？`, confirmText: '停用并调整' });
           if (!confirmed) { enabledInput.checked = true; return; }
+          replaceProviderReferences(plan);
         }
         provider.enabled = enabledInput.checked; setDirty(); renderProviders(); refreshOutboundEditors();
       };
@@ -2060,9 +2117,10 @@
       const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn mini danger'; remove.textContent = '删除';
       remove.disabled = busy;
       remove.onclick = async () => {
-        const references = providerReferences(provider.id);
-        const confirmed = await confirmAction({ title: '删除代理订阅', message: references ? `有 ${references} 个出口正在引用“${provider.name}”。删除后需重新选择这些出口，是否继续？` : `确定删除“${provider.name}”吗？`, confirmText: '删除' });
+        const plan = providerReferencePlan(provider.id, true);
+        const confirmed = await confirmAction({ title: '删除代理订阅', message: plan.count ? `有 ${plan.count} 个出口正在引用“${provider.name}”。删除后将自动改为${plan.replacementLabel}，是否继续？` : `确定删除“${provider.name}”吗？`, confirmText: plan.count ? '删除并调整' : '删除' });
         if (!confirmed) return;
+        replaceProviderReferences(plan, true);
         routingConfig.proxy_providers.splice(index, 1); providerExpanded.delete(provider.id);
         providerPreviews.delete(provider.id); providerPreviewErrors.delete(provider.id);
         setDirty(); renderProviders(); refreshOutboundEditors();
@@ -2363,10 +2421,13 @@
       const source = match.source === 'bypass' ? `bypass · 安全绕过（${match.rule_domain}）`
         : match.source === 'user' ? `user · 第 ${match.rule_index} 条规则（${match.rule_domain}）`
         : match.source === 'builtin' ? `builtin · ${routingConfig.builtin_rule_pack}（${match.rule_domain}）`
+        : match.runtime_geoip_fallback ? 'runtime · GEOIP(CN) 后再进入 MATCH'
           : 'default · MATCH';
       target.replaceChildren();
-      const strong = document.createElement('strong'); strong.textContent = `${match.domain} → ${match.outbound_name}`;
-      const span = document.createElement('span'); span.textContent = `${source} · ${match.detail}`;
+      const strong = document.createElement('strong'); strong.textContent = match.runtime_geoip_fallback
+        ? `${match.domain} → 运行时按目标 IP 判断`
+        : `${match.domain} → ${match.outbound_name}`;
+      const span = document.createElement('span'); span.textContent = `${source} · ${match.runtime_detail || match.detail}`;
       target.append(strong, span); target.className = `routing-test-result ${match.available ? 'success' : 'warning'}`;
     } catch (error) {
       target.textContent = friendlyError(error); target.className = 'routing-test-result error';
@@ -2376,7 +2437,7 @@
   function collectConfig() {
     return {
       ...routingConfig,
-      schema_version: 6,
+      schema_version: 7,
       enabled: byId('routing-enabled').checked,
       capture_mode: byId('routing-capture-mode').value,
       traffic_mode: byId('routing-traffic-mode').value,
@@ -2398,6 +2459,7 @@
       nameserver_policy: parseNameserverPolicy(byId('routing-nameserver-policy').value),
       system_proxy_bypass: {
         lan: true,
+        include_cn_direct: byId('routing-bypass-cn-direct').checked,
         domains: splitMaintenanceLines(byId('routing-bypass-domains').value),
         processes: splitMaintenanceLines(byId('routing-bypass-processes').value),
       },
@@ -2637,7 +2699,8 @@
       'routing-direct-dns', 'routing-builtin-pack', 'routing-proxy-strategy',
       'routing-default', 'routing-test-domain', 'btn-routing-test', 'btn-routing-add',
       'routing-node-search', 'btn-routing-discard', 'routing-bypass-domains',
-      'routing-bypass-processes', 'btn-routing-backup', 'btn-routing-restore',
+      'routing-bypass-processes', 'routing-bypass-cn-direct',
+      'btn-routing-backup', 'btn-routing-restore',
       'btn-routing-diagnostic', 'btn-routing-history-refresh',
       'routing-dns-mode', 'routing-dns-enhanced', 'routing-dns-respect-rules',
       'routing-fake-ip-range', 'routing-fake-ip-filter', 'routing-nameserver-policy',
@@ -2972,7 +3035,8 @@
     ['routing-enabled', 'routing-capture-mode', 'routing-traffic-mode', 'routing-interface',
       'routing-default', 'routing-builtin-pack', 'routing-mixed-port', 'routing-dns',
       'routing-default-dns', 'routing-proxy-dns', 'routing-direct-dns',
-      'routing-bypass-domains', 'routing-bypass-processes', 'routing-fake-ip-range',
+      'routing-bypass-domains', 'routing-bypass-processes', 'routing-bypass-cn-direct',
+      'routing-fake-ip-range',
       'routing-fake-ip-filter', 'routing-nameserver-policy'].forEach(id => {
       const element = byId(id);
       element.addEventListener(id.includes('dns') || id.includes('bypass') || id === 'routing-mixed-port' ? 'input' : 'change', () => {
@@ -2996,7 +3060,10 @@
         if (id === 'routing-bypass-processes') routingConfig.system_proxy_bypass = {
           ...(routingConfig.system_proxy_bypass || {}), lan: true, processes: splitMaintenanceLines(element.value),
         };
-        syncDirty(); renderOverview(); updateApplyButton();
+        if (id === 'routing-bypass-cn-direct') routingConfig.system_proxy_bypass = {
+          ...(routingConfig.system_proxy_bypass || {}), lan: true, include_cn_direct: element.checked,
+        };
+        syncDirty(); renderCnBypassSummary(); renderOverview(); updateApplyButton();
       });
     });
     byId('routing-dns-mode').onchange = () => {

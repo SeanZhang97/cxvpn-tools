@@ -13,7 +13,7 @@ import webview
 from api import Api
 from core.windows_desktop import (
     DesktopController, SingleInstanceGuard, WINDOW_TITLE,
-    activate_existing_window)
+    activate_existing_window, migrate_legacy_startup_registration)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 _BOOT = time.time()
@@ -137,6 +137,8 @@ def main():
         _boot_log(f'second instance blocked, restored={restored}')
         return
     try:
+        if migrate_legacy_startup_registration():
+            _boot_log('legacy startup registration migrated to CXVPNTools')
         _run_app()
     finally:
         instance.close()

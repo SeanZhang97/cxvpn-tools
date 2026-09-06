@@ -10,10 +10,13 @@ import time
 import winreg
 
 
-APP_NAME = 'CXVPN管理器'
+APP_NAME = 'CXVPNTools'
+LEGACY_APP_NAMES = ('CX VPN TOOLS', 'CXVPN管理器')
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
-INSTANCE_MUTEX = r'Local\CXVPNManager.Singleton.v1'
-WINDOW_TITLE = 'CX VPN TOOLS'
+INSTANCE_MUTEX = r'Local\CXVPNTools.Singleton.v1'
+LEGACY_INSTANCE_MUTEXES = (r'Local\CXVPNManager.Singleton.v1',)
+WINDOW_TITLE = 'CXVPNTools'
+LEGACY_WINDOW_TITLES = ('CX VPN TOOLS', 'CXVPN管理器')
 ERROR_ALREADY_EXISTS = 183
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
@@ -136,9 +139,10 @@ class GlobalHotkeyManager:
 class SingleInstanceGuard:
     """使用 Windows 命名互斥保证同一用户会话只运行一个实例。"""
 
-    def __init__(self, name=INSTANCE_MUTEX, kernel32=None):
-        self.name = name
-        self._handle = None
+    def __init__(self, name=INSTANCE_MUTEX, kernel32=None,
+                 legacy_names=LEGACY_INSTANCE_MUTEXES):
+        self.names = (name, *legacy_names)
+        self._handles = []
         if kernel32 is None:
             kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
             kernel32.CreateMutexW.argtypes = [
@@ -152,24 +156,27 @@ class SingleInstanceGuard:
         self._kernel32 = kernel32
 
     def acquire(self):
-        if self._handle:
+        if self._handles:
             return True
-        handle = self._kernel32.CreateMutexW(None, False, self.name)
-        if not handle:
-            raise ctypes.WinError(self._get_last_error())
-        if self._get_last_error() == ERROR_ALREADY_EXISTS:
-            self._kernel32.CloseHandle(handle)
-            return False
-        self._handle = handle
+        for name in self.names:
+            handle = self._kernel32.CreateMutexW(None, False, name)
+            if not handle:
+                self.close()
+                raise ctypes.WinError(self._get_last_error())
+            if self._get_last_error() == ERROR_ALREADY_EXISTS:
+                self._kernel32.CloseHandle(handle)
+                self.close()
+                return False
+            self._handles.append(handle)
         return True
 
     def close(self):
-        if self._handle:
-            self._kernel32.CloseHandle(self._handle)
-            self._handle = None
+        for handle in reversed(self._handles):
+            self._kernel32.CloseHandle(handle)
+        self._handles = []
 
 
-def activate_existing_window(title=WINDOW_TITLE, user32=None, attempts=30,
+def activate_existing_window(title=None, user32=None, attempts=30,
                              delay=0.1):
     """唤醒已运行实例；首次实例仍在创建窗口时会短暂重试。"""
     if user32 is None:
@@ -182,14 +189,17 @@ def activate_existing_window(title=WINDOW_TITLE, user32=None, attempts=30,
         user32.ShowWindow.restype = ctypes.c_bool
         user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
         user32.SetForegroundWindow.restype = ctypes.c_bool
+    titles = ((WINDOW_TITLE, *LEGACY_WINDOW_TITLES) if title is None
+              else (title,))
     for _ in range(max(1, attempts)):
-        hwnd = user32.FindWindowW(None, title)
-        if hwnd:
-            user32.ShowWindow(hwnd, 5)  # SW_SHOW
-            if user32.IsIconic(hwnd):
-                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            user32.SetForegroundWindow(hwnd)
-            return True
+        for candidate in titles:
+            hwnd = user32.FindWindowW(None, candidate)
+            if hwnd:
+                user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                if user32.IsIconic(hwnd):
+                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
+                return True
         if delay > 0:
             time.sleep(delay)
     return False
@@ -215,9 +225,12 @@ def read_startup_command(registry=winreg):
     except OSError:
         return ''
     try:
-        value, _ = registry.QueryValueEx(key, APP_NAME)
-        return str(value or '')
-    except OSError:
+        for name in (APP_NAME, *LEGACY_APP_NAMES):
+            try:
+                value, _ = registry.QueryValueEx(key, name)
+                return str(value or '')
+            except OSError:
+                continue
         return ''
     finally:
         registry.CloseKey(key)
@@ -232,28 +245,70 @@ def is_startup_enabled(registry=winreg, command=None):
 
 def set_startup_enabled(enabled, registry=winreg, command=None):
     """写入当前用户 Run 项，无需管理员权限。"""
-    if enabled:
-        key = registry.CreateKeyEx(
-            registry.HKEY_CURRENT_USER, RUN_KEY, 0, registry.KEY_SET_VALUE)
-        try:
-            registry.SetValueEx(
-                key, APP_NAME, 0, registry.REG_SZ,
-                command or startup_command())
-        finally:
-            registry.CloseKey(key)
-        return
     try:
-        key = registry.OpenKey(
+        key = registry.CreateKeyEx(
             registry.HKEY_CURRENT_USER, RUN_KEY, 0, registry.KEY_SET_VALUE)
     except OSError:
         return
     try:
-        try:
-            registry.DeleteValue(key, APP_NAME)
-        except FileNotFoundError:
-            pass
+        if enabled:
+            registry.SetValueEx(
+                key, APP_NAME, 0, registry.REG_SZ,
+                command or startup_command())
+        for name in (*LEGACY_APP_NAMES, *((APP_NAME,) if not enabled else ())):
+            try:
+                registry.DeleteValue(key, name)
+            except FileNotFoundError:
+                pass
     finally:
         registry.CloseKey(key)
+
+
+def migrate_legacy_startup_registration(registry=winreg, command=None):
+    """将旧产品名的 Run 项平滑迁移到当前名称。
+
+    只迁移启动项名称和可执行文件路径，不触碰用户数据。
+    """
+    try:
+        read_key = registry.OpenKey(
+            registry.HKEY_CURRENT_USER, RUN_KEY, 0, registry.KEY_READ)
+    except OSError:
+        return False
+    try:
+        try:
+            registry.QueryValueEx(read_key, APP_NAME)
+            current_exists = True
+        except OSError:
+            current_exists = False
+        legacy_values = []
+        for name in LEGACY_APP_NAMES:
+            try:
+                value, _ = registry.QueryValueEx(read_key, name)
+                legacy_values.append(str(value or ''))
+            except OSError:
+                continue
+    finally:
+        registry.CloseKey(read_key)
+    if not legacy_values:
+        return False
+    try:
+        write_key = registry.CreateKeyEx(
+            registry.HKEY_CURRENT_USER, RUN_KEY, 0, registry.KEY_SET_VALUE)
+    except OSError:
+        return False
+    try:
+        if not current_exists and any(value.strip() for value in legacy_values):
+            registry.SetValueEx(
+                write_key, APP_NAME, 0, registry.REG_SZ,
+                command or startup_command())
+        for name in LEGACY_APP_NAMES:
+            try:
+                registry.DeleteValue(write_key, name)
+            except FileNotFoundError:
+                pass
+    finally:
+        registry.CloseKey(write_key)
+    return True
 
 
 def should_hide_to_tray(close_reason, exiting=False, enabled=True):

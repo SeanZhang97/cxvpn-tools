@@ -143,6 +143,8 @@ class RoutingAutoPolicyTests(unittest.TestCase):
         self.assertEqual(public['type'], 'fallback')
         self.assertEqual(public['proxies'], [
             'AUTO-alpha-1-FALLBACK', 'AUTO-alpha-2-FALLBACK'])
+        self.assertEqual(groups['PROXY']['proxies'], ['PROXY-alpha'])
+        self.assertNotIn('use', groups['PROXY'])
         self.assertEqual(groups['AUTO-alpha-1-FALLBACK']['proxies'], [
             'AUTO-alpha-1-PREFERRED', 'AUTO-alpha-1-REGION'])
         self.assertEqual(groups['AUTO-alpha-1-PREFERRED']['type'], 'url-test')

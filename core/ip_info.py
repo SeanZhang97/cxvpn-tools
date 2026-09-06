@@ -3,7 +3,7 @@
 import json
 import ipaddress
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core import vpn_os
 
@@ -237,13 +237,23 @@ def query_overseas():
     return _empty_entry('; '.join(errors) or '海外探测点不可用')
 
 
-def collect_ip_info():
-    """并发采集三个视角，单个探测点失败不影响其他结果。"""
+def collect_ip_info(on_result=None):
+    """并发采集三个视角，并按实际完成顺序回传单项结果。"""
     queries = {
         'local': query_local,
         'domestic': query_domestic,
         'overseas': query_overseas,
     }
+    results = {}
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix='ip-info') as pool:
-        futures = {name: pool.submit(query) for name, query in queries.items()}
-        return {name: future.result() for name, future in futures.items()}
+        futures = {pool.submit(query): name for name, query in queries.items()}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                result = future.result()
+            except Exception as error:
+                result = _empty_entry(error)
+            results[name] = result
+            if on_result:
+                on_result(name, result)
+    return results

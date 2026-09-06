@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -40,9 +41,12 @@ from core.routing_speedtest import (
 
 
 SERVICE_ID = 'CXVPNRoutingService'
-SERVICE_DIR_NAME = 'CXVPNManager\\RoutingService'
+# 服务数据目录本轮不迁移，保留旧内部路径以维持已安装服务兼容性。
+LEGACY_SERVICE_DIR_NAME = 'CXVPNManager\\RoutingService'
 MIHOMO_VERSION = 'v1.19.30'
 MIHOMO_SHA256 = 'F55B3028D9160BEB9044F21B05DD7405B46524614A19642D6291492F5F985761'
+GEOIP_DATABASE = 'Country.mmdb'
+GEOIP_DATABASE_SHA256 = '4BF15C30737F7CC2807BCBE1ACE44149B18579BEA3B13BF7BEA935A3F2834052'
 WINSW_VERSION = 'v2.12.0'
 WINSW_SHA256 = '05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA'
 DOMAIN_RE = re.compile(r'^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$', re.I)
@@ -57,6 +61,10 @@ DOWNLOAD_ROUTES = {'auto', 'physical', 'system-proxy', 'custom-proxy'}
 DNS_MODES = {'simple', 'advanced'}
 DNS_ENHANCED_MODES = {'fake-ip', 'redir-host'}
 DEFAULT_FAKE_IP_FILTER = ['+.lan', '+.local', 'localhost.ptlogin2.qq.com']
+SIMPLE_DNS_FALLBACK_FILTER_IPCIDR = [
+    '240.0.0.0/4',
+    '0.0.0.0/32',
+]
 # 与 Clash Verge Rev v2.5.2 默认测速目标保持一致，避免因目标站点和 TLS
 # 握手差异让同一节点在两个客户端中出现不可比较的延迟。
 HEALTH_CHECK_URL = 'http://cp.cloudflare.com/generate_204'
@@ -100,16 +108,20 @@ def default_config():
         'builtin_rule_pack': 'local-direct-v1',
         'system_proxy_bypass': {
             'lan': True,
+            'include_cn_direct': False,
             'domains': [],
             'processes': [],
         },
         'mixed_port': 17890,
         'dns_mode': 'simple',
         'dns_enhanced_mode': 'fake-ip',
-        'dns_respect_rules': False,
-        'dns_servers': ['223.5.5.5', '1.1.1.1'],
-        'default_nameserver': ['223.5.5.5', '1.1.1.1'],
-        'proxy_server_nameserver': ['223.5.5.5', '1.1.1.1'],
+        'dns_respect_rules': True,
+        'dns_servers': ['223.5.5.5', '119.29.29.29'],
+        'default_nameserver': ['223.5.5.5', '119.29.29.29'],
+        'proxy_server_nameserver': [
+            'https://dns.alidns.com/dns-query',
+            'https://doh.pub/dns-query',
+        ],
         'direct_nameserver': ['223.5.5.5', '119.29.29.29'],
         'fake_ip_range': '198.18.0.1/16',
         'fake_ip_filter': list(DEFAULT_FAKE_IP_FILTER),
@@ -123,6 +135,7 @@ def default_config():
 def verify_runtime():
     verify_runtime_files(_runtime_dir(), {
         'mihomo.exe': MIHOMO_SHA256,
+        GEOIP_DATABASE: GEOIP_DATABASE_SHA256,
         'WinSW-x64.exe': WINSW_SHA256,
     }, RoutingError)
     service_binary = _binary_path(_routing_service.SERVICE_BINARY)
@@ -446,6 +459,7 @@ def normalize_config(value):
     result['system_proxy_bypass'] = {
         # 回环与局域网是防止本机服务和内网设备被代理误伤的保护项，不能关闭。
         'lan': True,
+        'include_cn_direct': bool(raw_bypass.get('include_cn_direct', False)),
         'domains': normalize_bypass_list('domains', 100),
         'processes': normalize_bypass_list('processes', 100),
     }
@@ -678,6 +692,25 @@ def _bypass_rules(config):
     return rules
 
 
+def system_proxy_bypass_domains(config):
+    """合并手动域名与国内规则包，供 Windows ProxyOverride 使用。"""
+    bypass = config.get('system_proxy_bypass') or {}
+    domains = list(bypass.get('domains') or [])
+    if bypass.get('include_cn_direct'):
+        try:
+            domains.extend(_routing_rules.cn_direct_suffixes())
+        except _routing_rules.RulePackError as exc:
+            raise RoutingError(str(exc)) from exc
+    result = []
+    seen = set()
+    for domain in domains:
+        key = domain.casefold()
+        if key not in seen:
+            result.append(domain)
+            seen.add(key)
+    return result
+
+
 def _effective_rules(config):
     rules = []
     seen = set()
@@ -699,6 +732,10 @@ def _effective_rules(config):
                 f'{rule["outbound"]}')
         for raw in _builtin_rules(config['builtin_rule_pack']):
             append(raw)
+    if (config.get('system_proxy_bypass') or {}).get('include_cn_direct'):
+        # 已知国内域名在 Windows ProxyOverride 层直接绕过；仍进入 Mihomo 的
+        # 未知域名在用户规则和规则包之后按目标 IP 兜底，显式规则始终优先。
+        append('GEOIP,CN,PHYSICAL')
     append(f'MATCH,{config["default_outbound"]}')
     return rules
 
@@ -736,7 +773,10 @@ def explain_domain(value, domain, vpns=None):
     """解释一个域名最终命中的规则和出口，不修改系统状态。"""
     config = normalize_config(value)
     normalized_domain = _normalize_domain(domain, 'exact')
-    bypass_match = next((item for item in config['system_proxy_bypass']['domains']
+    bypass_domains = (config['system_proxy_bypass']['domains']
+                      if config['capture_mode'] != 'system-proxy'
+                      else system_proxy_bypass_domains(config))
+    bypass_match = next((item for item in bypass_domains
                          if normalized_domain == item or
                          normalized_domain.endswith('.' + item)), None)
     if not bypass_match and config['capture_mode'] == 'system-proxy':
@@ -802,6 +842,9 @@ def explain_domain(value, domain, vpns=None):
         outbound_name = '阻止访问'
         detail = '请求将在本机被拒绝'
 
+    runtime_geoip_fallback = bool(
+        not bypass_match and not matched and not builtin_match and
+        (config.get('system_proxy_bypass') or {}).get('include_cn_direct'))
     return {
         'domain': normalized_domain,
         'matched': bool(bypass_match or matched or builtin_match),
@@ -816,6 +859,11 @@ def explain_domain(value, domain, vpns=None):
         'outbound_name': outbound_name,
         'detail': detail,
         'available': available,
+        'runtime_geoip_fallback': runtime_geoip_fallback,
+        'runtime_detail': (
+            f'解析为中国 IP 时通过{config["physical_interface"] or "物理网络"}直连；'
+            f'否则使用默认出口 {outbound_name}'
+            if runtime_geoip_fallback else ''),
     }
 
 
@@ -990,6 +1038,15 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
             f'+.{item["domain"]}': item['servers']
             for item in dns_source['nameserver_policy']
         }
+    if config.get('dns_mode') != 'advanced':
+        dns_config.update({
+            'fallback': list(dns_source['proxy_server_nameserver']),
+            'fallback-filter': {
+                'geoip': True,
+                'geoip-code': 'CN',
+                'ipcidr': list(SIMPLE_DNS_FALLBACK_FILTER_IPCIDR),
+            },
+        })
 
     generated = {
         'mixed-port': (config['mixed_port']
@@ -1073,10 +1130,11 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
                 generated['proxy-groups'].append(_proxy_group_config(
                     provider_groups[provider['id']],
                     _selection.provider_group_strategy(provider),
-                    [provider_keys[provider['id']]]))
+                    provider_keys=[provider_keys[provider['id']]]))
         generated['proxy-groups'].append(_proxy_group_config(
             'PROXY', config['proxy_strategy'],
-            [provider_keys[item['id']] for item in enabled_providers]))
+            proxy_names=[provider_groups[item['id']]
+                         for item in enabled_providers]))
     rules = []
     if standby:
         rules.append('MATCH,PROXY' if enabled_providers else 'MATCH,PHYSICAL')
@@ -1125,13 +1183,20 @@ def _proxy_provider_config(provider, path, prefix='', health_check=True,
     return result
 
 
-def _proxy_group_config(name, strategy, provider_keys):
+def _proxy_group_config(name, strategy, *, provider_keys=None,
+                        proxy_names=None):
+    """生成订阅节点组或上层组合组，避免跨层直接展开订阅节点。"""
+    if (provider_keys is None) == (proxy_names is None):
+        raise ValueError('代理组必须且只能指定一种成员来源')
     group = {
         'name': name,
         'type': strategy,
-        'use': provider_keys,
         'empty-fallback': 'REJECT',
     }
+    if provider_keys is not None:
+        group['use'] = provider_keys
+    else:
+        group['proxies'] = proxy_names
     if strategy in {'url-test', 'fallback'}:
         group.update({
             'url': HEALTH_CHECK_URL,
@@ -1214,7 +1279,7 @@ def _service_xml():
     return f'''<service>
   <id>{SERVICE_ID}</id>
   <name>CXVPN 统一分流服务</name>
-  <description>由 CXVPN 管理器维护的 Mihomo 域名分流服务</description>
+  <description>由 CXVPNTools 维护的 Mihomo 域名分流服务</description>
   <executable>%BASE%\\mihomo.exe</executable>
   <arguments>-d &quot;%BASE%\\data&quot; -f &quot;%BASE%\\config.json&quot;</arguments>
   <workingdirectory>%BASE%</workingdirectory>
@@ -1322,7 +1387,8 @@ class RoutingManager:
         self.log = logger or (lambda _message: None)
         self._data_dir = os.path.join(cfgmod.BASE, 'routing_data')
         program_data = os.environ.get('ProgramData', r'C:\ProgramData')
-        self._service_dir = os.path.join(program_data, SERVICE_DIR_NAME)
+        self._service_dir = os.path.join(
+            program_data, LEGACY_SERVICE_DIR_NAME)
         self._native_service = _routing_service.RoutingServiceClient()
 
     def _log_best_effort(self, message):
@@ -2348,6 +2414,13 @@ if ($service) {{
 
     def _test_config(self, path, data_dir):
         os.makedirs(data_dir, exist_ok=True)
+        source_geoip = _binary_path(GEOIP_DATABASE)
+        target_geoip = os.path.join(data_dir, GEOIP_DATABASE)
+        if (not os.path.isfile(target_geoip) or
+                _sha256(target_geoip).upper() != GEOIP_DATABASE_SHA256):
+            shutil.copy2(source_geoip, target_geoip)
+        if _sha256(target_geoip).upper() != GEOIP_DATABASE_SHA256:
+            raise RoutingError('GeoIP 数据库完整性校验失败')
         try:
             result = subprocess.run(
                 [_binary_path('mihomo.exe'), '-t', '-d', data_dir, '-f', path],
@@ -2369,6 +2442,7 @@ if ($service) {{
         wrapper = os.path.join(service_dir, f'{SERVICE_ID}.exe')
         xml_path = os.path.join(service_dir, f'{SERVICE_ID}.xml')
         source_mihomo = _binary_path('mihomo.exe')
+        source_geoip = _binary_path(GEOIP_DATABASE)
         source_winsw = _binary_path('WinSW-x64.exe')
         expected_config_hash = _sha256(config_path)
         xml = _service_xml()
@@ -2427,6 +2501,7 @@ $target = {_ps_literal(service_dir)}
 $wrapper = {_ps_literal(wrapper)}
 $xmlPath = {_ps_literal(xml_path)}
 $expectedMihomoHash = {_ps_literal(MIHOMO_SHA256)}
+$expectedGeoIpHash = {_ps_literal(GEOIP_DATABASE_SHA256)}
 $expectedWinSWHash = {_ps_literal(WINSW_SHA256)}
 $expectedConfigHash = {_ps_literal(expected_config_hash)}
 $parent = Split-Path -Parent $target
@@ -2528,10 +2603,14 @@ try {{
   }}
   New-Item -ItemType Directory -Force -Path (Join-Path $target 'data') | Out-Null
   Copy-Item -LiteralPath {_ps_literal(source_mihomo)} -Destination (Join-Path $target 'mihomo.exe') -Force
+  Copy-Item -LiteralPath {_ps_literal(source_geoip)} -Destination (Join-Path (Join-Path $target 'data') '{GEOIP_DATABASE}') -Force
   Copy-Item -LiteralPath {_ps_literal(source_winsw)} -Destination $wrapper -Force
   Copy-Item -LiteralPath {_ps_literal(config_path)} -Destination (Join-Path $target 'config.json') -Force
   if ((Get-FileHash -LiteralPath (Join-Path $target 'mihomo.exe') -Algorithm SHA256).Hash -ne $expectedMihomoHash) {{
     throw 'Copied Mihomo checksum validation failed'
+  }}
+  if ((Get-FileHash -LiteralPath (Join-Path (Join-Path $target 'data') '{GEOIP_DATABASE}') -Algorithm SHA256).Hash -ne $expectedGeoIpHash) {{
+    throw 'Copied GeoIP database checksum validation failed'
   }}
   if ((Get-FileHash -LiteralPath $wrapper -Algorithm SHA256).Hash -ne $expectedWinSWHash) {{
     throw 'Copied WinSW checksum validation failed'
@@ -2843,12 +2922,19 @@ if ($service) {{
             f'[routing] {mode_label}配置事务已提交到原生服务，'
             '等待后台领取（安装/IPC 超时 120 秒）')
         try:
+            system_proxy_domains = system_proxy_bypass_domains(config)
+            if config['capture_mode'] == 'system-proxy':
+                manual_count = len(config['system_proxy_bypass']['domains'])
+                self._log_best_effort(
+                    f'[routing] Windows 系统代理绕过域名已合并：'
+                    f'手动={manual_count}，规则包引用='
+                    f'{"开启" if config["system_proxy_bypass"]["include_cn_direct"] else "关闭"}，'
+                    f'实际={len(system_proxy_domains)}')
             self._native_service.ensure_installed()
             transaction = self._native_service.apply(
                 config_path, self._native_provider_files(config), runtime_mode,
                 fast_toggle_ready=fast_toggle_ready,
-                system_proxy_bypass_domains=(
-                    config['system_proxy_bypass']['domains']))
+                system_proxy_bypass_domains=system_proxy_domains)
         except _routing_service.ServiceError as exc:
             raise RoutingError(
                 f'统一分流服务操作失败：{_sanitize_mihomo_error(exc)}') from exc
@@ -3080,6 +3166,7 @@ if ($service) {{
 
     def preview(self, value):
         config = normalize_config(value)
+        system_proxy_domains = system_proxy_bypass_domains(config)
         vpns = vpn_os.list_vpns()
         warnings = validate_environment(
             config, vpns, list_physical_interfaces(), list_tun_conflicts())
@@ -3091,4 +3178,5 @@ if ($service) {{
             _write_json(path, generated)
             self._test_config(path, os.path.join(root, 'data'))
         return {'ok': True, 'msg': '配置预检通过', 'warnings': warnings,
-                'rule_count': len(config['rules'])}
+                'rule_count': len(config['rules']),
+                'system_proxy_bypass_domain_count': len(system_proxy_domains)}

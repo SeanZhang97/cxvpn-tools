@@ -15,7 +15,8 @@ use windows_sys::Win32::{
 const SNAPSHOT_FILE: &str = "system-proxy-snapshot.json";
 const INTERNET_SETTINGS: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 const SAFE_BYPASS: &str = "<local>;localhost;127.*;[::1];*.local;*.lan;10.*;192.168.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*";
-const MAX_CUSTOM_BYPASS_DOMAINS: usize = 100;
+// 手动补充项最多 100 个；客户端还可合并最多 2000 个本地规则包域名。
+const MAX_EFFECTIVE_BYPASS_DOMAINS: usize = 2100;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Snapshot {
@@ -30,9 +31,9 @@ pub fn is_active(base: &Path) -> bool {
 }
 
 pub fn normalize_bypass_domains(values: &[String]) -> AppResult<Vec<String>> {
-    if values.len() > MAX_CUSTOM_BYPASS_DOMAINS {
+    if values.len() > MAX_EFFECTIVE_BYPASS_DOMAINS {
         return Err(format!(
-            "系统代理入口绕过域名最多配置 {MAX_CUSTOM_BYPASS_DOMAINS} 个"
+            "系统代理入口实际绕过域名最多 {MAX_EFFECTIVE_BYPASS_DOMAINS} 个"
         ));
     }
     let mut result = Vec::with_capacity(values.len());

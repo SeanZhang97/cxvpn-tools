@@ -16,6 +16,7 @@ use windows_sys::Win32::{
 };
 
 pub type AppResult<T> = Result<T, String>;
+const LEGACY_PRODUCT_DATA_DIR: &str = "CXVPNManager";
 
 pub fn program_data_dir() -> PathBuf {
     let mut raw = std::ptr::null_mut();
@@ -34,7 +35,8 @@ pub fn program_data_dir() -> PathBuf {
     } else {
         PathBuf::from(r"C:\ProgramData")
     };
-    root.join("CXVPNManager").join("RoutingService")
+    // 用户数据与服务目录迁移不属于本轮品牌统一，继续使用既有服务位置。
+    root.join(LEGACY_PRODUCT_DATA_DIR).join("RoutingService")
 }
 
 pub fn sha256_bytes(data: &[u8]) -> String {

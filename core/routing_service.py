@@ -16,7 +16,7 @@ from core.routing_support import binary_path, sha256_file
 
 
 SERVICE_BINARY = 'CXVPNRoutingHost.exe'
-SERVICE_VERSION = '0.5.0'
+SERVICE_VERSION = '0.6.1'
 PROTOCOL_VERSION = 5
 PIPE_NAME = r'\\.\pipe\CXVPNRoutingService.v1'
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024

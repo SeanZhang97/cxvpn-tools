@@ -76,6 +76,7 @@ class Api:
         self._ui_state_stream = None
         self._ip_info_lock = threading.Lock()
         self._ip_info_thread = None
+        self._ip_info_refresh_queued = False
         self._ip_info = {
             'loading': False,
             'checked_at': 0,
@@ -342,6 +343,8 @@ class Api:
         """聚合跨桥状态；快照不包含配置、凭据或 Controller Secret。"""
         with self._lock:
             logs_version = self._log_version
+        with self._ip_info_lock:
+            current_ip_info = json.loads(json.dumps(self._ip_info))
         manual = json.loads(json.dumps(self._manual)) if self._manual else None
         sms = {'id': self._sms_ui_id} if self._sms_ui else None
         return {
@@ -351,6 +354,7 @@ class Api:
             'sms': sms,
             'browser': self.get_browser(),
             'logs_version': logs_version,
+            'ip_info': current_ip_info,
             'routing_telemetry': self.routing_telemetry.snapshot(),
         }
 
@@ -1180,46 +1184,87 @@ class Api:
     def get_ip_info(self, force_refresh=False):
         """立即返回缓存，并在首次、过期或手动刷新时后台采集。"""
         now = time.time()
+        thread_to_start = None
+        queued = False
         with self._ip_info_lock:
             checked_at = float(self._ip_info.get('checked_at') or 0)
             stale = now - checked_at >= 300
             running = bool(self._ip_info.get('loading'))
+            if running and force_refresh:
+                queued = not self._ip_info_refresh_queued
+                self._ip_info_refresh_queued = True
             should_refresh = not running and (
                 bool(force_refresh) or not checked_at or stale)
             if should_refresh:
                 self._ip_info['loading'] = True
-                self._ip_info_thread = threading.Thread(
+                thread_to_start = threading.Thread(
                     target=self._refresh_ip_info,
                     name='ip-info-refresh', daemon=True)
-                self._ip_info_thread.start()
-            return json.loads(json.dumps(self._ip_info))
+                self._ip_info_thread = thread_to_start
+            snapshot = json.loads(json.dumps(self._ip_info))
+        if thread_to_start:
+            self.log('[ip] 网络出口刷新请求已提交')
+            thread_to_start.start()
+        elif queued:
+            self.log('[ip] 网络出口发生新刷新请求，已排队等待当前任务结束')
+        return snapshot
 
     def _refresh_ip_info(self):
-        try:
-            result = ip_info.collect_ip_info()
-            with self._ip_info_lock:
-                for name in ('local', 'domestic', 'overseas'):
-                    incoming = result.get(name) or ip_info._empty_entry()
+        labels = {'local': '内网', 'domestic': '公网出口', 'overseas': '国外出口'}
+        while True:
+            started_at = time.monotonic()
+            self.log(
+                '[ip] 后台已领取网络出口刷新任务，开始执行三路并发查询'
+                '（网络超时 6 秒，PowerShell 超时 8 秒）')
+            completed = 0
+
+            def publish_result(name, result):
+                nonlocal completed
+                incoming = result or ip_info._empty_entry('查询未返回结果')
+                with self._ip_info_lock:
                     previous = self._ip_info.get(name) or {}
                     if not incoming.get('ok') and previous.get('ok'):
-                        incoming = dict(previous)
-                        incoming['stale'] = True
-                        incoming['error'] = (result.get(name) or {}).get(
-                            'error', '刷新失败')
+                        preserved = dict(previous)
+                        preserved['stale'] = True
+                        preserved['error'] = incoming.get('error', '刷新失败')
+                        incoming = preserved
                     self._ip_info[name] = incoming
+                    completed += 1
+                outcome = '成功' if result and result.get('ok') else '失败'
+                elapsed = time.monotonic() - started_at
+                self.log(
+                    f'[ip] {labels.get(name, name)}查询{outcome}，'
+                    f'进度 {completed}/3，耗时 {elapsed:.2f} 秒')
+
+            try:
+                result = ip_info.collect_ip_info(on_result=publish_result)
+                available = sum(
+                    bool((result.get(name) or {}).get('ok'))
+                    for name in ('local', 'domestic', 'overseas'))
+                error = None
+            except Exception as exc:
+                result = {}
+                available = 0
+                error = exc
+            with self._ip_info_lock:
                 self._ip_info['checked_at'] = time.time()
                 self._ip_info['updated_at_text'] = (
                     f'{datetime.datetime.now():%H:%M}')
-                self._ip_info['loading'] = False
-            available = sum(
-                bool((result.get(name) or {}).get('ok'))
-                for name in ('local', 'domestic', 'overseas'))
-            self.log(f'[ip] 网络出口信息刷新完成（{available}/3）')
-        except Exception as error:
-            with self._ip_info_lock:
-                self._ip_info['checked_at'] = time.time()
-                self._ip_info['loading'] = False
-            self.log(f'[ip] 网络出口信息刷新失败: {error}')
+                rerun = self._ip_info_refresh_queued
+                self._ip_info_refresh_queued = False
+                self._ip_info['loading'] = bool(rerun)
+            elapsed = time.monotonic() - started_at
+            if error:
+                self.log(
+                    f'[ip] 网络出口信息刷新失败：{type(error).__name__}，'
+                    f'耗时 {elapsed:.2f} 秒')
+            else:
+                self.log(
+                    f'[ip] 网络出口信息刷新完成（{available}/3），'
+                    f'耗时 {elapsed:.2f} 秒')
+            if not rerun:
+                break
+            self.log('[ip] 后台已领取排队的网络出口刷新请求')
 
     def _connect_named(self, name, after_authorization=False):
         cfg = self._cfg_get()

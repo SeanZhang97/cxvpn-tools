@@ -9,16 +9,16 @@
   `core/`、`ui/`、`build.py`、被打包进 exe 的资源与脚本——在代码改完且
   通过最小验证（语法检查 / 相关离线回归）后，**自动执行重新打包，无需询问**。
 - 打包命令：`uv run --with pyinstaller python build.py`（项目 .venv 由 uv
-  管理；pyinstaller 按需装入 .venv）。产物 `dist/CX VPN TOOLS/`。
+  管理；pyinstaller 按需装入 .venv）。产物 `dist/CXVPNTools/`。
 - 打包前若软件正在运行，**直接强制关闭，无需询问**：
-  `taskkill /F /IM "CX VPN TOOLS.exe"`；首次名称迁移时同时关闭旧版
-  `CXVPN管理器.exe`，存在同源 python 进程时一并
+  `taskkill /F /IM "CXVPNTools.exe"`；首次名称迁移时同时关闭旧版
+  `CX VPN TOOLS.exe` 和 `CXVPN管理器.exe`，存在同源 python 进程时一并
   `Stop-Process -Force`，再开始打包（否则输出文件被占用）。
 - `build.py` 自带用户配置保留（config.json 打包前后自动备份恢复），打包后
-  核对 `dist/CX VPN TOOLS/config.json` 内容未丢失、exe 时间戳为最新。
+  核对 `dist/CXVPNTools/config.json` 内容未丢失、exe 时间戳为最新。
 - 打包耗时以实际为准（通常数分钟），失败时按构建日志排查，不因超时中断。
 - 打包成功并完成配置与产物核对后，**自动启动新版**
-  `dist/CX VPN TOOLS/CX VPN TOOLS.exe`，无需询问；启动后确认进程存在。若启动失败，
+  `dist/CXVPNTools/CXVPNTools.exe`，无需询问；启动后确认进程存在。若启动失败，
   按启动错误排查，并在交付中如实说明。
 - 打包和重启均视为交付的一部分：如实说明产物路径、配置保留结果与新版是否已启动。
 
@@ -26,15 +26,15 @@
 
 - 需求背景：build.py 的产物保留业务字节码，可用解包/反编译工具还原源码。
   分发或需要源码保护的场景使用受保护打包：`uv run python build_protected.py`，
-  产物同样为 `dist/CX VPN TOOLS/`，流程为先把 `api.py` 与
+  产物同样为 `dist/CXVPNTools/`，流程为先把 `api.py` 与
   `core/*.py`（除包 `__init__`）用 Nuitka 编译为本机 `.pyd`，再交给
   PyInstaller 打包；产物内不含业务源码与字节码（入口 `main.py` 例外）。
 - 依赖：Nuitka（已装入 .venv）与 MSVC Build Tools（本机已安装）。
 - 两种打包方式的其余规则（打包前强制关闭、config.json 备份恢复、产物核对、
   成功后自动启动新版）完全相同；日常功能迭代仍用 `build.py`（快、不保护），
   `build_protected.py` 在功能稳定、对外交付前使用。
-- `build_protected.py` 生成独立 spec 文件 `CX VPN TOOLS-protected.spec`，
-  不覆盖 `build.py` 的 `CX VPN TOOLS.spec`；两个脚本可并行存在、互不影响。
+- `build_protected.py` 生成独立 spec 文件 `CXVPNTools-protected.spec`，
+  不覆盖 `build.py` 的 `CXVPNTools.spec`；两个脚本可并行存在、互不影响。
 
 ## UI 组件一致性规则
 

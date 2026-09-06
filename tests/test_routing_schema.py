@@ -13,7 +13,7 @@ from core import routing_rules
 class RoutingSchemaTests(unittest.TestCase):
     def test_new_install_defaults_to_system_proxy(self):
         value = routing.default_config()
-        self.assertEqual(value['schema_version'], 6)
+        self.assertEqual(value['schema_version'], 7)
         self.assertEqual(value['capture_mode'], 'system-proxy')
         self.assertEqual(value['builtin_rule_pack'], 'local-direct-v1')
         self.assertEqual(value['dns_mode'], 'simple')
@@ -26,7 +26,7 @@ class RoutingSchemaTests(unittest.TestCase):
         })
         self.assertEqual(value['capture_mode'], 'tun')
         self.assertEqual(value['builtin_rule_pack'], 'off')
-        self.assertEqual(value['schema_version'], 6)
+        self.assertEqual(value['schema_version'], 7)
         self.assertEqual(value['dns_mode'], 'advanced')
 
     def test_config_load_migrates_legacy_without_changing_path(self):
@@ -69,7 +69,19 @@ class RoutingSchemaTests(unittest.TestCase):
         generated = routing.build_mihomo_config(config, [])['dns']
 
         self.assertEqual(generated['enhanced-mode'], 'fake-ip')
-        self.assertEqual(generated['nameserver'], ['223.5.5.5', '1.1.1.1'])
+        self.assertEqual(generated['nameserver'], ['223.5.5.5', '119.29.29.29'])
+        self.assertTrue(generated['respect-rules'])
+        self.assertEqual(generated['proxy-server-nameserver'], [
+            'https://dns.alidns.com/dns-query',
+            'https://doh.pub/dns-query',
+        ])
+        self.assertEqual(generated['fallback'], [
+            'https://dns.alidns.com/dns-query',
+            'https://doh.pub/dns-query',
+        ])
+        self.assertNotIn('1.1.1.1', repr(generated))
+        self.assertNotIn('8.8.8.8', repr(generated))
+        self.assertEqual(generated['fallback-filter']['geoip-code'], 'CN')
         self.assertEqual(config['dns_servers'], ['9.9.9.9'])
 
     def test_advanced_dns_generates_policy_and_validates_fake_ip_pool(self):
@@ -142,7 +154,14 @@ class RoutingSchemaTests(unittest.TestCase):
         self.assertEqual(
             catalog['cn-direct-v1']['rule_count'],
             len(routing_rules.rules_for('cn-direct-v1')))
-        self.assertGreaterEqual(catalog['cn-direct-v1']['rule_count'], 73)
+        self.assertEqual(
+            catalog['cn-direct-v1']['system_proxy_domains'],
+            routing_rules.cn_direct_suffixes())
+        self.assertEqual(
+            catalog['cn-direct-v1']['system_proxy_domain_count'],
+            len(routing_rules.cn_direct_suffixes()))
+        self.assertNotIn('lan', routing_rules.cn_direct_suffixes())
+        self.assertGreaterEqual(catalog['cn-direct-v1']['rule_count'], 75)
         self.assertEqual(catalog['cn-direct-v1']['rules'][0], {
             'index': 1,
             'type': 'DOMAIN-SUFFIX',
@@ -155,6 +174,7 @@ class RoutingSchemaTests(unittest.TestCase):
         }
         self.assertTrue({
             'chaoxing.com', 'wisweb.com', 'cldisk.com', 'llm-api.net',
+            'aichaoxing.com', 'sslibrary.com',
             'aliyuncs.com', 'baidubce.com', 'tencentcloudapi.com',
             'volces.com', 'deepseek.com', 'stepfun.com',
             'baichuan-ai.com', 'xf-yun.com',
@@ -269,6 +289,31 @@ class RoutingSchemaTests(unittest.TestCase):
         self.assertEqual(explained['source'], 'bypass')
         self.assertEqual(explained['outbound'], 'physical')
 
+    def test_cn_pack_reference_adds_system_bypass_and_geoip_fallback(self):
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'physical_interface': 'Ethernet',
+            'builtin_rule_pack': 'off',
+            'system_proxy_bypass': {
+                'include_cn_direct': True,
+                'domains': ['chaoxing.com'],
+                'processes': [],
+            },
+        })
+        with mock.patch.object(
+                routing_rules, 'cn_direct_suffixes',
+                return_value=['cn', 'chaoxing.com', 'baidu.com']):
+            self.assertEqual(routing.system_proxy_bypass_domains(config), [
+                'chaoxing.com', 'cn', 'baidu.com'])
+            self.assertEqual(
+                routing.explain_domain(config, 'www.baidu.com')['source'],
+                'bypass')
+            self.assertEqual(routing.build_mihomo_config(config, [])['rules'], [
+                'DOMAIN-SUFFIX,chaoxing.com,PHYSICAL',
+                'GEOIP,CN,PHYSICAL',
+                'MATCH,PHYSICAL',
+            ])
+
     def test_rejects_path_like_bypass_process(self):
         with self.assertRaisesRegex(routing.RoutingError, '进程名称无效'):
             routing.normalize_config({
@@ -286,6 +331,27 @@ class RoutingSchemaTests(unittest.TestCase):
         self.assertEqual(routing.explain_domain(base, 'a.example.com')['source'], 'user')
         self.assertEqual(routing.explain_domain(base, 'www.baidu.com')['source'], 'builtin')
         self.assertEqual(routing.explain_domain(base, 'example.net')['source'], 'default')
+
+        with_fallback = routing.normalize_config({
+            **base,
+            'system_proxy_bypass': {'include_cn_direct': True},
+        })
+        runtime = routing.explain_domain(with_fallback, 'unknown.example.net')
+        self.assertEqual(runtime['source'], 'default')
+        self.assertTrue(runtime['runtime_geoip_fallback'])
+        self.assertIn('中国 IP', runtime['runtime_detail'])
+        explicit = routing.explain_domain(with_fallback, 'a.example.com')
+        self.assertFalse(explicit['runtime_geoip_fallback'])
+
+    def test_config_preflight_seeds_verified_geoip_database(self):
+        manager = routing.RoutingManager()
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(
+                routing.subprocess, 'run', return_value=mock.Mock(returncode=0)):
+            data_dir = os.path.join(root, 'data')
+            manager._test_config(os.path.join(root, 'candidate.json'), data_dir)
+            target = os.path.join(data_dir, routing.GEOIP_DATABASE)
+            self.assertTrue(os.path.isfile(target))
+            self.assertEqual(routing._sha256(target), routing.GEOIP_DATABASE_SHA256)
 
     def test_unicode_node_names_survive_normalization(self):
         value = routing.normalize_config({
@@ -322,6 +388,30 @@ class RoutingSchemaTests(unittest.TestCase):
             ['chaoxing.com'])
         manager._native_service.commit.assert_called_once_with('tx-system')
         manager._native_service.rollback.assert_not_called()
+
+    def test_system_proxy_activation_merges_cn_pack_reference(self):
+        manager = routing.RoutingManager()
+        manager._native_service = mock.Mock()
+        manager._native_service.apply.return_value = {'transaction_id': 'tx-cn'}
+        manager._native_provider_files = mock.Mock(return_value=[])
+        manager._wait_native_ready = mock.Mock()
+        manager._probe_connectivity = mock.Mock()
+        config = routing.normalize_config({
+            **routing.default_config(), 'physical_interface': 'Ethernet',
+            'system_proxy_bypass': {
+                'include_cn_direct': True,
+                'domains': ['chaoxing.com'], 'processes': []},
+        })
+        with mock.patch.object(
+                routing_rules, 'cn_direct_suffixes',
+                return_value=['cn', 'chaoxing.com', 'baidu.com']), mock.patch.object(
+                routing, 'windows_system_proxy',
+                return_value='http://127.0.0.1:17890'):
+            manager._install('candidate.json', config)
+        self.assertEqual(
+            manager._native_service.apply.call_args.kwargs[
+                'system_proxy_bypass_domains'],
+            ['chaoxing.com', 'cn', 'baidu.com'])
 
     def test_system_proxy_health_failure_restores_through_rollback(self):
         manager = routing.RoutingManager()

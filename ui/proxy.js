@@ -313,11 +313,15 @@
     setText('proxy-capture-status', config.capture_mode === 'tun' ? 'TUN（高级）' : 'Windows 系统代理');
     setText('proxy-default-outbound', outboundName(config.default_outbound));
     const builtinCount = status.builtin_rule_pack?.rule_count || 0;
-    setText('proxy-rule-composition', `${(config.rules || []).filter(item => item.enabled !== false).length} user / ${config.traffic_mode === 'global' ? 0 : builtinCount} builtin / MATCH`);
+    const cnFallback = config.system_proxy_bypass?.include_cn_direct ? ' / GEOIP CN' : '';
+    setText('proxy-rule-composition', `${(config.rules || []).filter(item => item.enabled !== false).length} user / ${config.traffic_mode === 'global' ? 0 : builtinCount} builtin${cnFallback} / MATCH`);
 
     const serviceDot = byId('proxy-service-dot');
     serviceDot?.classList.toggle('on', running);
     serviceDot?.classList.toggle('warn', phase === 'degraded' || phase === 'unknown');
+    const proxyOrbit = byId('proxy-orbit');
+    proxyOrbit?.classList.toggle('is-active', running);
+    proxyOrbit?.classList.toggle('is-warning', phase === 'degraded' || phase === 'unknown');
     setText('proxy-service-label', running ? '内置服务运行中'
       : phase === 'degraded' ? '配置已启用，服务异常'
         : phase === 'unknown' ? '无法确认服务状态'

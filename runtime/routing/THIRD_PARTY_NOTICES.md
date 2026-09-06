@@ -12,6 +12,16 @@
 `mihomo.exe` is distributed unmodified. Mihomo is a separate program launched and
 controlled through its documented configuration and REST API.
 
+## MetaCubeX meta-rules-dat
+
+- Project: https://github.com/MetaCubeX/meta-rules-dat
+- Asset: country-lite.mmdb snapshot downloaded 2026-09-02
+- License: GNU General Public License v3.0
+- Release: https://github.com/MetaCubeX/meta-rules-dat/releases/tag/latest
+
+The unmodified `country-lite.mmdb` asset is distributed as `Country.mmdb` for
+offline `GEOIP,CN` matching. Its SHA-256 is recorded in `README.md`.
+
 ## Windows Service Wrapper (WinSW)
 
 - Project: https://github.com/winsw/winsw

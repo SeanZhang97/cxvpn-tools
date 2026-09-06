@@ -1,7 +1,7 @@
 use crate::{
     constants::{
-        MIHOMO_BINARY, MIHOMO_SHA256, SERVICE_BINARY, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME,
-        SERVICE_ID,
+        GEOIP_DATABASE, GEOIP_SHA256, MIHOMO_BINARY, MIHOMO_SHA256, SERVICE_BINARY,
+        SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME, SERVICE_ID,
     },
     util::{atomic_write, program_data_dir, sha256_file, AppResult},
 };
@@ -21,19 +21,29 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
         .parent()
         .ok_or_else(|| "服务程序目录无效".to_string())?;
     let source_mihomo = source_dir.join(MIHOMO_BINARY);
+    let source_geoip = source_dir.join(GEOIP_DATABASE);
     if !source_mihomo.is_file() {
         return Err("安装包缺少 mihomo.exe".to_string());
     }
     if !sha256_file(&source_mihomo)?.eq_ignore_ascii_case(MIHOMO_SHA256) {
         return Err("安装包中的 Mihomo 完整性校验失败".to_string());
     }
+    if !source_geoip.is_file() {
+        return Err("安装包缺少 Country.mmdb".to_string());
+    }
+    if !sha256_file(&source_geoip)?.eq_ignore_ascii_case(GEOIP_SHA256) {
+        return Err("安装包中的 GeoIP 数据库完整性校验失败".to_string());
+    }
 
     let base = program_data_dir();
     fs::create_dir_all(&base).map_err(|e| format!("创建服务目录失败: {e}"))?;
     let target_service = base.join(SERVICE_BINARY);
     let target_mihomo = base.join(MIHOMO_BINARY);
+    let data_dir = base.join("data");
+    let target_geoip = data_dir.join(GEOIP_DATABASE);
     let service_backup = base.join("CXVPNRoutingHost.previous.exe");
     let owner_backup = base.join("owner.previous.sid");
+    let geoip_backup = base.join("Country.previous.mmdb");
     let old_host_available = target_service.is_file();
     let old_winsw = base.join(format!("{SERVICE_ID}.exe"));
     let old_winsw_available =
@@ -44,6 +54,11 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
     }
     if base.join("owner.sid").is_file() {
         let _ = fs::copy(base.join("owner.sid"), &owner_backup);
+    }
+    let old_geoip_available = target_geoip.is_file();
+    if old_geoip_available {
+        fs::copy(&target_geoip, &geoip_backup)
+            .map_err(|e| format!("备份旧 GeoIP 数据库失败: {e}"))?;
     }
 
     stop_and_delete_service();
@@ -58,6 +73,16 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
         if !sha256_file(&target_mihomo)?.eq_ignore_ascii_case(MIHOMO_SHA256) {
             return Err("复制后的 Mihomo 完整性校验失败".to_string());
         }
+        fs::create_dir_all(&data_dir).map_err(|e| format!("创建运行数据目录失败: {e}"))?;
+        if !target_geoip.is_file()
+            || !sha256_file(&target_geoip)?.eq_ignore_ascii_case(GEOIP_SHA256)
+        {
+            fs::copy(&source_geoip, &target_geoip)
+                .map_err(|e| format!("复制 GeoIP 数据库失败: {e}"))?;
+        }
+        if !sha256_file(&target_geoip)?.eq_ignore_ascii_case(GEOIP_SHA256) {
+            return Err("复制后的 GeoIP 数据库完整性校验失败".to_string());
+        }
         atomic_write(&base.join("owner.sid"), owner_sid.as_bytes())?;
         harden_acl(&base)?;
         create_service(&target_service)?;
@@ -67,6 +92,12 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
 
     if let Err(error) = result {
         stop_and_delete_service();
+        if old_geoip_available && geoip_backup.is_file() {
+            let _ = fs::create_dir_all(&data_dir);
+            let _ = fs::copy(&geoip_backup, &target_geoip);
+        } else if !old_geoip_available {
+            let _ = fs::remove_file(&target_geoip);
+        }
         if old_host_available && service_backup.is_file() {
             let _ = fs::copy(&service_backup, &target_service);
             if owner_backup.is_file() {
@@ -81,6 +112,7 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
     }
     let _ = fs::remove_file(service_backup);
     let _ = fs::remove_file(owner_backup);
+    let _ = fs::remove_file(geoip_backup);
     Ok(())
 }
 

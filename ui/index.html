@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CX VPN TOOLS</title>
+  <title>CXVPNTools</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="routing_activity.css">
 <link rel="stylesheet" href="routing_rules.css">
@@ -13,7 +13,7 @@
   <aside class="sidebar">
     <div class="logo">
       <div class="logo-mark"><img src="logo.png" alt=""></div>
-      <div class="logo-text"><h1>CX VPN <span>TOOLS</span></h1></div>
+      <div class="logo-text"><h1>CXVPN<span>Tools</span></h1></div>
     </div>
     <nav id="nav">
       <button type="button" data-page="overview" class="active" aria-current="page"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg><span>总览</span></button>
@@ -259,7 +259,16 @@
 
         <section class="proxy-connect-card" aria-labelledby="proxy-state-title">
           <div class="proxy-connect-main">
-            <div class="proxy-orbit" aria-hidden="true"><img src="logo.png" alt=""></div>
+            <div id="proxy-orbit" class="proxy-orbit" aria-hidden="true">
+              <img class="proxy-orbit-layer proxy-orbit-pulse" src="assets/chaoxing-network-orbit.png" alt="">
+              <img class="proxy-orbit-layer proxy-orbit-base" src="assets/chaoxing-network-orbit.png" alt="">
+              <img class="proxy-orbit-layer proxy-orbit-motion proxy-orbit-motion-primary" src="assets/chaoxing-network-orbit.png" alt="">
+              <img class="proxy-orbit-layer proxy-orbit-motion proxy-orbit-motion-secondary" src="assets/chaoxing-network-orbit.png" alt="">
+              <img class="proxy-orbit-layer proxy-logo-base" src="assets/chaoxing-line.png" alt="">
+              <img class="proxy-orbit-layer proxy-logo-charge" src="assets/chaoxing-line-paths.png" alt="">
+              <img class="proxy-orbit-layer proxy-logo-scan" src="assets/chaoxing-line-paths.png" alt="">
+              <img class="proxy-orbit-layer proxy-star-ignite" src="assets/chaoxing-line-star.png" alt="">
+            </div>
             <div class="proxy-connect-copy">
               <span class="proxy-state-kicker">系统流量</span>
               <h3 id="proxy-state-title" aria-live="polite" aria-atomic="true">代理未开启</h3>
@@ -509,15 +518,15 @@
             </div>
             <div class="routing-dns-mode-row">
               <div class="field grow"><label for="routing-dns-mode">配置模式</label><select id="routing-dns-mode"><option value="simple">简单模式（推荐）</option><option value="advanced">高级模式</option></select></div>
-              <div id="routing-dns-simple-summary" class="routing-dns-summary"><strong>推荐 DNS 配置</strong><span>fake-ip · 阿里 DNS + Cloudflare · 国内直连解析单独分层</span></div>
+              <div id="routing-dns-simple-summary" class="routing-dns-summary"><strong>推荐 DNS 配置</strong><span>fake-ip · 阿里 DNS + DNSPod DoH · 国内直连解析单独分层</span></div>
             </div>
             <div id="routing-dns-advanced" class="routing-dns-advanced hidden">
               <div class="routing-form-grid">
                 <div class="field grow"><label for="routing-dns-enhanced">解析增强模式</label><select id="routing-dns-enhanced"><option value="fake-ip">fake-ip（推荐）</option><option value="redir-host">redir-host（兼容模式）</option></select></div>
                 <div class="field grow"><label for="routing-fake-ip-range">fake-IP IPv4 地址池</label><input id="routing-fake-ip-range" placeholder="198.18.0.0/16"></div>
-                <div class="field grow"><label for="routing-dns">默认查询 nameserver</label><input id="routing-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
-                <div class="field grow"><label for="routing-default-dns">引导解析 default-nameserver</label><input id="routing-default-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
-                <div class="field grow"><label for="routing-proxy-dns">节点域名 proxy-server-nameserver</label><input id="routing-proxy-dns" placeholder="223.5.5.5, 1.1.1.1"></div>
+                <div class="field grow"><label for="routing-dns">默认查询 nameserver</label><input id="routing-dns" placeholder="223.5.5.5, 119.29.29.29"></div>
+                <div class="field grow"><label for="routing-default-dns">引导解析 default-nameserver</label><input id="routing-default-dns" placeholder="223.5.5.5, 119.29.29.29"></div>
+                <div class="field grow"><label for="routing-proxy-dns">节点域名 proxy-server-nameserver</label><input id="routing-proxy-dns" placeholder="https://dns.alidns.com/dns-query, https://doh.pub/dns-query"></div>
                 <div class="field grow"><label for="routing-direct-dns">直连域名 direct-nameserver</label><input id="routing-direct-dns" placeholder="223.5.5.5, 119.29.29.29"></div>
               </div>
               <label class="routing-backup-option routing-dns-respect"><input id="routing-dns-respect-rules" type="checkbox"><span><strong>DNS 查询遵循分流规则</strong><small>启用 `respect-rules`；配置错误可能形成解析环路，仅在明确理解上游出口时使用。</small></span></label>
@@ -535,8 +544,9 @@
               <div><h3>系统代理绕过</h3><p>域名可从 Windows 系统代理入口直接连接；进程项由 Mihomo 强制物理直连。</p></div>
             </div>
             <div class="routing-protected-bypass"><strong>局域网与回环保护</strong><span>Windows 系统代理模式始终绕过 localhost、127.0.0.0/8、私有网段和本地域名；TUN 模式由所选内置规则包控制。</span><i>已保护</i></div>
+            <label class="routing-option-switch routing-cn-bypass-option"><span><strong>国内域名不经过系统代理</strong><small id="routing-bypass-cn-direct-summary">引用 cn-direct-v1，与手动域名自动合并去重。</small></span><input id="routing-bypass-cn-direct" type="checkbox"><i aria-hidden="true"></i></label>
             <div class="routing-bypass-fields">
-              <div class="field grow"><label for="routing-bypass-domains">不经过系统代理的域名</label><textarea id="routing-bypass-domains" rows="4" placeholder="每行一个域名&#10;例如：chaoxing.com"></textarea><small>每行一个域名；系统代理模式不经过本地 mixed-port，TUN 模式按域名后缀直连。</small></div>
+              <div class="field grow"><label for="routing-bypass-domains">补充绕过域名</label><textarea id="routing-bypass-domains" rows="4" placeholder="每行一个域名&#10;例如：chaoxing.com"></textarea><small>每行一个域名；用于补充规则包未覆盖的域名，系统代理模式不经过本地 mixed-port。</small></div>
               <div class="field grow"><label for="routing-bypass-processes">指定进程直连</label><textarea id="routing-bypass-processes" rows="4" placeholder="每行一个进程&#10;例如：example.exe"></textarea><small>每行一个进程；由 Mihomo 严格识别并强制物理直连。</small></div>
             </div>
           </section>
@@ -552,7 +562,7 @@
               <button id="btn-routing-diagnostic" type="button" class="btn ghost">导出诊断包</button>
               <input id="routing-restore-file" class="hidden" type="file" accept="application/json,.json">
             </div>
-            <label class="routing-backup-option"><input id="routing-backup-urls" type="checkbox"><span><strong>备份中包含订阅地址</strong><small>默认关闭。订阅 URL 可能包含 Token；登录、VPN、邮箱、VLM 和 Controller 凭据始终不会导出。</small></span></label>
+            <label class="routing-option-switch routing-backup-urls-option"><span><strong>备份中包含订阅地址</strong><small>默认关闭。订阅 URL 可能包含 Token；登录、VPN、邮箱、VLM 和 Controller 凭据始终不会导出。</small></span><input id="routing-backup-urls" type="checkbox"><i aria-hidden="true"></i></label>
             <div class="routing-history-head"><strong>配置应用历史</strong><button id="btn-routing-history-refresh" type="button" class="btn mini ghost">刷新</button></div>
             <div id="routing-config-history" class="routing-config-history"><p class="routing-history-empty">正在读取历史记录…</p></div>
           </section>
@@ -567,7 +577,7 @@
             <div class="field grow"><label for="routing-builtin-pack">本地规则包</label><select id="routing-builtin-pack"><option value="off">off</option><option value="local-direct-v1">local-direct-v1</option><option value="cn-direct-v1">cn-direct-v1（本地文件）</option></select></div>
             <div class="field grow"><label for="routing-test-domain">测试一个域名</label><div class="routing-test-input"><input id="routing-test-domain" placeholder="例如：mh.chaoxing.com"><button id="btn-routing-test" class="btn ghost">查看命中</button></div></div>
           </div>
-          <p id="routing-rule-composition" class="routing-node-feedback">用户规则 0 条 · 内置规则 0 条 · 实际规则 1 条；顺序固定为 user → builtin → MATCH。</p>
+          <p id="routing-rule-composition" class="routing-node-feedback">用户规则 0 条 · 内置规则 0 条 · 实际规则 1 条；顺序固定为 bypass → user → builtin → MATCH。</p>
           <div id="routing-test-result" class="routing-test-result hidden"></div>
         </section>
         <section class="card builtin-rules-card">

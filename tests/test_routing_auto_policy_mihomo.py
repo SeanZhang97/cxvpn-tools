@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
 import os
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +16,25 @@ MIHOMO = ROOT / 'runtime' / 'routing' / 'mihomo.exe'
 @unittest.skipUnless(os.name == 'nt' and MIHOMO.is_file(),
                      '需要项目内置 Windows Mihomo 运行时')
 class RoutingAutoPolicyMihomoTests(unittest.TestCase):
+    def test_simple_dns_domestic_doh_fallback_passes_mihomo_config_check(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = routing.normalize_config({
+                **routing.default_config(),
+                'dns_mode': 'simple',
+                'physical_interface': '以太网',
+            })
+            generated = routing.build_mihomo_config(config, [])
+            config_path = Path(root) / 'config.json'
+            with config_path.open('w', encoding='utf-8') as stream:
+                json.dump(generated, stream, ensure_ascii=False, indent=2)
+
+            routing.RoutingManager()._test_config(str(config_path), root)
+
+        self.assertEqual(generated['dns']['fallback'], [
+            'https://dns.alidns.com/dns-query',
+            'https://doh.pub/dns-query',
+        ])
+
     def test_failure_and_percent_groups_pass_mihomo_config_check(self):
         with tempfile.TemporaryDirectory() as root, mock.patch.dict(
                 os.environ, {'LOCALAPPDATA': root}):
@@ -81,14 +99,7 @@ class RoutingAutoPolicyMihomoTests(unittest.TestCase):
                 json.dump(routing.build_mihomo_config(config, []), stream,
                           ensure_ascii=False, indent=2)
 
-            checked = subprocess.run(
-                [str(MIHOMO), '-t', '-d', root, '-f', str(config_path)],
-                check=False, capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=15)
-
-        self.assertEqual(
-            checked.returncode, 0,
-            msg=(checked.stdout + '\n' + checked.stderr)[-3000:])
+            routing.RoutingManager()._test_config(str(config_path), root)
 
 
 if __name__ == '__main__':
