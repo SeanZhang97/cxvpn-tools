@@ -93,8 +93,9 @@ assert.match(html, /class="setting-icon"[^>]*><svg viewBox="0 0 24 24"/);
 assert.equal((html.match(/class="eye"/g) || []).length, 5);
 assert.equal((html.match(/class="eye"[^>]*aria-pressed="false"[^>]*><svg/g) || []).length, 5);
 assert.doesNotMatch(html, /class="eye"[^>]*>显示<\/button>/);
-assert.match(routing, /eye\.className = 'eye'/);
-assert.match(routing, /toggleSecret\(url, eye\)/);
+assert.match(routing, /url\.type = 'text'/);
+assert.match(routing, /url\.className = 'routing-provider-url'/);
+assert.doesNotMatch(routing, /toggleSecret\(url, eye\)/);
 
 assert.match(app, /中断授权流程/);
 assert.match(app, /function handleRenewalAction/);

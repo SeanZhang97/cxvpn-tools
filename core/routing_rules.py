@@ -5,8 +5,10 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
-import sys
 import unicodedata
+
+from core import app_paths
+from core import config as cfgmod
 
 
 SCHEMA_VERSION = 7
@@ -30,13 +32,9 @@ class RulePackError(ValueError):
     """本地规则包缺失、编码错误或内容不合法。"""
 
 
-def _app_root():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-RULE_PACK_DIR = os.path.join(_app_root(), RULE_PACK_DIR_NAME)
+RULE_PACK_DIR = os.path.join(cfgmod.BASE, RULE_PACK_DIR_NAME)
+BUNDLED_RULE_PACK_DIR = os.path.join(
+    app_paths.resource_root(), RULE_PACK_DIR_NAME)
 
 
 def _source_name(pack_id):
@@ -47,6 +45,8 @@ def _source_name(pack_id):
 def _read_entries(pack_id, maximum):
     filename = PACK_FILES[pack_id]
     path = os.path.join(RULE_PACK_DIR, filename)
+    if not os.path.isfile(path):
+        path = os.path.join(BUNDLED_RULE_PACK_DIR, filename)
     try:
         size = os.path.getsize(path)
     except OSError as exc:

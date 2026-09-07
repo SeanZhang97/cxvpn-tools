@@ -1,6 +1,8 @@
 mod constants;
 mod installer;
 mod ipc;
+mod prepared;
+mod pipe_io;
 mod manager;
 mod protocol;
 mod service;

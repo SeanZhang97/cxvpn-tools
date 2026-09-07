@@ -8,6 +8,10 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from core import app_paths
+
+_DATA_MIGRATION = app_paths.migrate_legacy_user_data()
+
 import webview
 
 from api import Api
@@ -15,14 +19,16 @@ from core.windows_desktop import (
     DesktopController, SingleInstanceGuard, WINDOW_TITLE,
     activate_existing_window, migrate_legacy_startup_registration)
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = app_paths.resource_root()
+DATA_ROOT = app_paths.user_data_root()
 _BOOT = time.time()
 
 
 def _boot_log(msg):
     """启动耗时落盘 (startup.log, 追加): 开局假死时据此定位卡点"""
     try:
-        with open(os.path.join(BASE, 'startup.log'), 'a',
+        os.makedirs(DATA_ROOT, exist_ok=True)
+        with open(os.path.join(DATA_ROOT, 'startup.log'), 'a',
                   encoding='utf-8') as f:
             f.write(f'{time.time() - _BOOT:6.2f}s {msg}\n')
     except OSError:
@@ -39,7 +45,7 @@ def _run_app():
         hidden=True,
         background_color='#0b1020')
     # 内嵌浏览器面板宿主 = 主窗口; 共用存储目录 (cookie 持久化/共享)
-    storage = os.path.join(BASE, 'webview_data')
+    storage = os.path.join(DATA_ROOT, 'webview_data')
     api.worker.main_window = win
     api.worker.storage_path = storage
 
@@ -131,6 +137,11 @@ def _run_app():
 
 def main():
     _boot_log('imports done')
+    if _DATA_MIGRATION['copied']:
+        _boot_log(
+            f'user data migrated: {len(_DATA_MIGRATION["copied"])} files')
+    for warning in _DATA_MIGRATION['warnings']:
+        _boot_log(f'user data migration warning: {warning}')
     instance = SingleInstanceGuard()
     if not instance.acquire():
         restored = activate_existing_window()

@@ -13,11 +13,12 @@ import tempfile
 import time
 
 from core.routing_support import binary_path, sha256_file
+from core.pipe_io import transfer
 
 
 SERVICE_BINARY = 'CXVPNRoutingHost.exe'
-SERVICE_VERSION = '0.6.1'
-PROTOCOL_VERSION = 5
+SERVICE_VERSION = '0.7.0'
+PROTOCOL_VERSION = 6
 PIPE_NAME = r'\\.\pipe\CXVPNRoutingService.v1'
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
@@ -36,12 +37,14 @@ class RoutingServiceClient:
 
     def status(self):
         try:
-            return self.request({'op': 'status'}, connect_timeout_ms=600)
+            return self.request({'op': 'status'}, connect_timeout_ms=600,
+                                response_timeout=2)
         except ServiceUnavailable:
             return None
 
     def diagnostics(self):
-        return self.request({'op': 'diagnostics'}, connect_timeout_ms=1500)
+        return self.request({'op': 'diagnostics'}, connect_timeout_ms=1500,
+                            response_timeout=3)
 
     def ensure_installed(self):
         status = self.status()
@@ -64,7 +67,8 @@ class RoutingServiceClient:
         raise ServiceError('路由服务安装完成，但 IPC 未在限定时间内就绪')
 
     def apply(self, config_path, providers, runtime_mode='active',
-              fast_toggle_ready=False, system_proxy_bypass_domains=None):
+              fast_toggle_ready=False, system_proxy_bypass_domains=None,
+              allow_reload=True):
         runtime_mode = str(runtime_mode or '').strip().lower()
         if runtime_mode not in {'active', 'standby'}:
             raise ServiceError('路由服务运行模式无效')
@@ -88,9 +92,10 @@ class RoutingServiceClient:
             'providers': rows,
             'runtime_mode': runtime_mode,
             'fast_toggle_ready': bool(fast_toggle_ready),
+            'allow_reload': bool(allow_reload),
             'system_proxy_bypass_domains': [
                 str(item) for item in (system_proxy_bypass_domains or [])],
-        }, connect_timeout_ms=3000)
+        }, connect_timeout_ms=3000, response_timeout=60)
 
     def read_provider(self, provider_name):
         result = self.request({
@@ -135,17 +140,20 @@ class RoutingServiceClient:
     def start_runtime(self):
         return self.request({'op': 'start_runtime'})
 
-    def request(self, payload, connect_timeout_ms=2500):
+    def request(self, payload, connect_timeout_ms=2500, response_timeout=10):
         body = json.dumps(
             payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
-        handle = _open_pipe(connect_timeout_ms)
+        deadline = time.monotonic() + max(.1, min(float(response_timeout), 60))
+        handle = _open_pipe(min(connect_timeout_ms, int(response_timeout * 1000)))
         try:
-            _write_all(handle, struct.pack('<I', len(body)) + body)
-            header = _read_exact(handle, 4)
+            _write_all(handle, struct.pack('<I', len(body)) + body, deadline)
+            header = _read_exact(handle, 4, deadline)
             length = struct.unpack('<I', header)[0]
             if length <= 0 or length > MAX_RESPONSE_BYTES:
                 raise ServiceError('路由服务返回了异常大小的响应')
-            raw = _read_exact(handle, length)
+            raw = _read_exact(handle, length, deadline)
+        except (OSError, TimeoutError) as exc:
+            raise ServiceError(str(exc)) from exc
         finally:
             kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
             kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -306,48 +314,32 @@ def _open_pipe(timeout_ms):
     if not kernel32.WaitNamedPipeW(PIPE_NAME, max(0, int(timeout_ms))):
         raise ServiceUnavailable('路由服务 IPC 未就绪')
     handle = kernel32.CreateFileW(
-        PIPE_NAME, 0x80000000 | 0x40000000, 0, None, 3, 0, None)
+        PIPE_NAME, 0x80000000 | 0x40000000, 0, None, 3, 0x40000000, None)
     if handle == wintypes.HANDLE(-1).value:
         raise ServiceUnavailable('无法连接路由服务 IPC')
     return handle
 
 
-def _write_all(handle, data):
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel32.WriteFile.argtypes = [
-        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
-    kernel32.WriteFile.restype = wintypes.BOOL
+def _write_all(handle, data, deadline):
     offset = 0
     while offset < len(data):
-        written = wintypes.DWORD()
         chunk = data[offset:offset + 1024 * 1024]
         buffer = ctypes.create_string_buffer(chunk)
-        if not kernel32.WriteFile(
-                handle, buffer, len(chunk), ctypes.byref(written), None):
-            raise ServiceError('向路由服务发送请求失败')
-        if not written.value:
+        written = transfer(handle, buffer, len(chunk), True, deadline)
+        if not written:
             raise ServiceError('路由服务连接已中断')
-        offset += written.value
+        offset += written
 
 
-def _read_exact(handle, length):
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel32.ReadFile.argtypes = [
-        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
-    kernel32.ReadFile.restype = wintypes.BOOL
+def _read_exact(handle, length, deadline):
     chunks = []
     remaining = length
     while remaining:
         size = min(remaining, 1024 * 1024)
         buffer = ctypes.create_string_buffer(size)
-        read = wintypes.DWORD()
-        if not kernel32.ReadFile(
-                handle, buffer, size, ctypes.byref(read), None):
-            raise ServiceError('读取路由服务响应失败')
-        if not read.value:
+        read = transfer(handle, buffer, size, False, deadline)
+        if not read:
             raise ServiceError('路由服务连接已中断')
-        chunks.append(buffer.raw[:read.value])
-        remaining -= read.value
+        chunks.append(buffer.raw[:read])
+        remaining -= read
     return b''.join(chunks)

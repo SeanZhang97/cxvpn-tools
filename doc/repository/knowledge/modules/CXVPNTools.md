@@ -3,15 +3,16 @@
 模块: 业务工具 | 入口: `main.py`（pywebview 窗口）| 后端桥接: `api.py`
 后台线程: `core/worker.py` | 连接编排: `core/vpn_service.py` | 构建: `build.py` | 界面: `ui/`
 内置浏览器: `core/browser_win.py`（WebView2 原生窗口 + JS 桥接）
-最后验证: 2026-09-03 | 分支: main
+最后验证: 2026-09-06 | 分支: main
 
 侧栏品牌区使用单行 `CXVPN` + `Tools` 组合，与 44px 图标垂直居中；
 产品名、窗口标题、可执行文件与打包目录统一为 `CXVPNTools`。
 
 ## 架构与调用链
 
-- main.py 创建 pywebview 主窗口（ui/index.html，js_api=Api）并启动 Worker 线程;
-  `webview.start(private_mode=False, storage_path=webview_data/)` 持久化 cookie。主窗口统一
+- main.py 创建 pywebview 主窗口（ui/index.html，js_api=Api）并启动 Worker 线程；
+  `webview.start(private_mode=False, storage_path=%LOCALAPPDATA%\CXVPNTools\webview_data)`
+  持久化 cookie。主窗口统一
   以 `hidden=True` 创建：普通启动由前端读取本地配置、完成首屏预展示并调用 `ui_ready`
   后显示，开机自启保持隐藏；普通启动 5 秒未收到通知时使用窗口显示兜底，防止前端异常
   导致窗口永久不可见。
@@ -54,9 +55,9 @@
   窗口或横向分栏; 导航离开浏览器页时 `browser_set_visible(false)` 隐藏控件。
   同表面第二控件与主窗口共用 UserDataFolder 报 0x8007139F (独立窗口+同目录
   可行), 故面板用独立子目录 webview_data/embed/ (持久化, 首次需登录一次)。
-  主窗口与面板的 profile 都落在软件目录的 `_internal/webview_data` 下
-  (pywebview 在 private_mode=False 但给了 storage_path 时仍使用它), 因此
-  两者都依赖软件所在目录可写、路径不过深。
+  主窗口与面板的 profile 都落在
+  `%LOCALAPPDATA%\CXVPNTools\webview_data` 下
+  (pywebview 在 private_mode=False 但给了 storage_path 时仍使用它)，安装目录只需可读。
   新窗口请求 (授权成功页) NewWindowRequested → 同控件 Navigate。
   自动化经 `PageShim`（CoreWebView2.ExecuteScriptAsync, 等待 Promise）驱动:
   `AddScriptToExecuteOnDocumentCreatedAsync` 注入 `window.__cx` (每次导航
@@ -216,11 +217,13 @@
   `handle_captcha()` 必须立即停止自动识别并进入工具内人工点选，不能继续消耗自动尝试次数，
   也不能让该类异常冒泡到 Worker 后触发整次授权的 10 分钟冷却。
 
-## 配置与便携
+## 配置与用户数据
 
-- config.json 与 webview_data/（cookie 持久化）位于 exe 同级
-  （core/config.py 以 sys.frozen 定 BASE）；
-  字段: phone、vpn_name（默认 VPN）、**creds（持久凭据，回显用）**、
+- `core/app_paths.py` 将配置、日志、抓包、验证码缓存、路由 staging、浏览器 profile、
+  订阅缓存、配置历史和可编辑规则包统一放在 `%LOCALAPPDATA%\CXVPNTools`。
+  首次启动及打包前会从 exe 同级、`_internal`、旧产品名目录和
+  `%LOCALAPPDATA%\CXVPNManager` 合并缺失文件；目标已有文件不覆盖，旧文件不删除。
+- `config.json` 字段：phone、vpn_name（默认 VPN）、**creds（持久凭据，回显用）**、
   credential_status（仅保留本机写入异常 `windows_sync_failed`；启动时迁移清理旧的
   `pending_authorization` / `validated` / `validation_failed`）、renew_hours、auto_renew、
   authorization{last_success_at,expires_at,source,vpn_expiries}、auto_connect、close_to_tray、
@@ -242,15 +245,16 @@
   时不得修改工具配置，避免用户无法重试。
 - build.py: PyInstaller onedir --noconsole --icon；collect-all clr_loader、
   collect-submodules webview（2026-08-27 起不再 collect playwright）；
-  打包 `runtime/routing` 中锁定版本的 Mihomo/WinSW 与许可证；重打包前自动备份并恢复
-  dist 下 config.json。
+  打包 `runtime/routing` 中锁定版本的 Mihomo/WinSW 与许可证；重打包前把旧 dist 用户数据
+  迁入 LocalAppData，产物只携带只读资源。
 - 分发: 整个 `dist/CXVPNTools` 文件夹 zip；目标机需 Win10/11 + Edge + WebView2
   + 已配对 Phone Link。
 - 图标: make_icon.py 生成黑底圆角流星 icon.ico 与 ui/logo.png；
   改图标后需删除 build_tmp 强制重嵌 EXE 图标（PyInstaller 缓存不感知 icon 变化）。
-- 源码在 `C:\develop\workspace\cxvpn-tools`；`main.py`、`api.py`、`core/`、`ui/`
+- 源码在 `D:\develop\workspace\cxvpn-tools`；`main.py`、`api.py`、`core/`、`ui/`
   或打包资源发生变化后，按项目规则执行
-  `uv run --with pyinstaller python build.py`，并核对 dist 用户配置未丢失。
+  `uv run --with pyinstaller python build.py`，并核对 LocalAppData 用户数据未丢失、
+  `dist` 未混入运行时数据。
 
 ## 页面
 
@@ -405,7 +409,7 @@ success / error / warning / info 分别具有独立标题、颜色和播报角�
 - 凭据机制见 common/Windows-VPN凭据与RAS-API.md：Windows 密码不能读取为明文，
   当前 Win11 实测的星号密码句柄会提交错误身份，因此软件没有凭据副本时必须先提示补录，
   不得直接拨号。用户补录成功后工具持久存一份并同步 Windows。
-- config.json 含 API Key 与 VPN 密码明文，分发前清空。
+- `%LOCALAPPDATA%\CXVPNTools\config.json` 含 API Key 与 VPN 密码明文，不进入分发包。
 - rasdial 非法参数会"USAGE + 退出码 0"假成功，判定必须查输出首行（vpn_connect._is_usage）。
 - **js_api 属性遍历假死**: pywebview 每次导航完成都 `inject_pywebview`
   递归遍历 js_api 全部公开属性生成 JS 桥; 持有 Window/WinForms 原生对象

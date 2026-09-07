@@ -14,6 +14,8 @@ import shutil
 import tempfile
 import time
 
+from core import app_paths
+
 
 CACHE_VERSION = 1
 NODE_SNAPSHOT_VERSION = 1
@@ -33,14 +35,9 @@ NODE_SNAPSHOT_KEYS = {
     'name', 'display_name', 'type', 'delay', 'alive', 'tested', 'tested_at'}
 SNAPSHOT_DOCUMENT_KEYS = {
     'version', 'url_fingerprint', 'updated_at', 'nodes'}
-LEGACY_DATA_DIR_NAME = 'CXVPNManager'
-
-
 def cache_root():
-    local = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
-    # 用户数据目录本轮不迁移，继续读取既有缓存位置。
     return os.path.join(
-        local, LEGACY_DATA_DIR_NAME, 'routing', 'providers')
+        app_paths.user_data_root(), 'routing', 'providers')
 
 
 def url_fingerprint(provider):

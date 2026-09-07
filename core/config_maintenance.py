@@ -14,9 +14,6 @@ from core import config as cfgmod
 from core import routing
 
 
-LEGACY_ROUTING_DATA_DIR = 'CXVPNManager'
-
-
 BACKUP_VERSION = 1
 HISTORY_LIMIT = 12
 MAX_IMPORT_BYTES = 2 * 1024 * 1024
@@ -290,10 +287,7 @@ def diagnostic_bundle(config, app_logs, core_logs=None, service=None,
 
 class ConfigHistory:
     def __init__(self, root=None):
-        base = root or os.path.join(
-            os.environ.get('LOCALAPPDATA') or cfgmod.BASE,
-            # 用户数据目录本轮不迁移，继续读取既有历史位置。
-            LEGACY_ROUTING_DATA_DIR, 'routing', 'history')
+        base = root or os.path.join(cfgmod.BASE, 'routing', 'history')
         self.root = base
 
     @staticmethod

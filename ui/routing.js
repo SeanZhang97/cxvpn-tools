@@ -7,6 +7,8 @@
   let loaded = false;
   let busy = false;
   let setupInFlight = null;
+  let setupGeneration = 0;
+  let latestRoutingRevision = 0;
   let bootstrapInFlight = null;
   let lastLoadedAt = 0;
   let savedSnapshot = '';
@@ -26,7 +28,7 @@
   let renderedNodeGroup = '';
   let historyLoading = false;
   const SETUP_TTL_MS = 15000;
-  const TEST_POLL_MS = 250;
+  const TEST_POLL_MS = 750;
   const TEST_POLL_MAX_MS = 5000;
   const DNS_RECOMMENDED = Object.freeze({
     dns_enhanced_mode: 'fake-ip', dns_respect_rules: true,
@@ -313,7 +315,7 @@
     const detected = setup?.system_proxy?.available
       ? `已检测到 ${setup.system_proxy.address}` : '未检测到 Windows 手动系统代理';
     return [
-      ['auto', '智能自动更新（推荐）', '依次尝试已有缓存节点、物理网络，并在失败时自动回退到已检测的 Windows 系统代理'],
+      ['auto', '智能自动更新（推荐）', '已有缓存时复用缓存节点；首次获取优先使用已检测的 Windows 系统代理，不可用时尝试物理网络'],
       ['physical', '物理网络（首次获取）', '固定绕过 Windows 系统代理和 VPN 默认路由'],
       ['system-proxy', 'Windows 系统代理（迁移/恢复）', `${detected}；不作为日常依赖`],
       ['custom-proxy', '自定义本地代理（迁移/恢复）', '临时使用本机 HTTP 代理导入第一份可用节点'],
@@ -1161,6 +1163,7 @@
   async function previewProvider(provider) {
     if (busy) return;
     const signature = providerPreviewSignature(provider);
+    const generation = setupGeneration;
     setBusy(true, 'provider');
     providerPreviewErrors.delete(provider.id);
     renderProviders();
@@ -1172,6 +1175,7 @@
           dns_servers: byId('routing-dns')?.value || '',
         }), '订阅获取成功');
       if (!result.ok) throw new Error(result.msg);
+      if (generation !== setupGeneration || Number(result.routing_revision || 0) < latestRoutingRevision) return;
       const currentProvider = routingConfig.proxy_providers?.find(item => item.id === provider.id);
       if (!currentProvider || providerPreviewSignature(currentProvider) !== signature) {
         feedback('订阅在获取过程中已被修改，本次旧结果已忽略。', 'warning');
@@ -1225,6 +1229,7 @@
         return;
       }
       const signature = providerPreviewSignature(provider);
+      const generation = setupGeneration;
       setBusy(true, 'provider');
       providerPreviewErrors.delete(provider.id);
       renderProviders();
@@ -1238,6 +1243,7 @@
           }),
           'YAML 节点已导入');
         if (!result.ok) throw new Error(result.msg);
+        if (generation !== setupGeneration || Number(result.routing_revision || 0) < latestRoutingRevision) return;
         const currentProvider = routingConfig.proxy_providers?.find(item => item.id === provider.id);
         if (!currentProvider || providerPreviewSignature(currentProvider) !== signature) {
           feedback('订阅在导入过程中已被修改，本次旧结果已忽略。', 'warning');
@@ -1353,10 +1359,12 @@
   async function refreshProvider(providerId, allowFallback = false) {
     if (busy) return;
     setBusy(true);
+    const generation = setupGeneration;
     feedback('正在更新代理订阅…');
     try {
       const result = normalizeResult(await backend().refresh_routing_provider(providerId), '代理订阅已更新');
       if (!result.ok) throw new Error(result.msg);
+      if (generation !== setupGeneration || Number(result.routing_revision || 0) < latestRoutingRevision) return;
       setup.proxy_groups = result.groups || [];
       syncProviderCache(providerId, result.cache);
       syncProviderNodesFromGroups(providerId, setup.proxy_groups, result.updated_at || Date.now());
@@ -1455,7 +1463,7 @@
 
   function reapplyTestJobs() {
     routingTestJobs.forEach(context => {
-      if (context?.job && context.job.status !== 'error') applyTestJob(context, context.job);
+      if (context?.job && testIsActive(context.job) && context.generation === setupGeneration) applyTestJob(context, context.job);
     });
   }
 
@@ -1498,7 +1506,13 @@
     cancel.textContent = context.cancelling ? '正在停止…' : context.jobId ? '停止测速' : '正在启动…';
   }
 
-  function renderNodeWorkspace() {
+  function renderNodeWorkspace(progressOnly = false) {
+    if (progressOnly) {
+      if (document.visibilityState === 'hidden') return;
+      if (byId('page-nodes')?.classList.contains('active')) renderNodes();
+      if (byId('page-proxy')?.classList.contains('active')) window.ProxyWorkspace?.sync?.();
+      return;
+    }
     renderNodes(); renderProviders(); renderOverview(); renderAllProxyChoice();
     window.ProxyWorkspace?.sync?.();
   }
@@ -1508,7 +1522,7 @@
     context.timer = null;
     if (job.status === 'error') restoreTestResult(context);
     context.job = clone(job);
-    renderNodeWorkspace();
+    renderNodeWorkspace(true);
     const message = job.status === 'completed'
       ? `测速完成：${job.alive || 0}/${job.total || 0} 个节点可用。`
       : job.status === 'cancelled' ? `测速已停止，已完成 ${job.completed || 0}/${job.total || 0}。`
@@ -1521,11 +1535,12 @@
   function scheduleTestPoll(context, delay = TEST_POLL_MS) {
     if (!testIsActive(context.job)) return;
     if (context.timer) clearTimeout(context.timer);
-    context.timer = setTimeout(() => pollTestJob(context), delay);
+    const visible = document.visibilityState !== 'hidden' && byId('page-nodes')?.classList.contains('active');
+    context.timer = setTimeout(() => pollTestJob(context), visible ? delay : Math.max(delay, 2000));
   }
 
   async function pollTestJob(context) {
-    if (routingTestJobs.get(context.groupId) !== context || context.polling) return;
+    if (routingTestJobs.get(context.groupId) !== context || context.polling || context.generation !== setupGeneration) return;
     const provider = context.providerId ? providerForGroup(context.providerId) : null;
     if (context.providerId && (!provider || context.signature !== providerPreviewSignature(provider))) {
       context.job = { ...context.job, status: 'cancelled', msg: '订阅已修改，旧测速任务结果已忽略。' };
@@ -1535,11 +1550,14 @@
     }
     context.polling = true;
     try {
-      const result = await backend().get_routing_test_job(context.jobId);
+      const result = await backend().get_routing_test_job(context.jobId, context.version ?? -1);
+      if (context.generation !== setupGeneration) return;
+      if (result?.unchanged) { scheduleTestPoll(context); return; }
+      context.version = result?.job?.version;
       if (result?.ok === false || !result?.job) throw new Error(result?.msg || '读取测速进度失败');
       context.pollFailures = 0;
       if (!applyTestJob(context, result.job)) return;
-      renderNodeWorkspace();
+      renderNodeWorkspace(true);
       if (testIsActive(result.job)) scheduleTestPoll(context);
       else finishTestJob(context, result.job);
     } catch (error) {
@@ -1548,13 +1566,13 @@
         context.job = { ...context.job, msg: '测速仍在继续，正在重新读取进度…' };
         const retryDelay = Math.min(
           TEST_POLL_MAX_MS, TEST_POLL_MS * (2 ** context.pollFailures));
-        renderNodeWorkspace(); scheduleTestPoll(context, retryDelay);
+        renderNodeWorkspace(true); scheduleTestPoll(context, retryDelay);
       } else {
         context.job = {
           ...context.job,
           msg: '持续无法读取测速进度，正在请求后台停止任务…',
         };
-        renderNodeWorkspace();
+        renderNodeWorkspace(true);
         try {
           const cancelled = await backend().cancel_routing_test_job(context.jobId);
           if (cancelled?.ok === false || !cancelled?.job) {
@@ -1568,7 +1586,7 @@
             ...context.job,
             msg: '测速任务状态暂时未知，后台可能仍在运行；将继续读取进度。',
           };
-          renderNodeWorkspace();
+          renderNodeWorkspace(true);
           scheduleTestPoll(context, TEST_POLL_MAX_MS);
         }
       }
@@ -1661,36 +1679,41 @@
       card.className = `routing-node${selected ? ' selected' : ''}${nodeState ? ` ${nodeState}` : ''}${node.tested && node.alive === false ? ' offline' : ''}`;
       if (selected) card.setAttribute('aria-current', 'true');
       else card.removeAttribute('aria-current');
-      const head = document.createElement('div');
-      const identity = document.createElement('span'); identity.className = 'routing-node-identity';
-      const label = splitNodeLabel(node);
-      if (label.country) {
-        const country = document.createElement('i'); country.className = 'routing-country-badge';
-        country.textContent = label.country; country.setAttribute('aria-label', `国家或地区 ${label.country}`);
-        identity.append(country);
+      const contentSignature = JSON.stringify([node, selected, manualSelected, runtimeSelected,
+        busy, preferenceBusy, provider?.id, provider?.selection_mode, group.preview]);
+      if (card._contentSignature !== contentSignature) {
+        card._contentSignature = contentSignature;
+        const head = document.createElement('div');
+        const identity = document.createElement('span'); identity.className = 'routing-node-identity';
+        const label = splitNodeLabel(node);
+        if (label.country) {
+          const country = document.createElement('i'); country.className = 'routing-country-badge';
+          country.textContent = label.country; country.setAttribute('aria-label', `国家或地区 ${label.country}`);
+          identity.append(country);
+        }
+        const name = document.createElement('strong'); name.textContent = label.text;
+        identity.append(name);
+        const delay = document.createElement('span');
+        delay.className = `delay${nodeState === 'testing' ? ' testing' : node.tested && node.alive === false ? ' bad' : ''}`;
+        delay.textContent = nodeState === 'testing' ? '测速中…' : nodeState === 'pending' && activeTest ? '等待测速'
+          : !node.tested ? '未测速' : node.delay ? `${node.delay} ms`
+          : node.alive === true ? '可用 / 无延迟' : node.alive === false ? '不可用' : '未测速';
+        head.append(identity, delay);
+        const meta = document.createElement('small');
+        meta.textContent = `${node.type || '代理节点'}${group.preview ? ' · 已持久化节点' : ''}`;
+        const action = document.createElement('div'); action.className = 'routing-node-action';
+        const badge = document.createElement('span');
+        badge.textContent = runtimeSelected ? '当前使用' : manualSelected ? '待启用' : provider?.selection_mode === 'auto' ? '自动模式候选' : '可设为目标节点';
+        badge.classList.toggle('on', runtimeSelected || manualSelected);
+        const choose = document.createElement('button'); choose.type = 'button'; choose.className = 'btn mini ghost';
+        choose.textContent = !provider ? '先选择订阅' : manualSelected ? '已选择' : '使用此节点';
+        choose.disabled = busy || !provider || !preferenceName || preferenceBusy === provider.id || manualSelected;
+        choose.title = !provider ? '请先选择具体订阅，聚合代理组不能保存单一节点偏好'
+          : !preferenceName ? '运行节点缺少 display_name，无法安全保存原始节点名'
+          : group.preview ? '保存为待启用节点，不会立即连接' : '保存为该订阅的手动节点偏好';
+        choose.onclick = () => saveProxyPreference(provider.id, 'manual', preferenceName);
+        action.append(badge, choose); card.replaceChildren(head, meta, action);
       }
-      const name = document.createElement('strong'); name.textContent = label.text;
-      identity.append(name);
-      const delay = document.createElement('span');
-      delay.className = `delay${nodeState === 'testing' ? ' testing' : node.tested && node.alive === false ? ' bad' : ''}`;
-      delay.textContent = nodeState === 'testing' ? '测速中…' : nodeState === 'pending' && activeTest ? '等待测速'
-        : !node.tested ? '未测速' : node.delay ? `${node.delay} ms`
-        : node.alive === true ? '可用 / 无延迟' : node.alive === false ? '不可用' : '未测速';
-      head.append(identity, delay);
-      const meta = document.createElement('small');
-      meta.textContent = `${node.type || '代理节点'}${group.preview ? ' · 已持久化节点' : ''}`;
-      const action = document.createElement('div'); action.className = 'routing-node-action';
-      const badge = document.createElement('span');
-      badge.textContent = runtimeSelected ? '当前使用' : manualSelected ? '待启用' : provider?.selection_mode === 'auto' ? '自动模式候选' : '可设为目标节点';
-      badge.classList.toggle('on', runtimeSelected || manualSelected);
-      const choose = document.createElement('button'); choose.type = 'button'; choose.className = 'btn mini ghost';
-      choose.textContent = !provider ? '先选择订阅' : manualSelected ? '已选择' : '使用此节点';
-      choose.disabled = busy || !provider || !preferenceName || preferenceBusy === provider.id || manualSelected;
-      choose.title = !provider ? '请先选择具体订阅，聚合代理组不能保存单一节点偏好'
-        : !preferenceName ? '运行节点缺少 display_name，无法安全保存原始节点名'
-        : group.preview ? '保存为待启用节点，不会立即连接' : '保存为该订阅的手动节点偏好';
-      choose.onclick = () => saveProxyPreference(provider.id, 'manual', preferenceName);
-      action.append(badge, choose); card.replaceChildren(head, meta, action);
       const current = grid.children[index];
       if (current !== card) grid.insertBefore(card, current || null);
       renderedCards.add(card);
@@ -1820,7 +1843,7 @@
         id: '', status: 'pending', total: partitionNodes(group.nodes).selectable.length,
         completed: 0, alive: 0, failed: 0, nodes: [], msg: progress, error: '',
       },
-      timer: null, pollFailures: 0,
+      timer: null, pollFailures: 0, generation: setupGeneration,
     };
     routingTestJobs.set(groupId, context);
     testStartBusy.add(groupId); feedback(progress); nodeFeedback(progress); renderNodes();
@@ -1833,6 +1856,10 @@
         : await backend().start_routing_group_test(groupId);
       if (result?.ok === false || !result?.job_id || !result?.job) throw new Error(result?.msg || '测速任务启动失败');
       context.jobId = result.job_id;
+      if (context.generation !== setupGeneration) {
+        await backend().cancel_routing_test_job(context.jobId);
+        return;
+      }
       context.job = clone(result.job);
       applyTestJob(context, result.job);
       renderNodeWorkspace();
@@ -1888,14 +1915,7 @@
   async function saveProxyPreference(providerId, mode, nodeName = '', policy = null) {
     const provider = providerForGroup(providerId);
     if (!provider || preferenceBusy) return false;
-    if (mode === 'manual') {
-      const confirmed = await confirmAction({
-        title: '确认目标节点',
-        message: `将“${nodeName}”保存为“${provider.name}”的手动目标。运行中会回读确认实际选择；该操作不会修改默认出口。`,
-        confirmText: '确认使用',
-      });
-      if (!confirmed) return false;
-    }
+    beginMutation();
     preferenceBusy = providerId; renderNodes(); renderProviders();
     const action = mode === 'manual' ? `正在保存目标节点“${nodeName}”…` : '正在启用自动优选…';
     nodeFeedback(action); feedback(action);
@@ -1903,6 +1923,12 @@
       const result = await backend().save_proxy_preference(
         providerId, mode, nodeName, { ...provider }, policy);
       if (result?.ok === false || !result?.config) throw new Error(result?.msg || '代理偏好保存失败');
+      if (Number(result.routing_revision || 0) < latestRoutingRevision) {
+        void loadSetup(true, true, true);
+        return false;
+      }
+      latestRoutingRevision = Math.max(latestRoutingRevision, Number(result.routing_revision || 0));
+      mergeRuntimeGroups(result.groups);
       mergePreferenceIntoConfig(routingConfig, result.config, providerId, mode, nodeName);
       mergePreferenceIntoConfig(appliedConfig, result.config, providerId, mode, nodeName);
       mergePreferenceIntoConfig(savedConfig, result.config, providerId, mode, nodeName);
@@ -1937,6 +1963,7 @@
       toast({ ok: true, msg: message });
       return true;
     } catch (error) {
+      void loadSetup(true, true, true);
       const message = `保存代理偏好失败：${friendlyError(error)}`;
       nodeFeedback(message, 'error'); feedback(message, 'error'); toast({ ok: false, msg: message });
       return false;
@@ -1954,10 +1981,12 @@
       if (provider) await previewProvider(provider);
       return;
     }
-    setBusy(true); feedback('正在读取运行中的代理节点…'); nodeFeedback('正在读取运行中的代理节点…');
+    setBusy(true);
+    const generation = setupGeneration; feedback('正在读取运行中的代理节点…'); nodeFeedback('正在读取运行中的代理节点…');
     try {
       const result = await backend().get_routing_proxies();
       if (result?.ok === false) throw new Error(result.msg);
+      if (generation !== setupGeneration || Number(result.routing_revision || 0) < latestRoutingRevision) return;
       setup.proxy_groups = result.groups || [];
       renderNodes(); renderProviders(); renderOverview(); renderAllProxyChoice();
       const message = setup.proxy_groups.length ? '代理节点已刷新' : '服务未运行或暂未加载节点';
@@ -2180,13 +2209,9 @@
       autoUpdateCopy.append(autoUpdateTitle, autoUpdateHint); autoUpdateRow.append(autoUpdateSwitch, autoUpdateCopy);
 
       const urlLabel = document.createElement('label'); urlLabel.textContent = '订阅 URL';
-      const urlWrap = document.createElement('div'); urlWrap.className = 'inp-wrap';
-      const url = document.createElement('input'); url.type = 'password'; url.autocomplete = 'off'; url.value = provider.url || ''; url.placeholder = 'https://example.com/subscribe?token=...';
+      const url = document.createElement('input'); url.type = 'text'; url.className = 'routing-provider-url'; url.autocomplete = 'off'; url.value = provider.url || ''; url.placeholder = 'https://example.com/subscribe?token=...';
       url.disabled = busy;
       url.oninput = () => { provider.url = url.value; invalidateProviderPreview(provider); syncDirty(); };
-      const eye = document.createElement('button'); eye.type = 'button'; eye.className = 'eye'; eye.dataset.secretLabel = '订阅 URL'; eye.onclick = () => toggleSecret(url, eye);
-      eye.disabled = busy;
-      urlWrap.append(url, eye); if (typeof concealSecret === 'function') concealSecret(url, eye);
 
       const filters = document.createElement('div'); filters.className = 'routing-provider-filters';
       const includeField = document.createElement('div'); includeField.className = 'field grow';
@@ -2239,7 +2264,7 @@
       importButton.disabled = busy;
       importButton.onclick = () => importProviderYaml(provider);
       importRow.append(importCopy, importButton);
-      detail.append(fields, autoUpdateRow, urlLabel, urlWrap, downloadFields, routeHint, filters, importRow);
+      detail.append(fields, autoUpdateRow, urlLabel, url, downloadFields, routeHint, filters, importRow);
       card.append(header, recovery, detail); root.append(card);
       if (expanded) {
         enhanceRoutingSelect(strategy, { compact: true });
@@ -2591,6 +2616,7 @@
       confirmText: '回退并应用', tone: 'notice',
     });
     if (!confirmed) return;
+    beginMutation();
     setBusy(true, 'apply');
     try {
       const result = await backend().restore_routing_config_history(item.id);
@@ -2715,7 +2741,36 @@
     window.ProxyWorkspace?.sync?.();
   }
 
+  let setupBusyGeneration = null;
+
+  function beginMutation() {
+    if (setupBusyGeneration !== null) {
+      setupBusyGeneration = null;
+      setBusy(false);
+    }
+    setupGeneration += 1;
+    setupInFlight = null;
+    routingTestJobs.forEach(context => {
+      if (!testIsActive(context.job)) return;
+      if (context.timer) clearTimeout(context.timer);
+      context.job = { ...context.job, status: 'cancelled', msg: '代理配置已变化，旧测速任务已停止。' };
+      if (context.jobId) void backend().cancel_routing_test_job(context.jobId).catch(() => {});
+    });
+  }
+
+  function mergeRuntimeGroups(groups) {
+    if (!Array.isArray(groups)) return;
+    const existing = new Map((setup.proxy_groups || []).map(group => [group.id, group]));
+    groups.forEach(group => existing.set(group.id, group.partial
+      ? { ...(existing.get(group.id) || {}), selected: group.selected, id: group.id }
+      : group));
+    setup.proxy_groups = [...existing.values()];
+  }
+
   function hydrateSetup(result, preserveDraft = false, markFresh = true) {
+    const revision = Number(result.routing_revision || 0);
+    if (revision < latestRoutingRevision) return setup;
+    latestRoutingRevision = revision;
     const keepDraft = loaded && dirty && preserveDraft;
     setup = result;
     appliedConfig = clone(result.config);
@@ -2746,6 +2801,9 @@
 
   function acceptApplyResult(result) {
     if (!result?.config) return;
+    if (Number(result.routing_revision || 0) < latestRoutingRevision) return false;
+    beginMutation();
+    latestRoutingRevision = Math.max(latestRoutingRevision, Number(result.routing_revision || 0));
     const committed = clone(result.config);
     (committed.proxy_providers || []).forEach(normalizeProviderDefaults);
     appliedConfig = committed;
@@ -2756,6 +2814,7 @@
       config: clone(committed),
       status: clone(runtimeStatus),
     };
+    mergeRuntimeGroups(result.groups);
     if (!dirty) {
       routingConfig = clone(committed);
       fillForm();
@@ -2770,10 +2829,12 @@
   function loadBootstrap() {
     if (loaded) return Promise.resolve(setup);
     if (bootstrapInFlight) return bootstrapInFlight;
+    const generation = setupGeneration;
     bootstrapInFlight = (async () => {
       setBusy(true);
       try {
         const result = await backend().get_routing_bootstrap();
+        if (generation !== setupGeneration) return null;
         if (result?.ok === false) throw new Error(result.msg || '读取代理快照失败');
         hydrateSetup(result, false, false);
         return result;
@@ -2800,25 +2861,33 @@
       window.ProxyWorkspace?.sync?.();
       return Promise.resolve(setup);
     }
-    setupInFlight = (async () => {
-      if (!background) setBusy(true);
+    background = background || (loaded && !force);
+    const generation = setupGeneration;
+    let request = null;
+    request = (async () => {
+      if (!background) { setupBusyGeneration = generation; setBusy(true); }
       if (!dirty) feedback('');
       try {
         const result = await backend().get_routing_setup();
+        if (generation !== setupGeneration) return setup;
         if (result?.ok === false) throw new Error(result.msg || '读取分流配置失败');
         return hydrateSetup(result, preserveDraft || !force, true);
       } catch (error) {
-        if (!background || !loaded) {
+        if (generation === setupGeneration && (!background || !loaded)) {
           feedback(`读取失败：${friendlyError(error)}`, 'error');
         }
         return null;
       } finally {
-        if (!background) setBusy(false);
-        setupInFlight = null;
+        if (!background && setupBusyGeneration === generation) {
+          setupBusyGeneration = null;
+          setBusy(false);
+        }
+        if (setupInFlight === request) setupInFlight = null;
         window.ProxyWorkspace?.sync?.();
       }
     })();
-    return setupInFlight;
+    setupInFlight = request;
+    return request;
   }
 
   async function preview() {
@@ -2869,42 +2938,12 @@
     try {
       const result = normalizeResult(await backend().apply_routing(next), '分流配置已应用');
       if (!result.ok) throw new Error(result.msg);
-      routingConfig = JSON.parse(JSON.stringify(result.config));
-      (routingConfig.proxy_providers || []).forEach(normalizeProviderDefaults);
-      appliedConfig = clone(routingConfig);
-      savedConfig = JSON.parse(JSON.stringify(routingConfig));
-      if (next.enabled) {
-        providerPreviews.clear();
-        providerPreviewErrors.clear();
-      }
-      if (typeof CFG !== 'undefined') CFG.routing = routingConfig;
-      setup.status = result.status;
-      runtimeStatus = clone(result.status);
-      let runtimeWarning = '';
-      try {
-        const refreshed = await backend().get_routing_setup();
-        if (refreshed?.ok !== false) {
-          setup = refreshed;
-          routingConfig = JSON.parse(JSON.stringify(refreshed.config || routingConfig));
-          (routingConfig.proxy_providers || []).forEach(normalizeProviderDefaults);
-          appliedConfig = clone(refreshed.config || routingConfig);
-          (appliedConfig.proxy_providers || []).forEach(normalizeProviderDefaults);
-          runtimeStatus = clone(refreshed.status || result.status);
-          savedConfig = JSON.parse(JSON.stringify(routingConfig));
-        } else runtimeWarning = refreshed?.msg || '运行状态刷新失败';
-      } catch (error) {
-        runtimeWarning = friendlyError(error);
-      }
-      hydrateProviderNodes();
-      reapplyTestJobs();
-      fillForm();
-      savedSnapshot = snapshot(collectConfig());
       setDirty(false);
-      runtimeStatus = clone(runtimeStatus || result.status);
-      lastLoadedAt = Date.now();
-      setStatus(runtimeStatus);
+      acceptApplyResult(result);
+      hydrateProviderNodes();
+      savedSnapshot = snapshot(collectConfig());
+      void loadSetup(true, true, true);
       const warningItems = [...(result.warnings || [])];
-      if (runtimeWarning) warningItems.push(`配置已保存，但运行状态读取失败：${runtimeWarning}`);
       const warnings = warningItems.length ? `；${warningItems.join('；')}` : '';
       feedback(`${result.msg}${warnings}`, warningItems.length ? 'warning' : 'success');
       toast({ ok: true, msg: result.msg });
@@ -3116,7 +3155,7 @@
       byId('routing-default')._routingWidget?.refresh();
       renderAllProxyChoice();
       renderRules();
-      byId('routing-providers').lastElementChild?.querySelector('.inp-wrap input')?.focus();
+      byId('routing-providers').lastElementChild?.querySelector('.routing-provider-url')?.focus();
     };
     byId('btn-routing-add').onclick = () => {
       routingConfig.rules.push({
@@ -3135,9 +3174,16 @@
       document.querySelector(`#nav [data-page="${page}"]`)?.addEventListener(
         'click', () => void loadSetup());
     });
+    window.addEventListener('cxvpn:uistate', event => {
+      const revision = Number(event.detail?.routing_revision || 0);
+      if (!loaded || revision <= latestRoutingRevision) return;
+      latestRoutingRevision = revision;
+      beginMutation();
+      void loadSetup(true, true, true);
+    });
     window.addEventListener('cxvpn:pagechange', event => {
       const page = event.detail?.page;
-      if (page === 'subscriptions') activeTab = 'providers';
+      if (page === 'subscriptions') { activeTab = 'providers'; if (routingConfig) renderProviders(); }
       if (page === 'rules') activeTab = 'rules';
       if (page === 'nodes') {
         activeTab = 'nodes';
@@ -3167,6 +3213,7 @@
     refresh: (preserveDraft = true) => loadSetup(true, preserveDraft),
     refreshBackground: (preserveDraft = true) => loadSetup(true, preserveDraft, true),
     acceptApplyResult,
+    beginMutation,
     openTab: setRoutingTab,
     state: () => ({
       setup,

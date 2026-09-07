@@ -38,7 +38,7 @@ assert.match(html, /id="btn-proxy-choose-node"/);
 assert.match(html, /id="routing-node-grid"/);
 assert.match(html, /<script src="proxy\.js"><\/script>/);
 
-assert.match(proxy, /get_routing_setup/);
+assert.match(proxy, /refreshBackground/);
 assert.match(proxy, /apply_routing/);
 assert.match(proxy, /set_routing_enabled/);
 assert.match(proxy, /traffic_mode/);

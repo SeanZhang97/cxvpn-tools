@@ -2,10 +2,11 @@ use crate::{
     constants::{
         MIHOMO_BINARY, MIHOMO_SHA256, PROTOCOL_VERSION, SERVICE_VERSION, TRANSACTION_TIMEOUT_SECS,
     },
-    protocol::{ProviderFile, Request, Response},
+    protocol::{Request, Response},
+    prepared::PreparedApply,
     system_proxy,
     util::{
-        atomic_write, copy_dir, remove_any, safe_provider_name, sha256_bytes, sha256_file,
+        atomic_write, remove_any, safe_provider_name, sha256_file,
         transaction_id, AppResult,
     },
 };
@@ -19,10 +20,10 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
 };
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_BYTES: usize = 10 * 1024 * 1024;
 const SYSTEM_PROXY_BYPASS_FILE: &str = "system-proxy-bypass.json";
 
@@ -32,6 +33,7 @@ struct PendingTransaction {
     rollback_dir: PathBuf,
     had_config: bool,
     had_data: bool,
+    preserve_data: bool,
     had_marker: bool,
     had_mode_marker: bool,
     had_fast_toggle_marker: bool,
@@ -45,6 +47,8 @@ struct PendingRecord {
     rollback_dir: String,
     had_config: bool,
     had_data: bool,
+    #[serde(default)]
+    preserve_data: bool,
     had_marker: bool,
     #[serde(default)]
     had_mode_marker: bool,
@@ -58,6 +62,7 @@ pub struct RuntimeManager {
     base: PathBuf,
     child: Option<Child>,
     pending: Option<PendingTransaction>,
+    preparing: Option<(String, Arc<AtomicBool>)>,
     last_restart: Instant,
     owner_sid: String,
     crash_times: Vec<Instant>,
@@ -72,6 +77,7 @@ impl RuntimeManager {
             base,
             child: None,
             pending: None,
+            preparing: None,
             last_restart: Instant::now() - Duration::from_secs(30),
             owner_sid,
             crash_times: Vec::new(),
@@ -100,10 +106,16 @@ impl RuntimeManager {
     }
 
     pub fn handle(&mut self, request: Request) -> Response {
+        let stopping = request.op == "stop_runtime" ||
+            (request.op == "set_system_proxy_enabled" && !request.enabled);
+        if stopping { self.cancel_preparation(); }
+        if self.preparing.is_some() && !matches!(request.op.as_str(), "status" | "diagnostics" | "read_provider") {
+            return Response::error("配置正在预检，请稍后重试");
+        }
         let result = match request.op.as_str() {
             "status" => self.status(),
             "diagnostics" => self.diagnostics(),
-            "apply" => self.apply(request),
+            "apply" => Err("配置请求必须先在锁外预检".to_string()),
             "commit" => self.commit(&request.transaction_id),
             "rollback" => self.rollback(&request.transaction_id),
             "activate_system_proxy" => self.activate_system_proxy(&request.transaction_id),
@@ -168,6 +180,7 @@ impl RuntimeManager {
     }
 
     pub fn shutdown(&mut self) {
+        self.cancel_preparation();
         let _ = self.stop_runtime();
         let _ = system_proxy::restore(&self.base, &self.owner_sid);
     }
@@ -212,55 +225,65 @@ impl RuntimeManager {
         ))
     }
 
-    fn apply(&mut self, request: Request) -> AppResult<(String, serde_json::Value)> {
-        self.log("收到配置 apply 请求，开始校验候选文件");
-        if self.pending.is_some() {
-            return Err("已有配置事务等待提交，请稍后重试".to_string());
+    pub fn begin_prepare(&mut self, request: Request) -> AppResult<PreparedApply> {
+        if self.pending.is_some() || self.preparing.is_some() {
+            return Err("已有配置事务，请稍后重试".into());
         }
+        let id = transaction_id();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.preparing = Some((id.clone(), Arc::clone(&cancelled)));
+        self.log("配置任务已领取，开始锁外预检（超时 30 秒）");
+        Ok(PreparedApply { request, id, base: self.base.clone(), cancelled,
+            deadline: Instant::now() + Duration::from_secs(45) })
+    }
+
+    fn cancel_preparation(&mut self) {
+        if let Some((_, cancelled)) = self.preparing.take() {
+            cancelled.store(true, Ordering::Relaxed);
+            self.log("配置预检取消已提交");
+        }
+    }
+
+    pub fn finish_prepare(&mut self, prepared: PreparedApply, outcome: AppResult<()>) -> Response {
+        let current = self.preparing.as_ref().is_some_and(|(id, _)| id == &prepared.id);
+        if current { self.preparing = None; }
+        let root = prepared.root();
+        let result = if !current || prepared.cancelled.load(Ordering::Relaxed) || Instant::now() >= prepared.deadline {
+            Err("配置准备期间运行状态已变化，旧请求已取消".into())
+        } else { outcome.and_then(|_| self.apply_prepared(prepared)) };
+        match result {
+            Ok((message, data)) => Response::success(message, data),
+            Err(error) => {
+                if !self.pending_record_path().exists() { let _ = remove_any(&root); }
+                self.log(&format!("配置准备或应用失败: {}", sanitize_detail(&error)));
+                Response::error(error)
+            }
+        }
+    }
+
+    fn apply_prepared(&mut self, prepared: PreparedApply) -> AppResult<(String, serde_json::Value)> {
         self.crash_fused = false;
         self.crash_times.clear();
-        let runtime_mode = match request.runtime_mode.as_str() {
-            "active" => "active",
-            "standby" => "standby",
-            _ => return Err("路由服务运行模式无效".to_string()),
-        };
-        let config = BASE64
-            .decode(request.config_b64.as_bytes())
-            .map_err(|_| "服务配置编码无效".to_string())?;
-        if config.is_empty() || config.len() > MAX_CONFIG_BYTES {
-            return Err("服务配置大小超出限制".to_string());
-        }
-        if !sha256_bytes(&config).eq_ignore_ascii_case(&request.config_sha256) {
-            return Err("服务配置校验失败".to_string());
-        }
-        let bypass_domains =
-            system_proxy::normalize_bypass_domains(&request.system_proxy_bypass_domains)?;
-
-        let id = transaction_id();
-        let transaction_root = self.transactions_dir().join(&id);
+        let transaction_root = prepared.root();
         let candidate = transaction_root.join("candidate");
         let rollback = transaction_root.join("rollback");
         let candidate_data = candidate.join("data");
-        fs::create_dir_all(&candidate_data).map_err(|e| format!("创建候选目录失败: {e}"))?;
-        copy_dir(&self.data_path(), &candidate_data)?;
-        self.stage_providers(&candidate_data, &request.providers)?;
-        atomic_write(&candidate.join("config.json"), &config)?;
-        atomic_write(
-            &candidate.join(SYSTEM_PROXY_BYPASS_FILE),
-            serde_json::to_vec(&bypass_domains)
-                .map_err(|e| format!("序列化系统代理绕过域名失败: {e}"))?
-                .as_slice(),
-        )?;
-        self.validate_candidate(&candidate)?;
-        self.log("候选配置与 provider 缓存校验通过，开始切换 Mihomo 运行时");
+        let id = prepared.id;
+        let request = prepared.request;
+        let runtime_mode = request.runtime_mode.as_str();
+        self.log("候选配置预检通过，开始应用事务");
 
-        self.stop_runtime()?;
+        let hot_reload = request.allow_reload && self.runtime_mode() == runtime_mode
+            && self.child.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+            && can_reload_files(&self.config_path(), &candidate.join("config.json"))
+            && fs::read(self.system_proxy_bypass_path()).ok() == fs::read(candidate.join(SYSTEM_PROXY_BYPASS_FILE)).ok();
         fs::create_dir_all(&rollback).map_err(|e| format!("创建回滚目录失败: {e}"))?;
         let record = PendingRecord {
             id: id.clone(),
             rollback_dir: rollback.to_string_lossy().into_owned(),
             had_config: self.config_path().exists(),
             had_data: self.data_path().exists(),
+            preserve_data: hot_reload,
             had_marker: self.marker_path().exists(),
             had_mode_marker: self.mode_path().exists(),
             had_fast_toggle_marker: self.fast_toggle_marker_path().exists(),
@@ -274,11 +297,12 @@ impl RuntimeManager {
         )?;
 
         let swap_result = (|| -> AppResult<()> {
+            if !hot_reload { self.stop_runtime()?; }
             if record.had_config {
                 fs::rename(self.config_path(), rollback.join("config.json"))
                     .map_err(|e| format!("备份旧配置失败: {e}"))?;
             }
-            if record.had_data {
+            if record.had_data && !record.preserve_data {
                 fs::rename(self.data_path(), rollback.join("data"))
                     .map_err(|e| format!("备份旧数据失败: {e}"))?;
             }
@@ -311,8 +335,10 @@ impl RuntimeManager {
                 self.system_proxy_bypass_path(),
             )
             .map_err(|e| format!("应用系统代理绕过域名失败: {e}"))?;
-            fs::rename(candidate_data, self.data_path())
-                .map_err(|e| format!("应用新数据失败: {e}"))?;
+            if !hot_reload {
+                fs::rename(candidate_data, self.data_path())
+                    .map_err(|e| format!("应用新数据失败: {e}"))?;
+            }
             atomic_write(&self.marker_path(), b"enabled\n")?;
             atomic_write(&self.mode_path(), runtime_mode.as_bytes())?;
             if request.fast_toggle_ready {
@@ -320,7 +346,7 @@ impl RuntimeManager {
             } else {
                 let _ = remove_any(&self.fast_toggle_marker_path());
             }
-            self.start_runtime()?;
+            if !hot_reload { self.start_runtime()?; }
             if runtime_mode == "standby" || self.desired_proxy_port()?.is_none() {
                 system_proxy::restore(&self.base, &self.owner_sid)?;
             }
@@ -328,7 +354,15 @@ impl RuntimeManager {
         })();
 
         if let Err(error) = swap_result {
-            let _ = Self::restore_record(&self.base, &record);
+            let restored = (|| -> AppResult<()> {
+                self.stop_runtime()?;
+                Self::restore_record(&self.base, &record)?;
+                if record.had_marker && self.config_path().is_file() { self.start_runtime()?; }
+                self.reconcile_system_proxy()
+            })();
+            if let Err(restore_error) = restored {
+                return Err(format!("新配置应用失败: {error}；旧配置恢复未完成: {restore_error}"));
+            }
             let _ = remove_any(&transaction_root);
             return Err(format!("新配置启动失败，已恢复旧配置: {error}"));
         }
@@ -337,6 +371,7 @@ impl RuntimeManager {
             rollback_dir: rollback,
             had_config: record.had_config,
             had_data: record.had_data,
+            preserve_data: record.preserve_data,
             had_marker: record.had_marker,
             had_mode_marker: record.had_mode_marker,
             had_fast_toggle_marker: record.had_fast_toggle_marker,
@@ -349,6 +384,8 @@ impl RuntimeManager {
             json!({
                 "transaction_id": id,
                 "config_sha256": request.config_sha256.to_uppercase(),
+                "hot_reload": hot_reload,
+                "config_path": self.config_path(),
             }),
         ))
     }
@@ -360,8 +397,14 @@ impl RuntimeManager {
             .parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| "回滚目录异常".to_string())?;
-        remove_any(&self.pending_record_path()).map_err(|e| format!("清理事务记录失败: {e}"))?;
-        remove_any(&root).map_err(|e| format!("清理回滚目录失败: {e}"))?;
+        if let Err(error) = remove_any(&self.pending_record_path()) {
+            self.pending = Some(pending);
+            return Err(format!("清理事务记录失败: {error}"));
+        }
+        // 删除事务记录即提交点；旧备份清理失败不得把已提交状态报告为失败。
+        if let Err(error) = remove_any(&root) {
+            self.log(&format!("配置已提交，旧备份清理未完成: {error}"));
+        }
         self.log("配置事务 commit 成功");
         Ok((
             "配置事务已提交".to_string(),
@@ -386,12 +429,16 @@ impl RuntimeManager {
             rollback_dir: pending.rollback_dir.to_string_lossy().into_owned(),
             had_config: pending.had_config,
             had_data: pending.had_data,
+            preserve_data: pending.preserve_data,
             had_marker: pending.had_marker,
             had_mode_marker: pending.had_mode_marker,
             had_fast_toggle_marker: pending.had_fast_toggle_marker,
             had_system_proxy_bypass: pending.had_system_proxy_bypass,
         };
-        Self::restore_record(&self.base, &record)?;
+        if let Err(error) = Self::restore_record(&self.base, &record) {
+            self.pending = Some(pending);
+            return Err(error);
+        }
         let root = pending
             .rollback_dir
             .parent()
@@ -477,58 +524,6 @@ impl RuntimeManager {
             "Mihomo 运行时已启动".to_string(),
             json!({"runtime_running": true}),
         ))
-    }
-
-    fn stage_providers(&self, candidate_data: &Path, providers: &[ProviderFile]) -> AppResult<()> {
-        let provider_dir = candidate_data.join("providers");
-        fs::create_dir_all(&provider_dir).map_err(|e| format!("创建 provider 目录失败: {e}"))?;
-        for provider in providers {
-            if !safe_provider_name(&provider.name) {
-                return Err("provider 文件名不合法".to_string());
-            }
-            let content = BASE64
-                .decode(provider.content_b64.as_bytes())
-                .map_err(|_| "provider 缓存编码无效".to_string())?;
-            if content.is_empty() || content.len() > MAX_PROVIDER_BYTES {
-                return Err(format!("provider 缓存大小超出限制: {}", provider.name));
-            }
-            if !sha256_bytes(&content).eq_ignore_ascii_case(&provider.sha256) {
-                return Err(format!("provider 缓存校验失败: {}", provider.name));
-            }
-            let target = provider_dir.join(&provider.name);
-            let target_mtime = target
-                .metadata()
-                .ok()
-                .and_then(|value| value.modified().ok())
-                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map(|value| value.as_secs())
-                .unwrap_or(0);
-            if !target.exists() || provider.modified_at >= target_mtime {
-                atomic_write(&target, &content)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_candidate(&self, candidate: &Path) -> AppResult<()> {
-        let output = Command::new(self.mihomo_path())
-            .args(["-t", "-d"])
-            .arg(candidate.join("data"))
-            .arg("-f")
-            .arg(candidate.join("config.json"))
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("无法执行 Mihomo 配置预检: {e}"))?;
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(if output.stderr.is_empty() {
-                &output.stdout
-            } else {
-                &output.stderr
-            });
-            let last = detail.lines().last().unwrap_or("未知错误");
-            return Err(format!("Mihomo 配置预检失败: {}", sanitize_detail(last)));
-        }
-        Ok(())
     }
 
     fn start_runtime(&mut self) -> AppResult<()> {
@@ -738,7 +733,9 @@ impl RuntimeManager {
             rollback.join("config.json"),
             record.had_config,
         )?;
-        restore_one(base.join("data"), rollback.join("data"), record.had_data)?;
+        if !record.preserve_data {
+            restore_one(base.join("data"), rollback.join("data"), record.had_data)?;
+        }
         restore_one(
             base.join("enabled.marker"),
             rollback.join("enabled.marker"),
@@ -759,7 +756,7 @@ impl RuntimeManager {
             rollback.join(SYSTEM_PROXY_BYPASS_FILE),
             record.had_system_proxy_bypass,
         )?;
-        let _ = remove_any(&base.join("pending.json"));
+        remove_any(&base.join("pending.json")).map_err(|e| format!("清理回滚事务记录失败: {e}"))?;
         Ok(())
     }
 
@@ -793,9 +790,6 @@ impl RuntimeManager {
     fn mihomo_path(&self) -> PathBuf {
         self.base.join(MIHOMO_BINARY)
     }
-    fn transactions_dir(&self) -> PathBuf {
-        self.base.join("transactions")
-    }
     fn pending_record_path(&self) -> PathBuf {
         self.base.join("pending.json")
     }
@@ -825,7 +819,24 @@ fn restore_one(current: PathBuf, backup: PathBuf, had_value: bool) -> AppResult<
     Ok(())
 }
 
-fn sanitize_detail(value: &str) -> String {
+fn can_reload_files(previous: &Path, candidate: &Path) -> bool {
+    let load = |path: &Path| -> Option<serde_json::Value> {
+        serde_json::from_slice(&fs::read(path).ok()?).ok()
+    };
+    match (load(previous), load(candidate)) {
+        (Some(left), Some(right)) => reload_compatible(left, right),
+        _ => false,
+    }
+}
+
+fn reload_compatible(mut previous: serde_json::Value, mut candidate: serde_json::Value) -> bool {
+    let (Some(left), Some(right)) = (previous.as_object_mut(), candidate.as_object_mut()) else { return false; };
+    // 仅允许规则、模式和节点组变化；端口/TUN/DNS/provider/接口保持完全相同。
+    for field in ["rules", "proxy-groups", "mode"] { left.remove(field); right.remove(field); }
+    left == right
+}
+
+pub(crate) fn sanitize_detail(value: &str) -> String {
     let mut result = String::with_capacity(value.len().min(500));
     let mut hiding_url = false;
     let mut index = 0;
@@ -883,7 +894,62 @@ fn read_sanitized_tail(path: &Path, line_limit: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_detail;
+    use super::*;
+
+    #[test]
+    fn reload_only_accepts_rules_mode_and_groups() {
+        let old = json!({"mixed-port":17890,"tun":{"enable":false},"dns":{},
+            "proxy-providers":{"alpha":{}},"rules":["MATCH,DIRECT"],"mode":"rule"});
+        for key in ["rules", "proxy-groups", "mode"] {
+            let mut new = old.clone(); new[key] = json!("changed");
+            assert!(reload_compatible(old.clone(), new));
+        }
+        for key in ["mixed-port", "tun", "dns", "proxy-providers", "external-controller", "interface-name"] {
+            let mut new = old.clone(); new[key] = json!("changed");
+            assert!(!reload_compatible(old.clone(), new));
+        }
+        assert!(!reload_compatible(json!(null), old));
+    }
+
+    #[test]
+    fn historical_records_restore_data_but_hot_reload_preserves_live_data() {
+        for preserve in [false, true] {
+            let base = std::env::temp_dir().join(format!("cxvpn-rollback-{}", transaction_id()));
+            let backup = base.join("transactions/test/rollback");
+            fs::create_dir_all(backup.join("data")).unwrap();
+            fs::create_dir_all(base.join("data")).unwrap();
+            fs::write(base.join("config.json"), b"new").unwrap();
+            fs::write(backup.join("config.json"), b"old").unwrap();
+            fs::write(base.join("data/nodes"), "新节点 e\u{301} 🇨🇳").unwrap();
+            fs::write(backup.join("data/nodes"), "旧节点 🇯🇵").unwrap();
+            let mut value = json!({"id":"test","rollback_dir":backup,
+                "had_config":true,"had_data":true,"had_marker":false});
+            if preserve { value["preserve_data"] = json!(true); }
+            let record: PendingRecord = serde_json::from_value(value).unwrap();
+            RuntimeManager::restore_record(&base, &record).unwrap();
+            assert_eq!(fs::read(base.join("config.json")).unwrap(), b"old");
+            assert_eq!(fs::read_to_string(base.join("data/nodes")).unwrap(),
+                if preserve { "新节点 e\u{301} 🇨🇳" } else { "旧节点 🇯🇵" });
+            remove_any(&base).unwrap();
+        }
+    }
+
+    #[test]
+    fn cancelled_prepare_cannot_replace_new_generation() {
+        let base = std::env::temp_dir().join(format!("cxvpn-prepare-{}", transaction_id()));
+        fs::create_dir_all(&base).unwrap();
+        let mut manager = RuntimeManager { base:base.clone(), child:None, pending:None,
+            preparing:None, last_restart:Instant::now(), owner_sid:String::new(),
+            crash_times:Vec::new(), crash_fused:false };
+        let first = manager.begin_prepare(serde_json::from_value(json!({"op":"apply"})).unwrap()).unwrap();
+        manager.cancel_preparation();
+        let second = manager.begin_prepare(serde_json::from_value(json!({"op":"apply"})).unwrap()).unwrap();
+        let response = manager.finish_prepare(first, Ok(()));
+        assert!(!response.ok);
+        assert_eq!(manager.preparing.as_ref().unwrap().0, second.id);
+        manager.cancel_preparation();
+        remove_any(&base).unwrap();
+    }
 
     #[test]
     fn errors_hide_subscription_urls_and_tokens() {

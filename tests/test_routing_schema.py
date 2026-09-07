@@ -418,8 +418,7 @@ class RoutingSchemaTests(unittest.TestCase):
         manager._native_service = mock.Mock()
         manager._native_service.apply.return_value = {'transaction_id': 'tx-fail'}
         manager._native_provider_files = mock.Mock(return_value=[])
-        manager._wait_native_ready = mock.Mock()
-        manager._probe_connectivity = mock.Mock(
+        manager._wait_native_ready = mock.Mock(
             side_effect=routing.RoutingError('system chain failed'))
         config = routing.normalize_config({
             **routing.default_config(), 'physical_interface': 'Ethernet'})
@@ -428,7 +427,7 @@ class RoutingSchemaTests(unittest.TestCase):
                 return_value='http://127.0.0.1:17890'):
             with self.assertRaisesRegex(routing.RoutingError, 'system chain failed'):
                 manager._install('candidate.json', config)
-        manager._native_service.activate_system_proxy.assert_called_once_with('tx-fail')
+        manager._native_service.activate_system_proxy.assert_not_called()
         manager._native_service.rollback.assert_called_once_with('tx-fail')
 
     def test_system_proxy_registry_readback_mismatch_rolls_back(self):

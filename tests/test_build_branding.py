@@ -47,16 +47,17 @@ class BuildBrandingTest(unittest.TestCase):
         self.assertIn(
             r"INSTANCE_MUTEX = r'Local\CXVPNTools.Singleton.v1'", source)
 
-    def test_rule_pack_files_are_distributed_and_preserved(self):
+    def test_rule_pack_files_are_bundled_and_legacy_data_is_migrated(self):
         for filename in ('local-direct-v1.txt', 'cn-direct-v1.txt'):
             path = ROOT / 'rule-packs' / filename
             self.assertTrue(path.is_file(), filename)
             path.read_text(encoding='utf-8')
         for relative in ('build.py', 'build_protected.py'):
             source = (ROOT / relative).read_text(encoding='utf-8')
-            self.assertIn('RULE_PACK_FILES', source, relative)
-            self.assertIn('saved_rule_packs', source, relative)
-            self.assertIn('DIST_RULE_PACK_DIR', source, relative)
+            self.assertIn('SOURCE_RULE_PACK_DIR', source, relative)
+            self.assertIn('migrate_legacy_user_data', source, relative)
+            self.assertNotIn('saved_rule_packs', source, relative)
+            self.assertNotIn('DIST_RULE_PACK_DIR', source, relative)
 
 
 if __name__ == '__main__':

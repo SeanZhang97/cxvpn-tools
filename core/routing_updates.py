@@ -1,28 +1,34 @@
 # -*- coding: utf-8 -*-
-"""仅在管理器前台运行时执行用户明确开启的订阅定时更新。"""
+"""GUI 订阅更新：按订阅轮转、失败退避，网络请求不占用路由提交锁。"""
 from __future__ import annotations
 
+import copy
 import threading
 import time
+from contextlib import contextmanager
 
 from core import subscription_store
+from core.routing_tasks import operation_scope, commit_scope
 
 
 class RoutingUpdateWorker:
-    def __init__(self, config_getter, manager, routing_lock, logger=None):
+    def __init__(self, config_getter, manager, routing_lock, logger=None, task_runner=None):
         self._config_getter = config_getter
         self._manager = manager
         self._routing_lock = routing_lock
         self._logger = logger or (lambda _message: None)
+        self._task_runner = task_runner
         self._stop_event = threading.Event()
         self._thread = None
+        self._cursor = 0
+        self._attempts = {}
 
     def start(self):
         if self._thread and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name='routing-subscription-update')
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name='routing-subscription-update')
         self._thread.start()
 
     def stop(self):
@@ -32,58 +38,82 @@ class RoutingUpdateWorker:
         if self._stop_event.wait(5):
             return
         while not self._stop_event.is_set():
+            attempted = False
             try:
-                self._update_one_due_provider()
+                attempted = self._update_one_due_provider()
             except Exception as exc:
-                self._logger(
-                    f'[routing] 订阅自动更新检查失败: {type(exc).__name__}')
-            self._stop_event.wait(60)
+                self._logger(f'[routing] 订阅自动更新检查失败: {type(exc).__name__}')
+            self._stop_event.wait(2 if attempted else 60)
+
+    def _execute(self, config, provider_id):
+        from core.routing import normalize_config, RoutingError
+        current_config = normalize_config(config)
+        provider = next((item for item in current_config['proxy_providers']
+                         if item['id'] == provider_id and item['enabled'] and item['auto_update']), None)
+        if self._stop_event.is_set() or current_config['enabled'] or provider is None:
+            raise RoutingError('自动更新已取消：运行配置已变化')
+        status = self._manager.status(current_config, quick=True)
+        if status.get('core_running') is True:
+            self._logger(f'[routing] 自动更新由待机核心执行: provider={provider_id}，超时=15秒')
+            return self._manager.refresh_proxy_provider(current_config, provider_id)
+        return self._manager.preview_proxy_provider(provider, {
+            'physical_interface': current_config['physical_interface'],
+            'dns_servers': current_config['dns_servers'],
+        })
 
     def _update_one_due_provider(self):
-        from core.routing import normalize_config
+        from core.routing import normalize_config, RoutingError
+        source = copy.deepcopy(self._config_getter().get('routing') or {})
+        config = normalize_config(source)
+        if config['enabled'] or self._stop_event.is_set():
+            return False
+        providers = config['proxy_providers']
+        keys = {(item['id'], subscription_store.url_fingerprint(item)) for item in providers}
+        self._attempts = {key: value for key, value in self._attempts.items() if key in keys}
+        now = time.time()
+        provider = None
+        for offset in range(len(providers)):
+            index = (self._cursor + offset) % len(providers)
+            item = providers[index]
+            key = (item['id'], subscription_store.url_fingerprint(item))
+            attempt = self._attempts.get(key, {})
+            if (item['enabled'] and item['auto_update'] and now >= attempt.get('next', 0)
+                    and now - subscription_store.cache_status(item).get('updated_at', 0) >= item['interval']):
+                provider = item
+                self._cursor = (index + 1) % len(providers)
+                break
+        if provider is None:
+            return False
+        key = (provider['id'], subscription_store.url_fingerprint(provider))
+        self._logger(f'[routing] 订阅自动更新已提交并开始执行: provider={provider["id"]}')
 
-        config = normalize_config(
-            (self._config_getter().get('routing') or {}))
-        # 启用服务后由 Mihomo 按 provider interval 更新，避免重复请求。
-        if config['enabled']:
-            return
-        now = int(time.time())
-        provider = next((item for item in config['proxy_providers']
-                         if item['enabled'] and item.get('auto_update') and
-                         now - subscription_store.cache_status(item).get(
-                             'updated_at', 0) >= item['interval']), None)
-        if not provider or not self._routing_lock.acquire(blocking=False):
-            return
+        @contextmanager
+        def guard():
+            if not self._routing_lock.acquire(timeout=2):
+                raise RoutingError('路由配置正在变更，本次自动更新结果未写入')
+            try:
+                if self._stop_event.is_set() or source != (self._config_getter().get('routing') or {}):
+                    raise RoutingError('配置已变化，本次自动更新结果未写入')
+                yield
+            finally:
+                self._routing_lock.release()
+
         try:
-            latest = normalize_config(
-                (self._config_getter().get('routing') or {}))
-            current = next((item for item in latest['proxy_providers']
-                            if item['id'] == provider['id'] and
-                            item['enabled'] and item.get('auto_update')), None)
-            if not current or latest['enabled']:
-                return
-            status = self._manager.status(latest, quick=True)
-            if status.get('core_running') is True:
-                self._logger(
-                    f'[routing] 订阅“{current["name"]}”自动更新已提交到待机核心')
-                result = self._manager.refresh_proxy_provider(
-                    latest, current['id'])
+            if self._task_runner:
+                result = self._task_runner(provider['id'],
+                    lambda latest: self._execute(latest, provider['id']), cancel_event=self._stop_event)
             else:
-                self._logger(
-                    f'[routing] 订阅“{current["name"]}”自动更新改由临时核心执行')
-                result = self._manager.preview_proxy_provider(current, {
-                    'physical_interface': latest['physical_interface'],
-                    'dns_servers': latest['dns_servers'],
-                })
+                with operation_scope(guard):
+                    result = self._execute(config, provider['id'])
+                    with commit_scope():
+                        pass
             if result.get('refreshed') is False:
-                self._logger(
-                    f'[routing] 订阅“{current["name"]}”自动更新未完成，'
-                    '保留上次成功缓存并等待下次重试')
-            else:
-                self._logger(f'[routing] 订阅“{current["name"]}”自动更新完成')
+                raise RoutingError('远端更新未完成，保留上次成功缓存')
+            self._attempts[key] = {'next': time.time() + provider['interval'], 'failures': 0}
+            self._logger(f'[routing] 订阅自动更新成功: provider={provider["id"]}')
         except Exception as exc:
-            self._logger(
-                f'[routing] 订阅“{provider["name"]}”自动更新失败: '
-                f'{type(exc).__name__}')
-        finally:
-            self._routing_lock.release()
+            failures = min(7, self._attempts.get(key, {}).get('failures', 0) + 1)
+            delay = min(3600, 60 * 2 ** (failures - 1))
+            self._attempts[key] = {'next': time.time() + delay, 'failures': failures}
+            self._logger(f'[routing] 订阅自动更新未完成: provider={provider["id"]}，异常={type(exc).__name__}，{delay}秒后可重试')
+        return True

@@ -17,6 +17,8 @@ pub struct Request {
     #[serde(default)]
     pub fast_toggle_ready: bool,
     #[serde(default)]
+    pub allow_reload: bool,
+    #[serde(default)]
     pub system_proxy_bypass_domains: Vec<String>,
     #[serde(default)]
     pub enabled: bool,

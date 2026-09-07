@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import ipaddress
 import json
 import os
@@ -33,6 +34,8 @@ from core import routing_selection as _selection
 from core import routing_auto_policy as _auto_policy
 from core import routing_rules as _routing_rules
 from core import routing_service as _routing_service
+from core.routing_tasks import commit_scope
+from core.routing_environment import EnvironmentCache, bounded_calls
 from core.routing_speedtest import (
     node_healthcheck_path as _node_healthcheck_path,
     test_group as _test_group,
@@ -75,6 +78,7 @@ CONNECTIVITY_CHECK_URLS = (
 )
 SUBSCRIPTION_USER_AGENT = 'Clash-Verge'
 SUBSCRIPTION_SIZE_LIMIT = 10 * 1024 * 1024
+PROVIDER_PREVIEW_TIMEOUT = 25
 ELEVATED_ERROR_MESSAGES = {
     'Mihomo controller did not become ready':
         'Mihomo 控制端启动超时，系统服务已回滚',
@@ -909,8 +913,7 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
 
 
 def _resolve_vpn_server_routes(vpns, selected_names):
-    routes = set()
-    warnings = []
+    routes, warnings, lookups = set(), [], {}
     for profile in vpns:
         if profile.get('name') not in selected_names:
             continue
@@ -920,15 +923,15 @@ def _resolve_vpn_server_routes(vpns, selected_names):
         try:
             address = ipaddress.ip_address(server)
             routes.add(f'{address}/{32 if address.version == 4 else 128}')
-            continue
         except ValueError:
-            pass
-        try:
-            for info in socket.getaddrinfo(server, None, type=socket.SOCK_STREAM):
-                address = ipaddress.ip_address(info[4][0])
-                routes.add(f'{address}/{32 if address.version == 4 else 128}')
-        except OSError:
-            warnings.append(f'未能预解析 VPN 服务器“{server}”，VPN 重连时可能需要暂停统一分流')
+            lookups[server] = lambda server=server: socket.getaddrinfo(server, None, type=socket.SOCK_STREAM)
+    results, errors = bounded_calls(lookups, 5)
+    for rows in results.values():
+        for info in rows:
+            address = ipaddress.ip_address(info[4][0])
+            routes.add(f'{address}/{32 if address.version == 4 else 128}')
+    for server in errors:
+        warnings.append(f'未能在期限内预解析 VPN 服务器“{server}”，VPN 重连时可能需要暂停统一分流')
     return sorted(routes), warnings
 
 
@@ -980,6 +983,20 @@ def _provider_download_route(provider, system_proxy=''):
         'proxy_url': '',
         'self_bootstrap': True,
     }
+
+
+def _preview_provider_download_route(provider, system_proxy='',
+                                     cache_available=False):
+    """首次获取不能让订阅下载出口依赖尚不存在的同源节点。"""
+    download = _provider_download_route(provider, system_proxy)
+    if download.get('self_bootstrap') and not cache_available:
+        return {
+            'mode': 'auto',
+            'target': 'PHYSICAL',
+            'proxy_url': '',
+            'self_bootstrap': False,
+        }
+    return download
 
 
 def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
@@ -1390,6 +1407,27 @@ class RoutingManager:
         self._service_dir = os.path.join(
             program_data, LEGACY_SERVICE_DIR_NAME)
         self._native_service = _routing_service.RoutingServiceClient()
+        self._runtime_signature = ''
+        self._runtime_sha256 = ''
+        self._environment = EnvironmentCache(
+            lambda: vpn_os.list_vpns(), lambda: list_physical_interfaces(),
+            lambda: list_tun_conflicts(), self._log_best_effort)
+
+    @staticmethod
+    def _config_signature(config):
+        current = normalize_config(config)
+        current.pop('enabled', None)
+        return hashlib.sha256(json.dumps(current, sort_keys=True,
+            ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+
+    def runtime_matches(self, config, service_state):
+        return bool(self._runtime_signature and self._runtime_sha256 and
+                    self._runtime_signature == self._config_signature(config) and
+                    self._runtime_sha256 == str(service_state.get('config_sha256') or '').upper())
+
+    def remember_selection(self, config, previous):
+        if self._runtime_sha256 and self._runtime_signature == self._config_signature(previous):
+            self._runtime_signature = self._config_signature(config)
 
     def _log_best_effort(self, message):
         """日志故障不得遮蔽原始错误或阻断配置事务回滚。"""
@@ -1639,11 +1677,6 @@ if ($service) {{
         if not group or not group.get('nodes'):
             raise RoutingError(
                 '订阅更新请求已提交，但无法确认新节点列表；已保留当前界面数据，请稍后刷新')
-        try:
-            _selection.persist_provider_nodes(
-                normalized, provider_id, group.get('nodes') or [])
-        except (OSError, ValueError):
-            self.log('[routing] 订阅已更新，但节点快照保存失败')
         selection_invalid = _selection.selection_missing(
             provider, group.get('nodes') or [])
         cache = None
@@ -1651,10 +1684,13 @@ if ($service) {{
         try:
             service_cache = self._native_service.read_provider(
                 subscription_store.provider_filename(provider))
-            cache = subscription_store.persist_bytes(
-                provider, service_cache['content'],
-                len(group.get('nodes') or []), '常驻核心远端更新',
-                size_limit=SUBSCRIPTION_SIZE_LIMIT)
+            with commit_scope():
+                cache, _snapshot = subscription_store.persist_bytes_and_nodes(
+                    provider, service_cache['content'],
+                    len(group.get('nodes') or []), '常驻核心远端更新',
+                    [{**node, 'name': node.get('display_name') or node['name']}
+                     for node in group.get('nodes') or []],
+                    size_limit=SUBSCRIPTION_SIZE_LIMIT)
         except (_routing_service.ServiceError, OSError, ValueError):
             cache_warning = (
                 '远端更新已完成，但完整节点缓存同步失败；常驻核心仍使用最新节点')
@@ -1680,9 +1716,16 @@ if ($service) {{
                                _run_delay_test=False, _refresh_cache=True,
                                _cache_only=False, _progress=None,
                                _cancel_event=None, _persist_snapshot=True):
-        """获取订阅；自动模式失败时复用可用的 Windows 手动代理。"""
+        """获取订阅；自动模式按缓存状态选择可用的首次下载出口。"""
         source = dict(value) if isinstance(value, dict) else {}
-        route = str(source.get('download_route') or 'auto').strip().lower()
+        normalized = normalize_config({
+            'enabled': False,
+            'proxy_providers': [{**source, 'enabled': True}],
+            'default_outbound': 'physical',
+        })
+        provider = normalized['proxy_providers'][0]
+        route = provider['download_route']
+        provider_name = provider['name']
         kwargs = {
             '_seed_payload': _seed_payload,
             '_persist': _persist,
@@ -1694,19 +1737,51 @@ if ($service) {{
             '_cancel_event': _cancel_event,
             '_persist_snapshot': _persist_snapshot,
         }
+        can_auto_route = (
+            route == 'auto' and not _cache_only and _seed_payload is None)
+        system_proxy = windows_system_proxy() if can_auto_route else ''
+        cache_available = bool(
+            subscription_store.cache_status(provider).get('available')) \
+            if can_auto_route else False
+        preferred_proxy_error = None
+        preferred_system_proxy = bool(system_proxy and not cache_available)
+        if preferred_system_proxy:
+            started_at = time.monotonic()
+            self.log(
+                f'[routing] 订阅“{provider_name}”首次获取尚无节点缓存，'
+                '优先通过 Windows 系统代理执行（超时 '
+                f'{PROVIDER_PREVIEW_TIMEOUT} 秒）')
+            retry_source = dict(source)
+            retry_source['download_route'] = 'system-proxy'
+            try:
+                result = self._preview_proxy_provider_once(
+                    retry_source, network, **kwargs)
+            except RoutingError as exc:
+                preferred_proxy_error = exc
+                elapsed = time.monotonic() - started_at
+                self.log(
+                    f'[routing] 订阅“{provider_name}”Windows 系统代理优先路径失败，'
+                    f'耗时 {elapsed:.1f} 秒，错误类型 {type(exc).__name__}；'
+                    '继续尝试物理网络')
+            else:
+                elapsed = time.monotonic() - started_at
+                self.log(
+                    f'[routing] 订阅“{provider_name}”Windows 系统代理优先路径成功，'
+                    f'耗时 {elapsed:.1f} 秒')
+                result['download_route'] = (
+                    f'Windows 系统代理自动选择 {_proxy_display(system_proxy)}')
+                result['auto_route'] = 'system-proxy'
+                return result
         try:
             return self._preview_proxy_provider_once(source, network, **kwargs)
         except ProviderFetchError as primary_error:
-            can_fallback = (
-                route == 'auto' and not _cache_only and _seed_payload is None)
-            system_proxy = windows_system_proxy() if can_fallback else ''
-            provider_name = str(source.get('name') or '未命名订阅')
-            fallback_error = primary_error
-            if system_proxy:
+            fallback_error = preferred_proxy_error or primary_error
+            if system_proxy and not preferred_system_proxy:
                 started_at = time.monotonic()
                 self.log(
                     f'[routing] 订阅“{provider_name}”内置更新未产出节点，'
-                    f'开始通过 Windows 系统代理自动回退（超时 25 秒）')
+                    '开始通过 Windows 系统代理自动回退（超时 '
+                    f'{PROVIDER_PREVIEW_TIMEOUT} 秒）')
                 retry_source = dict(source)
                 retry_source['download_route'] = 'system-proxy'
                 try:
@@ -1831,10 +1906,13 @@ if ($service) {{
         dns_servers = [str(item).strip() for item in dns_servers
                        if str(item).strip()][:8]
         verify_runtime()
+        cache_available = bool(
+            _seed_payload is not None or
+            subscription_store.cache_status(provider).get('available'))
         download = ({'target': 'PHYSICAL', 'proxy_url': '',
                      'upstream': '', 'self_bootstrap': False}
-                    if _cache_only else _provider_download_route(
-                        provider, windows_system_proxy()))
+                    if _cache_only else _preview_provider_download_route(
+                        provider, windows_system_proxy(), cache_available))
 
         controller_port = _free_loopback_port()
         controller_secret = secrets.token_urlsafe(24)
@@ -1948,7 +2026,7 @@ if ($service) {{
                         close_job = _attach_kill_on_close_job(process)
                     except Exception as exc:
                         raise RoutingError('无法安全启动临时订阅解析进程') from exc
-                    deadline = time.monotonic() + 25
+                    deadline = time.monotonic() + PROVIDER_PREVIEW_TIMEOUT
                     controller_ready = False
                     while time.monotonic() < deadline:
                         if _cancel_event and _cancel_event.is_set():
@@ -2066,26 +2144,27 @@ if ($service) {{
             cache_source = '内置代理更新' if refreshed else '内置缓存'
         else:
             cache_source = '物理网络首次获取'
-        if _persist:
-            if refresh_warning and cache_seeded and not candidate_seeded:
-                cache = subscription_store.cache_status(provider)
+        with commit_scope():
+            if _persist:
+                if refresh_warning and cache_seeded and not candidate_seeded:
+                    cache = subscription_store.cache_status(provider)
+                else:
+                    try:
+                        cache = subscription_store.persist_bytes(
+                            provider, cache_payload, len(nodes), cache_source,
+                            size_limit=SUBSCRIPTION_SIZE_LIMIT)
+                    except (OSError, ValueError) as exc:
+                        raise RoutingError('订阅已解析，但内置节点缓存保存失败') from exc
             else:
+                cache = subscription_store.cache_status(provider)
+            snapshot_warning = ''
+            if _persist_snapshot:
                 try:
-                    cache = subscription_store.persist_bytes(
-                        provider, cache_payload, len(nodes), cache_source,
-                        size_limit=SUBSCRIPTION_SIZE_LIMIT)
-                except (OSError, ValueError) as exc:
-                    raise RoutingError('订阅已解析，但内置节点缓存保存失败') from exc
-        else:
-            cache = subscription_store.cache_status(provider)
-        snapshot_warning = ''
-        if _persist_snapshot:
-            try:
-                _selection.persist_provider_nodes(
-                    normalized, provider['id'], nodes)
-            except (OSError, ValueError):
-                snapshot_warning = '节点快照保存失败，下次打开需重新获取节点'
-                self.log('[routing] 订阅解析成功，但节点快照保存失败')
+                    _selection.persist_provider_nodes(
+                        normalized, provider['id'], nodes)
+                except (OSError, ValueError):
+                    snapshot_warning = '节点快照保存失败，下次打开需重新获取节点'
+                    self.log('[routing] 订阅解析成功，但节点快照保存失败')
         route_label = (
             '本地节点缓存' if _cache_only
             else f'自定义代理 {_proxy_display(download["proxy_url"])}'
@@ -2197,11 +2276,12 @@ if ($service) {{
             preview_value, network, _seed_payload=payload, _persist=False,
             _cache_source='导入 YAML', _persist_snapshot=False)
         try:
-            result['cache'], _snapshot = (
-                subscription_store.persist_bytes_and_nodes(
-                    provider, payload, result['node_count'], '导入 YAML',
-                    result.get('nodes') or [],
-                    size_limit=SUBSCRIPTION_SIZE_LIMIT))
+            with commit_scope():
+                result['cache'], _snapshot = (
+                    subscription_store.persist_bytes_and_nodes(
+                        provider, payload, result['node_count'], '导入 YAML',
+                        result.get('nodes') or [],
+                        size_limit=SUBSCRIPTION_SIZE_LIMIT))
         except (OSError, ValueError) as exc:
             raise RoutingError('订阅文件解析通过，但缓存与节点快照保存失败') from exc
         result['msg'] = f'订阅文件已导入，解析并缓存 {result["node_count"]} 个节点'
@@ -2266,14 +2346,34 @@ if ($service) {{
             candidates = current.get('all') if isinstance(current, dict) else []
             if node_name not in (candidates or []):
                 raise RoutingError('所选节点不在当前代理组中，请刷新后重试')
-            self._controller_request(
-                normalized, path, method='PUT', payload={'name': node_name})
+            previous = str(current.get('now') or '')
+            try:
+                self._controller_request(
+                    normalized, path, method='PUT', payload={'name': node_name})
+                confirmed = self._controller_request(normalized, path)
+                if not isinstance(confirmed, dict) or confirmed.get('now') != node_name:
+                    raise RoutingError('节点切换后回读不一致')
+            except (RoutingError, OSError, ValueError, urllib.error.URLError) as original:
+                if previous and previous != node_name:
+                    try:
+                        self._controller_request(normalized, path, method='PUT', payload={'name': previous})
+                        restored = self._controller_request(normalized, path)
+                        if restored.get('now') != previous:
+                            raise RoutingError('原节点回读不一致')
+                    except Exception as rollback_error:
+                        self._log_best_effort(f'[routing] 节点切换恢复失败: {type(rollback_error).__name__}')
+                        raise RoutingError('节点切换失败且无法确认原节点，请刷新运行状态') from original
+                raise RoutingError('节点切换未确认生效，已保留原节点偏好') from original
         except RoutingError:
             raise
         except (OSError, ValueError, urllib.error.URLError) as exc:
             raise RoutingError('无法连接正在运行的 Mihomo 控制端') from exc
-        return {'ok': True, 'msg': f'“{display_name}”已切换节点',
-                'groups': self.proxy_overview(normalized)}
+        groups = self.proxy_overview(normalized)
+        if not any(group.get('id') == group_id for group in groups):
+            groups.append({'id': group_id, 'name': display_name, 'strategy': strategy,
+                           'selected': node_name, 'nodes': [], 'partial': True})
+        self._log_best_effort(f'[routing] 节点切换回读已确认: group={group_id}')
+        return {'ok': True, 'msg': f'“{display_name}”已切换节点', 'groups': groups}
 
     def status(self, config, quick=False):
         normalized = normalize_config(config)
@@ -2372,9 +2472,9 @@ if ($service) {{
 
     def setup(self, config):
         normalized = normalize_config(config)
-        vpns = vpn_os.list_vpns()
-        interfaces = list_physical_interfaces()
-        conflicts = list_tun_conflicts()
+        environment = self._environment.snapshot(normalized['capture_mode'] == 'tun')
+        vpns, interfaces, conflicts = (environment['vpns'], environment['interfaces'],
+                                       environment['tun_conflicts'])
         status = self.status(normalized)
         system_proxy = windows_system_proxy()
         proxy_groups = (self.proxy_overview(normalized)
@@ -2879,48 +2979,44 @@ if ($service) {{
             self._probe_connectivity(opener, 'TUN 系统链路')
 
     def _probe_connectivity(self, opener, source):
-        errors = []
-        for endpoint in CONNECTIVITY_CHECK_URLS:
+        deadline = time.monotonic() + 8
+        def check(endpoint):
             host = urllib.parse.urlparse(endpoint).hostname or 'endpoint'
-            self._log_best_effort(
-                f'[routing] 开始验证{source}：目标={host}，超时=8 秒')
-            request = urllib.request.Request(
-                endpoint,
-                headers={'User-Agent': 'CXVPN-Connectivity-Check/1.0'})
-            started_at = time.monotonic()
+            started = time.monotonic()
+            self._log_best_effort(f'[routing] 开始验证{source}：目标={host}，单请求超时=4秒，总期限=8秒')
+            request = urllib.request.Request(endpoint, headers={'User-Agent': 'CXVPN-Connectivity-Check/1.0'})
             try:
-                with opener.open(request, timeout=8) as response:
+                with opener.open(request, timeout=max(.1, min(4, deadline-time.monotonic()))) as response:
                     status = int(getattr(response, 'status', 0) or 0)
                     response.read(64)
-                if 200 <= status < 400:
-                    self._log_best_effort(
-                        f'[routing] {source}验证成功：目标={host}，状态={status}，'
-                        f'耗时={time.monotonic() - started_at:.1f} 秒')
-                    return endpoint
-                errors.append(f'{host}:HTTP_{status}')
+                if not 200 <= status < 400:
+                    raise OSError(f'HTTP_{status}')
+                self._log_best_effort(f'[routing] {source}验证成功：目标={host}，状态={status}，耗时={time.monotonic()-started:.1f}秒')
+                return endpoint
             except Exception as exc:
                 reason = getattr(exc, 'reason', exc)
                 category = ('timeout' if isinstance(reason, (TimeoutError, socket.timeout)) else
-                            'dns' if isinstance(reason, socket.gaierror) else
-                            'proxy' if isinstance(exc, urllib.error.HTTPError) and
-                            exc.code in {407, 502, 503, 504} else 'network')
-                errors.append(f'{host}:{category}')
-                self._log_best_effort(
-                    f'[routing] {source}验证失败：目标={host}，分类={category}，'
-                    f'异常={type(exc).__name__}，耗时={time.monotonic() - started_at:.1f} 秒')
-        self._log_best_effort(
-            f'[routing] {source}全部验证目标失败：{", ".join(errors)}')
-        raise RoutingError(
-            f'{source}当前无法建立可用连接，已恢复 Windows 原始路由。'
-            '请重试；若仍失败，请检查当前节点或网络设置')
+                            'dns' if isinstance(reason, socket.gaierror) else 'network')
+                self._log_best_effort(f'[routing] {source}验证失败：目标={host}，分类={category}，异常={type(exc).__name__}，耗时={time.monotonic()-started:.1f}秒')
+                raise
+        for endpoints in (CONNECTIVITY_CHECK_URLS[:2], CONNECTIVITY_CHECK_URLS[2:]):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            results, _errors = bounded_calls(
+                {url: lambda url=url: check(url) for url in endpoints},
+                min(4.5, remaining), first_success=True)
+            if results:
+                return next(iter(results.values()))
+        raise RoutingError(f'{source}当前无法建立可用连接，已恢复 Windows 原始路由。请检查当前节点或网络设置')
 
     def _install(self, config_path, config, runtime_mode='active',
-                 fast_toggle_ready=False):
+                 fast_toggle_ready=False, allow_reload=True):
         started_at = time.monotonic()
         mode_label = '待机核心' if runtime_mode == 'standby' else '系统接管'
         self.log(
             f'[routing] {mode_label}配置事务已提交到原生服务，'
-            '等待后台领取（安装/IPC 超时 120 秒）')
+            '等待后台领取（安装超时 120 秒，单次配置 IPC 总期限 60 秒）')
         try:
             system_proxy_domains = system_proxy_bypass_domains(config)
             if config['capture_mode'] == 'system-proxy':
@@ -2934,15 +3030,26 @@ if ($service) {{
             transaction = self._native_service.apply(
                 config_path, self._native_provider_files(config), runtime_mode,
                 fast_toggle_ready=fast_toggle_ready,
-                system_proxy_bypass_domains=system_proxy_domains)
+                system_proxy_bypass_domains=system_proxy_domains,
+                allow_reload=allow_reload)
         except _routing_service.ServiceError as exc:
             raise RoutingError(
                 f'统一分流服务操作失败：{_sanitize_mihomo_error(exc)}') from exc
         transaction_id = str(transaction.get('transaction_id') or '')
         if not transaction_id:
             raise RoutingError('统一分流服务未返回配置事务标识')
-        self.log('[routing] 原生服务已领取配置事务并启动候选运行时')
+        self.log('[routing] 原生服务已领取配置事务，开始确认运行时')
+        reload_failed = False
         try:
+            if transaction.get('hot_reload'):
+                self.log('[routing] 运行配置热重载开始执行，超时=10秒')
+                try:
+                    self._controller_request(config, '/configs?force=true', method='PUT',
+                        payload={'path': transaction['config_path']}, timeout=10)
+                except Exception:
+                    reload_failed = True
+                    raise
+                self.log('[routing] 运行配置热重载成功，开始回读与出口验证')
             self._wait_native_ready(config, runtime_mode)
             if (runtime_mode == 'active' and
                     config['capture_mode'] == 'system-proxy'):
@@ -2954,18 +3061,30 @@ if ($service) {{
                 if active_proxy != expected_proxy:
                     raise RoutingError(
                         'Windows 系统代理写入后回读不一致，已自动恢复原设置')
-                self._probe_connectivity(
-                    urllib.request.build_opener(urllib.request.ProxyHandler({
-                        'http': active_proxy, 'https': active_proxy})),
-                    'Windows 系统代理链路')
+                self._log_best_effort('[routing] Windows 系统代理回读已确认，与刚验证的 mixed-port 链路一致')
+            signature = self._config_signature(config)
             self._native_service.commit(transaction_id)
-            self.log(
+            self._runtime_signature = signature
+            self._runtime_sha256 = str(transaction.get('config_sha256') or '').upper()
+            self._log_best_effort(
                 f'[routing] {mode_label}配置事务提交成功，总耗时 '
                 f'{time.monotonic() - started_at:.1f} 秒')
         except Exception as original:
             self._log_best_effort(
                 f'[routing] 配置事务执行失败，开始回滚：{type(original).__name__}: '
                 f'{_sanitize_mihomo_error(original)}')
+            try:
+                self._native_service.rollback(transaction_id)
+                self._log_best_effort(
+                    '[routing] 配置事务回滚成功，Windows 原始路由已恢复')
+            except _routing_service.ServiceError as rollback_error:
+                raise RoutingError(
+                    f'{_sanitize_mihomo_error(original)}；且服务回滚失败：'
+                    f'{_sanitize_mihomo_error(rollback_error)}') from original
+            if reload_failed and allow_reload:
+                self._log_best_effort('[routing] 热重载失败并已回滚，回退到完整配置事务')
+                return self._install(config_path, config, runtime_mode,
+                                     fast_toggle_ready, allow_reload=False)
             try:
                 diagnostics = self._native_service.diagnostics()
                 lines = diagnostics.get('mihomo_log') if isinstance(
@@ -2976,14 +3095,6 @@ if ($service) {{
             except Exception as diagnostic_error:
                 self._log_best_effort(
                     f'[routing] Mihomo 诊断读取失败: {type(diagnostic_error).__name__}')
-            try:
-                self._native_service.rollback(transaction_id)
-                self._log_best_effort(
-                    '[routing] 配置事务回滚成功，Windows 原始路由已恢复')
-            except _routing_service.ServiceError as rollback_error:
-                raise RoutingError(
-                    f'{_sanitize_mihomo_error(original)}；且服务回滚失败：'
-                    f'{_sanitize_mihomo_error(rollback_error)}') from original
             if isinstance(original, RoutingError):
                 raise
             raise RoutingError(_sanitize_mihomo_error(original)) from original
@@ -2999,7 +3110,7 @@ if ($service) {{
         if fast_toggle_ready:
             self._log_best_effort(
                 '[routing] 快切待机配置开始生成：保留完整规则与节点组，系统代理=off')
-            vpns = vpn_os.list_vpns()
+            vpns = self._environment.snapshot(False)['vpns']
             excludes, _warnings = _resolve_vpn_server_routes(
                 vpns, set(_target_vpns(config)))
             generated = build_mihomo_config(
@@ -3033,6 +3144,12 @@ if ($service) {{
             f'[routing] Windows 系统代理快切请求已提交：target={action}，'
             '复用常驻 Mihomo，不重载配置')
         if enabled:
+            for provider_id, target in _selection.manual_runtime_targets(
+                    config, _referenced_provider_ids(config)):
+                path = f'/proxies/PROXY-{provider_id}'
+                state = self._controller_request(config, path, timeout=3)
+                if not isinstance(state, dict) or state.get('now') != target:
+                    self.select_proxy_node(config, provider_id, target)
             # 在写入 Windows 系统代理前验证当前常驻核心的真实 mixed-port
             # 链路；配置未变化时不重复扫描 VPN/网卡或执行 Mihomo -t。
             self._verify_runtime_egress(config)
@@ -3069,7 +3186,8 @@ if ($service) {{
             f'mode={config["traffic_mode"]}，规则 {len(config["rules"])} 条')
         service_state = self._service_state()
         if (allow_fast_toggle and
-                self._can_fast_toggle_system_proxy(config, service_state)):
+                self._can_fast_toggle_system_proxy(config, service_state) and
+                (not config['enabled'] or self.runtime_matches(config, service_state))):
             return self._fast_toggle_system_proxy(config, config['enabled'])
         if not config['enabled']:
             if service_state.get('state') == 'Unknown':
@@ -3135,9 +3253,9 @@ if ($service) {{
             config, referenced_provider_ids)
         if selection_error:
             raise RoutingError(selection_error)
-        vpns = vpn_os.list_vpns()
-        interfaces = list_physical_interfaces()
-        conflicts = list_tun_conflicts()
+        environment = self._environment.snapshot(config['capture_mode'] == 'tun', fresh=True)
+        vpns, interfaces, conflicts = (environment['vpns'], environment['interfaces'],
+                                       environment['tun_conflicts'])
         warnings = validate_environment(config, vpns, interfaces, conflicts)
         excludes, resolve_warnings = _resolve_vpn_server_routes(
             vpns, set(_target_vpns(config)))
@@ -3167,9 +3285,9 @@ if ($service) {{
     def preview(self, value):
         config = normalize_config(value)
         system_proxy_domains = system_proxy_bypass_domains(config)
-        vpns = vpn_os.list_vpns()
-        warnings = validate_environment(
-            config, vpns, list_physical_interfaces(), list_tun_conflicts())
+        environment = self._environment.snapshot(config['capture_mode'] == 'tun')
+        vpns = environment['vpns']
+        warnings = validate_environment(config, vpns, environment['interfaces'], environment['tun_conflicts'])
         generated = build_mihomo_config(
             config, vpns, system_proxy=windows_system_proxy())
         verify_runtime()

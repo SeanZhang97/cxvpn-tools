@@ -7,6 +7,9 @@
 
 ## 职责边界
 
+代理启停、节点切换、待机配置一致性、路由互斥及 IPC 超时的当前边界，见
+[代理控制与运行状态](代理控制与运行状态.md)。
+
 - Python/pywebview 是业务控制面：保存规则、读取 Windows VPN/接口、验证前置条件、生成
   Mihomo 配置、执行普通权限预检，并通过受 ACL 保护的 Named Pipe 提交服务事务。
 - Mihomo 是唯一数据面：系统代理模式监听回环 `mixed-port`，TUN 模式创建 `CXVPN-TUN`；
@@ -57,8 +60,8 @@
   使用 `auto` 下载出口和 `Clash-Verge` User-Agent。
 - `default_outbound`：`physical`、`proxy`（全部订阅）、`proxy:<订阅 ID>`、`block` 或
   `vpn:<Windows VPN 名称>`。
-- `builtin_rule_pack`：`off`、`local-direct-v1`、`cn-direct-v1`。规则内容来自程序目录
-  `rule-packs/local-direct-v1.txt` 与 `rule-packs/cn-direct-v1.txt`，保持离线且不后台下载；
+- `builtin_rule_pack`：`off`、`local-direct-v1`、`cn-direct-v1`。可编辑规则内容来自
+  `%LOCALAPPDATA%\CXVPNTools\rule-packs`；缺失时由包内只读默认文件补齐，保持离线且不后台下载；
   前者按 `TYPE,value[,no-resolve]` 保存本地域名与网段，后者每行保存一个国内域名后缀并自动叠加
   前者。文件使用 UTF-8，支持空行和整行 `#` 注释，用户可直接编辑；软件启动时一次性加载到
   内存，运行期间不监听、不重复读取；修改后重启软件加载，已启用代理还需重新应用一次配置。
@@ -118,8 +121,8 @@
 
 ## 配置保护与诊断
 
-- `core/config_maintenance.py` 负责本地备份、恢复预览、路由应用历史和诊断脱敏；它不改变
-  `core/config.py` 的便携配置位置。导入文件最大 2 MB，必须声明产品和备份版本，解析和路由
+- `core/config_maintenance.py` 负责本地备份、恢复预览、路由应用历史和诊断脱敏；配置与历史
+  均位于当前用户 LocalAppData。导入文件最大 2 MB，必须声明产品和备份版本，解析和路由
   规范化通过后才能进入应用事务。
 - 默认备份不包含订阅 URL；用户显式勾选后可包含 URL，但 `creds`、手机号、授权状态、邮箱密码、
   VLM key、Controller 端口/secret 和自定义订阅上游始终不导出。恢复以当前内存配置为基底，
@@ -127,8 +130,9 @@
   `routing.enabled`，避免仅导入配置便意外接管或关闭系统流量。
 - 恢复不是直接覆盖 JSON：UI 先调用 `preview_config_restore` 展示通用字段、路由字段、订阅和规则
   差异，用户再次确认后才复用 `apply_routing` 的“服务应用 → 原子保存 → 保存失败回滚服务”事务。
-- 最近 12 次应用结果保存在当前用户的旧版兼容目录
-  `%LOCALAPPDATA%\CXVPNManager\routing\history`。本轮仅统一产品名，不迁移用户数据；
+- 最近 12 次应用结果保存在
+  `%LOCALAPPDATA%\CXVPNTools\routing\history`；旧版
+  `%LOCALAPPDATA%\CXVPNManager\routing\history` 在首次启动时合并迁移。
   成功记录含完整路由配置以支持回退，失败记录
   只含摘要和脱敏错误；API 只向 UI 返回摘要。首次应用前先写入当前有效基线，历史回退本身也会
   先建立当前基线并产生新的应用记录。
@@ -206,8 +210,8 @@
 
 ## 订阅缓存与首次种子
 
-- `core/subscription_store.py` 继续在旧版兼容目录
-  `%LOCALAPPDATA%\CXVPNManager\routing\providers` 保存
+- `core/subscription_store.py` 在
+  `%LOCALAPPDATA%\CXVPNTools\routing\providers` 保存
   last-known-good provider YAML 和不含订阅 URL 的元数据。文件名由 provider ID 与 URL
   SHA-256 前 16 位组成，URL 变化后旧缓存不会被加载。
 - 同目录 `<provider>.yaml.nodes.json` 保存节点展示与测速快照。未设置筛选时沿用 URL 指纹；
@@ -322,8 +326,8 @@ CXVPN 自原生路由服务 `0.3.0`、IPC 协议 `3` 起采用与上述基线一
   commit 后保留，rollback、超时和服务异常恢复时还原旧版本；服务重启、系统代理快切和接管状态
   对账都从该文件重建 `ProxyOverride`。Rust 服务再次限制数量、校验 ASCII/标签长度并拒绝分号、
   星号等注入字符，不能只信任 Python 规范化结果。
-- 控制面只在前后配置除 `enabled` 外完全一致、核心正在运行、服务版本兼容、快切标记存在且未熔断
-  时调用快切。快速开启先通过当前常驻 mixed-port 确认实际代理组和公网链路，再写入并回读系统代理；
+- 控制面快切开启需已确认运行配置签名、服务配置 SHA-256 与目标一致，且核心运行、服务版本兼容、
+  快切标记存在且未熔断。开启前回读并校正手动节点，验证当前 mixed-port 链路，再写入并回读系统代理；
   配置变化、TUN、旧精简待机配置或异常状态自动回落完整事务。
 - 首页开关调用只接收布尔启用状态和可选流量模式，后端基于最新持久化配置构造候选；应用结果立即
   更新前端内存状态，VPN/网卡/TUN 和节点详情的完整 setup 仅后台刷新。不得在普通开关前后同步执行
@@ -384,8 +388,9 @@ CXVPN 自原生路由服务 `0.3.0`、IPC 协议 `3` 起采用与上述基线一
    固定参数的 `ShellExecuteExW(runas)` 更新服务。订阅 URL、节点名和配置正文不进入命令行。
 7. 控制面把配置、匹配的 provider 缓存和系统代理入口绕过域名以定长消息帧发送到 Named Pipe。
    服务端限制请求、配置、单个 provider 和绕过域名数量，校验文件名、SHA-256 与域名格式，在
-   ProgramData 事务目录复制旧数据并再次执行 `mihomo -t`；通过后把入口绕过域名旁车文件和候选
-   配置一并换入、启动新子进程并返回事务 ID。
+   ProgramData 事务目录锁外复制旧数据并执行有界 `mihomo -t`；回到状态锁复核准备标识后应用。
+   v0.7.0 / protocol 6 支持仅规则、模式和节点组变化时保留核心热重载；其余变化启动新子进程。
+   两条路径均维护事务 ID、候选配置与入口绕过旁车文件，详见代理控制与运行状态文档。
 8. Python 用带 Bearer secret 的本地 Controller 等待所有实际引用 provider 出现真实节点；
    `REJECT` 不算就绪，手动模式还要 PUT 并回读确认目标节点。随后只确认实际承载流量的代理组
    当前选择存在且属于该组，不重复执行节点 delay/healthcheck。节点测速是独立诊断，不是启动
@@ -395,9 +400,9 @@ CXVPN 自原生路由服务 `0.3.0`、IPC 协议 `3` 起采用与上述基线一
 9. commit 前，系统代理模式先用显式 `127.0.0.1:mixed_port` 做多端点探测，再由服务在未提交事务内完整快照
    `ProxyEnable`、`ProxyServer`、`ProxyOverride`、`AutoConfigURL`，写入安全 bypass 和逐域名的
    `domain;*.domain` 入口绕过、关闭 PAC，
-   回读注册表并再次验证系统代理链路；TUN 模式验证系统 DNS/HTTPS 链路。各链路使用有限端点、
-   有界超时和 `dns/timeout/proxy/network` 分类。端到端链路不可用时
-   读取原生服务最近的脱敏 Mihomo 日志并 rollback，不能以 Controller 就绪代替公网可用。
+   回读注册表确认与刚验证的 mixed-port 一致；TUN 模式验证系统 DNS/HTTPS 链路。各链路使用有限端点
+   和共用期限，前两个端点并行。端到端链路不可用时先 rollback，再读取原生服务脱敏诊断，
+   不能以 Controller 就绪代替公网可用。
    诊断日志可能包含中文和国旗等非 BMP 节点名，文件与 IPC 均保持 UTF-8；控制台不支持字符时
    只转义显示。日志与诊断是 best-effort 旁路，任何编码或读取异常都不得阻断 rollback。
    Python 默认 `urllib.request.urlopen` 会继承 Windows 系统代理；VLM 等应用内请求如需完全绕开
@@ -490,7 +495,7 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   状态和快捷入口。高级分流概览仍承担引擎开关、物理接口、DNS、聚合代理池策略和动态配置检查；
   默认出口、本地规则包和域名命中测试位于规则工作区。规则页必须展开当前规则文件的实际离线规则，
   支持按匹配值搜索及按域名/IP 类型筛选，并展示 `PHYSICAL` 出口和 `no-resolve` 等选项；全局模式下
-  明确说明本地规则保留但不参与当前运行。规则明细在界面中只读，文件可在程序目录中编辑；用户
+  明确说明本地规则保留但不参与当前运行。规则明细在界面中只读，文件可在当前用户 AppData 中编辑；用户
   规则仍在规则包之前匹配。
 - 订阅、规则和高级分流不是三份配置：`RoutingWorkspace` 维护唯一的 `routingConfig`、
   `appliedConfig`、dirty 状态和保存栏，`routing_workspace.js` 只把现有 DOM panel 投放到对应一级页面。
@@ -498,7 +503,8 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
 - 页面头部把产品说明、运行状态和刷新操作合并为一个紧凑工作台；概览指标可直接跳转到
   对应规则、订阅或节点页。底部保存栏同时承担未保存状态、操作反馈和预检/应用入口。
 - 订阅卡默认折叠，只展示启用状态、策略、更新周期、节点可用数和当前节点；订阅 URL、
-  包含/排除正则等敏感或低频字段仅在编辑态展示。修改尚未保存时不得用 Controller
+  包含/排除正则等低频字段仅在编辑态展示。订阅 URL 在编辑态直接明文显示且不提供显隐开关，
+  但日志、诊断包和默认配置备份仍不得泄露该地址。修改尚未保存时不得用 Controller
   更新旧订阅，必须先“保存并应用”。
 - 每张订阅卡提供“查看节点”入口，进入节点页时优先选择该订阅对应的 `PROXY-<id>` 组。
   未保存或服务未运行时，“预览节点”会启动不含 TUN 和代理监听端口的临时 Mihomo，加载
@@ -523,8 +529,8 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   `PREVIEW` 组逐节点测试，最多 8 路并发；每完成一个节点即更新后台任务状态和节点卡，支持
   用户停止。provider 节点使用
   `GET /providers/proxies/<provider>/<node>/healthcheck`，不再假定 provider 节点存在于新版
-  Controller 的通用 `/proxies` 目录；已启动但尚未结束的并发任务在停止后仍收集结果，避免
-  页面回显与最终快照不一致。默认测速目标与 Clash Verge Rev v2.5.2 对齐为
+  Controller 的通用 `/proxies` 目录；停止后保留已收集结果，不等待或发布迟到请求。
+  默认测速目标与 Clash Verge Rev v2.5.2 对齐为
   `http://cp.cloudflare.com/generate_204`，超时 10 秒且要求 HTTP 204，避免 Google HTTPS
   目标的地理路径和 TLS 握手造成跨客户端延迟不可比。测速后立即终止临时进程并保存安全节点快照。预览态允许把节点
   保存为待启用目标；若订阅仍是未保存草稿，该操作会保存订阅草稿和节点偏好，但不会隐式
@@ -542,10 +548,10 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   整组测速。前端通过 `start_*_routing_test` 创建任务，再轮询 `get_routing_test_job`；任务提供
   总数、完成数、可用数、失败数和逐节点状态。没有
   节点组时隐藏筛选工具栏并提供直达订阅管理的操作，避免展示不可执行的控件。
-  测速轮询更新节点状态时按节点名复用卡片外层 DOM，仅更新卡片内容和必要顺序，避免周期性
-  重建使鼠标 `hover` 边框过渡反复触发。
-- 运行态整组测速即使被取消，也只取消尚未开始的节点；已开始结果继续回收，并与测速前完整
-  节点清单合并后保存，未完成节点不会从快照消失。单节点测速会把对应延迟、状态和时间合并到
+  测速任务带版本号，未变化返回 unchanged；可见节点页 750 ms、隐藏页面至少 2 秒读取。
+  卡片按节点名复用，仅内容签名变化时重建子元素；进度刷新不重建订阅表单。
+- 运行态整组测速取消后停止提交新节点，只收集已经完成的结果，并与测速前完整节点清单合并，
+  未完成节点不会从快照消失；配置变化导致的过期任务不能落盘。单节点测速将对应延迟、状态和时间合并到
   该订阅快照。前端进度轮询采用指数退避；持续失败时显式请求取消，取消状态未知则继续低频
   查询，不把仍在运行的后台任务伪装成已失败。
 - `RoutingManager.proxy_overview` 通过 Controller `/proxies` 读取策略组，再通过
@@ -613,8 +619,8 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   通过 `sys._MEIPASS` 解析，源码模式从仓库同名目录解析。`build.py` 与
   `build_protected.py` 都先调用 `build_runtime.build_routing_service()`；Rust 源码有变化时执行
   release 构建并更新 `CXVPNRoutingHost.exe`，目标机不需要 Rust 工具链。
-- 两种打包方式都把 `rule-packs/*.txt` 部署在 exe 同级目录；打包前读取现有规则文件，打包后原样
-  恢复。首次打包使用仓库默认文件，后续重打包不会覆盖用户手工维护的域名。
+- 两种打包方式都把仓库 `rule-packs/*.txt` 作为只读默认资源放进 `_internal`；运行时将缺失文件
+  补到 `%LOCALAPPDATA%\CXVPNTools\rule-packs`。打包和启动迁移都不覆盖用户手工维护的域名。
 
 ## 已知边界
 

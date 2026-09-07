@@ -352,13 +352,13 @@
         : phase === 'unknown' ? '重新检查' : '开启代理';
       toggle.classList.toggle('danger', running);
       toggle.classList.toggle('primary', !running);
-      toggle.disabled = busy || state.busy || (!running && phase !== 'unknown' && !guard.valid);
+      toggle.disabled = busy || (!running && state.busy) || (!running && phase !== 'unknown' && !guard.valid);
       toggle.title = !running && !guard.valid ? guard.reason : '';
     }
     const disable = byId('btn-proxy-disable');
     if (disable) {
       disable.classList.toggle('hidden', phase !== 'degraded');
-      disable.disabled = busy || state.busy;
+      disable.disabled = busy;
     }
 
     const warning = byId('proxy-selection-warning');
@@ -396,15 +396,10 @@
     reconcileTelemetry(running);
   }
 
-  async function latestSetup() {
-    const result = await backend().get_routing_setup();
-    if (result?.ok === false) throw new Error(result.msg || '读取代理配置失败');
-    return result;
-  }
-
   async function applyConfig(config, message, progressText = '正在应用…',
     failureTitle = '代理操作未完成', submit = null) {
     setOperationNotice();
+    window.RoutingWorkspace?.beginMutation?.();
     busy = true;
     busyLabel = progressText;
     sync();
@@ -417,6 +412,7 @@
       return true;
     } catch (error) {
       const detail = typeof friendlyError === 'function' ? friendlyError(error) : String(error);
+      void window.RoutingWorkspace?.refreshBackground?.(true);
       setOperationNotice(failureTitle, detail);
       if (!proxyHomeVisible()) toast({ ok: false, msg: failureTitle });
       return false;
@@ -481,7 +477,10 @@
     const draftNotice = nextEnabled && cached.dirty
       ? '高级分流仍有未保存草稿。除首页当前流量模式外，本次不会带入这些草稿；如需应用草稿，请先取消并到高级分流保存。'
       : '';
-    const confirmed = await confirmAction({
+    const needsConfirmation = nextEnabled
+      ? !nativeServiceReady || config.capture_mode === 'tun' || cached.dirty || repairing
+      : needsUac;
+    const confirmed = !needsConfirmation || await confirmAction({
       title: nextEnabled ? (repairing ? '修复网络代理' : '开启网络代理') : '关闭网络代理',
       message: nextEnabled
         ? `${repairing ? '将重新检查并修复代理服务' : config.capture_mode === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, selectedMode)}。${draftNotice}确认后会自动检查节点和网络，失败会恢复原设置。${config.capture_mode === 'tun' ? '请先关闭其他代理软件的 TUN 模式。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
@@ -522,11 +521,11 @@
       setModeUi(previous);
       return;
     }
-    const latest = await latestSetup();
-    const config = clone(latest.config);
+    const config = clone(state.appliedConfig || state.setup?.config);
     config.traffic_mode = mode;
     config.enabled = true;
-    const ok = await applyConfig(config, '代理模式已切换');
+    const ok = await applyConfig(config, '代理模式已切换', '正在切换模式…', '代理模式切换未完成',
+      () => backend().set_routing_enabled(true, mode));
     if (!ok) setModeUi(previous);
   }
 

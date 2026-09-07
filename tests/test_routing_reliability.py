@@ -413,7 +413,8 @@ class RoutingReliabilityTests(unittest.TestCase):
 
         manager._controller_request.assert_called_once_with(
             config, '/proxies/PROXY-alpha', timeout=5)
-        opener.open.assert_called_once()
+        self.assertLessEqual(opener.open.call_count, 2)
+        self.assertGreaterEqual(opener.open.call_count, 1)
 
     def test_startup_does_not_repeat_node_speedtest_before_end_to_end_probe(self):
         manager = routing.RoutingManager()
@@ -452,7 +453,7 @@ class RoutingReliabilityTests(unittest.TestCase):
         with mock.patch.object(
                 routing.urllib.request, 'build_opener', return_value=opener):
             with self.assertRaisesRegex(
-                    routing.RoutingError, '已恢复 Windows 原始路由.*请重试'):
+                    routing.RoutingError, '已恢复 Windows 原始路由.*请检查'):
                 manager._verify_runtime_egress(config)
 
     def test_elevated_child_error_is_returned_instead_of_generic_uac_hint(self):

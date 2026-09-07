@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-"""core/config.py - 配置读写 (config.json 位于 app 根目录, 随程序便携)"""
+"""core/config.py - 配置读写（config.json 位于当前用户 LocalAppData）。"""
 import json
 import os
-import sys
 import tempfile
 
-if getattr(sys, 'frozen', False):
-    BASE = os.path.dirname(sys.executable)  # 打包后: exe 所在目录
-else:
-    BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from core import app_paths
+
+
+BASE = app_paths.user_data_root()
 CFG_PATH = os.path.join(BASE, 'config.json')
 
 DEFAULT = {

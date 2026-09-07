@@ -1,6 +1,7 @@
 use crate::{
     constants::{MAX_REQUEST_BYTES, PIPE_NAME},
     manager::RuntimeManager,
+    pipe_io::perform,
     protocol::{Request, Response},
     util::AppResult,
 };
@@ -8,7 +9,7 @@ use std::{
     ffi::c_void,
     ptr::null_mut,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -20,7 +21,7 @@ use windows_sys::Win32::{
         Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
         SECURITY_ATTRIBUTES,
     },
-    Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile, PIPE_ACCESS_DUPLEX},
+    Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX, FILE_FLAG_OVERLAPPED},
     System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
         PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
@@ -28,32 +29,64 @@ use windows_sys::Win32::{
 };
 
 pub fn run_listener(manager: Arc<Mutex<RuntimeManager>>, stop: Arc<AtomicBool>, owner_sid: String) {
+    let active = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::Relaxed) {
+        if active.load(Ordering::Relaxed) >= 8 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
         let pipe = match create_pipe(&owner_sid) {
             Ok(value) => value,
-            Err(_) => {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                continue;
-            }
+            Err(_) => { std::thread::sleep(std::time::Duration::from_millis(200)); continue; }
         };
-        let connected = unsafe { ConnectNamedPipe(pipe, null_mut()) } != 0
-            || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
-        if connected {
-            let response = match read_request(pipe) {
-                Ok(request) => match manager.lock() {
-                    Ok(mut state) => state.handle(request),
-                    Err(_) => Response::error("服务内部状态锁异常"),
+        let connected = perform(pipe, std::time::Instant::now() + std::time::Duration::from_secs(1),
+            Some(&stop), |overlapped, _| unsafe {
+                ConnectNamedPipe(pipe, overlapped) != 0 || GetLastError() == ERROR_PIPE_CONNECTED
+            }).is_ok();
+        if !connected { unsafe { CloseHandle(pipe) }; continue; }
+        active.fetch_add(1, Ordering::Relaxed);
+        let count = Arc::clone(&active);
+        let state = Arc::clone(&manager);
+        // HANDLE 数值在线程间转移所有权，工作线程负责关闭。
+        let raw = pipe as usize;
+        std::thread::spawn(move || {
+            serve_pipe(raw as HANDLE, state);
+            count.fetch_sub(1, Ordering::Relaxed);
+        });
+    }
+}
+
+fn serve_pipe(pipe: HANDLE, manager: Arc<Mutex<RuntimeManager>>) {
+    let response = match read_request(pipe) {
+        Ok(request) if request.op == "apply" => {
+            let prepared = match manager.lock() {
+                Ok(mut state) => state.begin_prepare(request),
+                Err(_) => Err("服务内部状态锁异常".into()),
+            };
+            match prepared {
+                Ok(prepared) => {
+                    // 耗时的磁盘准备和子进程预检不占用状态锁，tick/关闭可继续运行。
+                    let outcome = prepared.prepare();
+                    match manager.lock() {
+                        Ok(mut state) => state.finish_prepare(prepared, outcome),
+                        Err(_) => Response::error("服务内部状态锁异常"),
+                    }
                 },
                 Err(error) => Response::error(error),
-            };
-            let _ = write_response(pipe, &response);
-            unsafe {
-                FlushFileBuffers(pipe);
-                DisconnectNamedPipe(pipe);
             }
-        }
-        unsafe { CloseHandle(pipe) };
-    }
+        },
+        Ok(request) => match manager.lock() {
+            Ok(mut state) => state.handle(request),
+            Err(_) => Response::error("服务内部状态锁异常"),
+        },
+        Err(error) => Response::error(error),
+    };
+    let _ = write_response(pipe, &response);
+    // 写入完成后等待客户端读取完响应再断开；有界确认代替无限 FlushFileBuffers。
+    let mut acknowledgement = [0_u8; 1];
+    let _ = read_exact(pipe, &mut acknowledgement,
+        std::time::Instant::now() + std::time::Duration::from_secs(2));
+    unsafe { DisconnectNamedPipe(pipe); CloseHandle(pipe); }
 }
 
 fn create_pipe(owner_sid: &str) -> AppResult<HANDLE> {
@@ -83,7 +116,7 @@ fn create_pipe(owner_sid: &str) -> AppResult<HANDLE> {
     let handle = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_DUPLEX,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
             64 * 1024,
@@ -100,61 +133,47 @@ fn create_pipe(owner_sid: &str) -> AppResult<HANDLE> {
 }
 
 fn read_request(pipe: HANDLE) -> AppResult<Request> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     let mut header = [0_u8; 4];
-    read_exact(pipe, &mut header)?;
+    read_exact(pipe, &mut header, deadline)?;
     let length = u32::from_le_bytes(header);
     if length == 0 || length > MAX_REQUEST_BYTES {
         return Err("服务请求大小超出限制".to_string());
     }
     let mut body = vec![0_u8; length as usize];
-    read_exact(pipe, &mut body)?;
+    read_exact(pipe, &mut body, deadline)?;
     serde_json::from_slice(&body).map_err(|_| "服务请求格式无效".to_string())
 }
 
 fn write_response(pipe: HANDLE, response: &Response) -> AppResult<()> {
     let body = serde_json::to_vec(response).map_err(|e| format!("响应序列化失败: {e}"))?;
     let header = (body.len() as u32).to_le_bytes();
-    write_all(pipe, &header)?;
-    write_all(pipe, &body)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    write_all(pipe, &header, deadline)?;
+    write_all(pipe, &body, deadline)
 }
 
-fn read_exact(pipe: HANDLE, buffer: &mut [u8]) -> AppResult<()> {
+fn read_exact(pipe: HANDLE, buffer: &mut [u8], deadline: std::time::Instant) -> AppResult<()> {
     let mut offset = 0;
     while offset < buffer.len() {
-        let mut read = 0_u32;
-        let success = unsafe {
-            ReadFile(
-                pipe,
-                buffer[offset..].as_mut_ptr(),
-                (buffer.len() - offset).min(u32::MAX as usize) as u32,
-                &mut read,
-                null_mut(),
-            )
-        };
-        if success == 0 || read == 0 {
-            return Err("服务请求读取失败".to_string());
-        }
+        let size = (buffer.len() - offset).min(1024 * 1024) as u32;
+        let read = perform(pipe, deadline, None, |overlapped, count| unsafe {
+            ReadFile(pipe, buffer[offset..].as_mut_ptr(), size, count, overlapped) != 0
+        })?;
+        if read == 0 { return Err("管道连接已中断".into()); }
         offset += read as usize;
     }
     Ok(())
 }
 
-fn write_all(pipe: HANDLE, buffer: &[u8]) -> AppResult<()> {
+fn write_all(pipe: HANDLE, buffer: &[u8], deadline: std::time::Instant) -> AppResult<()> {
     let mut offset = 0;
     while offset < buffer.len() {
-        let mut written = 0_u32;
-        let success = unsafe {
-            WriteFile(
-                pipe,
-                buffer[offset..].as_ptr(),
-                (buffer.len() - offset).min(u32::MAX as usize) as u32,
-                &mut written,
-                null_mut(),
-            )
-        };
-        if success == 0 || written == 0 {
-            return Err("服务响应写入失败".to_string());
-        }
+        let size = (buffer.len() - offset).min(1024 * 1024) as u32;
+        let written = perform(pipe, deadline, None, |overlapped, count| unsafe {
+            WriteFile(pipe, buffer[offset..].as_ptr(), size, count, overlapped) != 0
+        })?;
+        if written == 0 { return Err("管道连接已中断".into()); }
         offset += written as usize;
     }
     Ok(())

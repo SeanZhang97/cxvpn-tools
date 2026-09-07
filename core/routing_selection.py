@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from core import subscription_store
+from core.routing_tasks import commit_scope
 from core import routing_auto_policy
 
 
@@ -72,7 +73,8 @@ def persist_provider_nodes(config, provider_id, nodes):
             'name': display_name,
             'display_name': display_name,
         })
-    return subscription_store.persist_node_snapshot(provider, safe_nodes)
+    with commit_scope():
+        return subscription_store.persist_node_snapshot(provider, safe_nodes)
 
 
 def load_provider_nodes(config):

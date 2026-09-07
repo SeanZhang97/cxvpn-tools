@@ -43,16 +43,22 @@ class RoutingSelectionTests(unittest.TestCase):
             selection_mode='manual', selected_node='Removed Node'))
         config['enabled'] = True
         config['default_outbound'] = 'physical'
-        manager = routing.RoutingManager()
-        with mock.patch.object(routing, 'verify_runtime'), \
-                mock.patch.object(routing.vpn_os, 'list_vpns', return_value=[]), \
-                mock.patch.object(routing, 'list_physical_interfaces',
-                                  return_value=[{'name': '以太网'}]), \
-                mock.patch.object(routing, 'list_tun_conflicts', return_value=[]), \
-                mock.patch.object(manager, '_test_config'), \
-                mock.patch.object(manager, '_install') as install, \
-                mock.patch.object(manager, 'status', return_value={'running': True}):
-            result = manager.apply(config)
+        with tempfile.TemporaryDirectory() as data_root:
+            manager = routing.RoutingManager()
+            manager._data_dir = data_root
+            manager._service_state = mock.Mock(return_value={'installed': False})
+            with mock.patch.object(routing, 'verify_runtime'), \
+                    mock.patch.object(
+                        routing.vpn_os, 'list_vpns', return_value=[]), \
+                    mock.patch.object(routing, 'list_physical_interfaces',
+                                      return_value=[{'name': '以太网'}]), \
+                    mock.patch.object(
+                        routing, 'list_tun_conflicts', return_value=[]), \
+                    mock.patch.object(manager, '_test_config'), \
+                    mock.patch.object(manager, '_install') as install, \
+                    mock.patch.object(
+                        manager, 'status', return_value={'running': True}):
+                result = manager.apply(config)
 
         self.assertTrue(result['ok'])
         install.assert_called_once()
@@ -105,6 +111,7 @@ class RoutingSelectionTests(unittest.TestCase):
             runtime_name: {'alive': True, 'history': [{'delay': 30}]},
         }}
         manager = routing.RoutingManager()
+        manager._native_service.read_provider = mock.Mock(side_effect=routing._routing_service.ServiceError('no cache'))
         with mock.patch.object(
                 manager, '_controller_request',
                 side_effect=[{}, payload, {'providers': {}}]), \
@@ -229,6 +236,7 @@ class RoutingSelectionTests(unittest.TestCase):
         instance.cfg = {'routing': current}
         instance.routing = mock.Mock()
         instance.routing.status.return_value = {'running': True}
+        instance.routing.proxy_overview.return_value = []
         instance.log = mock.Mock()
         policy = {
             'enabled': True,

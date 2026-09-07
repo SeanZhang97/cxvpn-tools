@@ -11,8 +11,8 @@
    - 依赖分析仍基于 .py 源码, 第三方/标准库收集与 build.py 完全一致;
    - 打包输出时把业务模块的 pyc 全部替换为第 1 步的 .pyd, 产物内不留业务源码;
    - spec 内断言校验, 残留源码或 .pyd 缺失时直接中止, 绝不静默产出裸包。
-3. 产物与 build.py 相同: dist/CXVPNTools/(onedir 便携目录), 打包前后
-   自动备份/恢复用户配置。
+3. 产物与 build.py 相同: dist/CXVPNTools/(onedir 目录)，用户数据写入
+   当前用户 LocalAppData，打包前先迁移旧便携目录数据。
 
 唯一仍以字节码随包的业务文件是入口 main.py(PyInstaller 入口必须是真实脚本),
 其中只有窗口装配代码, 不含业务逻辑。
@@ -34,20 +34,16 @@ import sys
 import PyInstaller.__main__
 
 from build_runtime import build_routing_service
+from core.app_paths import migrate_legacy_user_data
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = 'CXVPNTools'
 LEGACY_APP_NAMES = ('CX VPN TOOLS', 'CXVPN管理器')
 DIST_DIR = os.path.join(BASE, 'dist')
 DIST_ROOT = os.path.join(DIST_DIR, APP_NAME)
-DIST_CFG = os.path.join(DIST_ROOT, 'config.json')
 LEGACY_DIST_ROOTS = [
     os.path.join(DIST_DIR, name) for name in LEGACY_APP_NAMES]
-LEGACY_DIST_CFG = [
-    os.path.join(root, 'config.json') for root in LEGACY_DIST_ROOTS]
-RULE_PACK_FILES = ('local-direct-v1.txt', 'cn-direct-v1.txt')
 SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
-DIST_RULE_PACK_DIR = os.path.join(DIST_ROOT, 'rule-packs')
 WORK = os.path.join(BASE, 'build_tmp')
 NUITKA_OUT = os.path.join(WORK, 'nuitka_out')
 PYD_STAGE = os.path.join(WORK, 'pyd_stage')
@@ -122,7 +118,8 @@ hiddenimports = ['webview.platforms.edgechromium', 'pythonnet']
 hiddenimports += collect_submodules('webview')
 tmp = collect_all('clr_loader')
 datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-datas += [(@@UI_SRC@@, 'ui'), (@@RT_SRC@@, 'runtime/routing')]
+datas += [(@@UI_SRC@@, 'ui'), (@@RULES_SRC@@, 'rule-packs'),
+          (@@RT_SRC@@, 'runtime/routing')]
 
 PROTECT = frozenset(STAGED)
 
@@ -162,6 +159,7 @@ def write_spec(staged):
             .replace('@@STAGED@@', repr(staged))
             .replace('@@MAIN_SRC@@', repr(os.path.join(BASE, 'main.py')))
             .replace('@@UI_SRC@@', repr(os.path.join(BASE, 'ui')))
+            .replace('@@RULES_SRC@@', repr(SOURCE_RULE_PACK_DIR))
             .replace('@@RT_SRC@@', repr(os.path.join(BASE, 'runtime',
                                                      'routing')))
             .replace('@@ICON@@', repr(os.path.join(BASE, 'icon.ico'))))
@@ -199,45 +197,23 @@ def verify_artifacts(staged):
 
 def main():
     build_routing_service()
-    saved_cfg = None
-    source_cfg = next(
-        (path for path in (DIST_CFG, *LEGACY_DIST_CFG)
-         if os.path.exists(path)), None)
-    if source_cfg:
-        saved_cfg = os.path.join(WORK, 'config.json.keep')
-        os.makedirs(WORK, exist_ok=True)
-        shutil.copy2(source_cfg, saved_cfg)
-    saved_rule_packs = {}
-    for filename in RULE_PACK_FILES:
-        source = next((path for path in (
-            os.path.join(DIST_RULE_PACK_DIR, filename),
-            *(os.path.join(root, 'rule-packs', filename)
-              for root in LEGACY_DIST_ROOTS)) if os.path.isfile(path)), None)
-        if source:
-            with open(source, 'rb') as stream:
-                saved_rule_packs[filename] = stream.read()
-    try:
-        staged = compile_business_code()
-        write_spec(staged)
-        PyInstaller.__main__.run(
-            [SPEC_PATH, '--noconfirm',
-             '--distpath', DIST_DIR, '--workpath', WORK])
-        verify_artifacts(staged)
-    finally:
-        if saved_cfg and os.path.exists(saved_cfg):
-            os.makedirs(DIST_ROOT, exist_ok=True)
-            shutil.copy2(saved_cfg, DIST_CFG)
-            print('[build-protected] 已恢复用户配置 config.json')
-        os.makedirs(DIST_RULE_PACK_DIR, exist_ok=True)
-        for filename in RULE_PACK_FILES:
-            target = os.path.join(DIST_RULE_PACK_DIR, filename)
-            if filename in saved_rule_packs:
-                with open(target, 'wb') as stream:
-                    stream.write(saved_rule_packs[filename])
-            else:
-                shutil.copy2(
-                    os.path.join(SOURCE_RULE_PACK_DIR, filename), target)
-        print('[build-protected] 已部署并保留用户规则包 rule-packs')
+    legacy_roots = []
+    for root in (DIST_ROOT, *LEGACY_DIST_ROOTS):
+        legacy_roots.extend((root, os.path.join(root, '_internal')))
+    migration = migrate_legacy_user_data(
+        legacy_roots=legacy_roots,
+        bundled_rule_pack_root=SOURCE_RULE_PACK_DIR)
+    if migration['copied']:
+        print('[build-protected] 已迁移用户数据 %d 个文件'
+              % len(migration['copied']))
+    for warning in migration['warnings']:
+        print('[build-protected] 用户数据迁移警告: %s' % warning)
+    staged = compile_business_code()
+    write_spec(staged)
+    PyInstaller.__main__.run(
+        [SPEC_PATH, '--noconfirm',
+         '--distpath', DIST_DIR, '--workpath', WORK])
+    verify_artifacts(staged)
     print('[build-protected] 完成: %s'
           % DIST_ROOT)
 

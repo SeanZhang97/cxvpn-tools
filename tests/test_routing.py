@@ -206,6 +206,26 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(update_group['use'], ['provider-default'])
         self.assertEqual(update_group['empty-fallback'], 'PHYSICAL')
 
+    def test_auto_preview_without_cache_uses_physical_directly(self):
+        provider = routing.normalize_config(self.base_config())[
+            'proxy_providers'][0]
+
+        download = routing._preview_provider_download_route(
+            provider, cache_available=False)
+
+        self.assertEqual(download['target'], 'PHYSICAL')
+        self.assertFalse(download['self_bootstrap'])
+
+    def test_auto_preview_with_cache_keeps_self_bootstrap_group(self):
+        provider = routing.normalize_config(self.base_config())[
+            'proxy_providers'][0]
+
+        download = routing._preview_provider_download_route(
+            provider, cache_available=True)
+
+        self.assertEqual(download['target'], 'SUBSCRIPTION-UPDATE-default')
+        self.assertTrue(download['self_bootstrap'])
+
     def test_custom_download_proxy_must_be_local_http(self):
         for proxy in ('', 'https://127.0.0.1:7897',
                       'http://proxy.example.test:7897',
@@ -320,8 +340,8 @@ class RoutingConfigTests(unittest.TestCase):
                 manager, '_controller_request',
                 side_effect=[{}, overview, {'providers': {}}]) as request, \
                 mock.patch.object(
-                    routing.subscription_store, 'persist_bytes',
-                    return_value={'available': True}) as persist:
+                    routing.subscription_store, 'persist_bytes_and_nodes',
+                    return_value=({'available': True}, {})) as persist:
             result = manager.refresh_proxy_provider(config, 'default')
 
         self.assertTrue(result['ok'])
@@ -477,11 +497,13 @@ class RoutingConfigTests(unittest.TestCase):
             'download_route': 'Windows 系统代理迁移',
         }
         with mock.patch.object(
-                manager, '_preview_proxy_provider_once', side_effect=[
-                    routing.ProviderFetchError('无法获取订阅'), expected,
-                ]) as preview_once, mock.patch.object(
-                    routing, 'windows_system_proxy',
-                    return_value='http://127.0.0.1:7892'):
+                 manager, '_preview_proxy_provider_once', side_effect=[
+                     routing.ProviderFetchError('无法获取订阅'), expected,
+                 ]) as preview_once, mock.patch.object(
+                     routing, 'windows_system_proxy',
+                     return_value='http://127.0.0.1:7892'), mock.patch.object(
+                     subscription_store, 'cache_status',
+                     return_value={'available': True}):
             result = manager.preview_proxy_provider(provider)
 
         self.assertEqual(preview_once.call_count, 2)
@@ -489,6 +511,33 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(retry_provider['download_route'], 'system-proxy')
         self.assertEqual(result['auto_fallback'], 'system-proxy')
         self.assertIn('Windows 系统代理自动回退', result['download_route'])
+
+    def test_auto_preview_without_cache_prefers_detected_windows_proxy(self):
+        provider = {
+            'id': 'draft', 'name': '科学',
+            'url': 'https://example.test/subscription',
+            'enabled': False, 'download_route': 'auto',
+        }
+        manager = routing.RoutingManager()
+        expected = {
+            'ok': True, 'provider_name': '科学', 'node_count': 1,
+            'nodes': [{'name': '东京 01'}],
+            'download_route': 'Windows 系统代理迁移',
+        }
+        with mock.patch.object(
+                manager, '_preview_proxy_provider_once',
+                return_value=expected) as preview_once, mock.patch.object(
+                    routing, 'windows_system_proxy',
+                    return_value='http://127.0.0.1:7892'), mock.patch.object(
+                    subscription_store, 'cache_status',
+                    return_value={'available': False}):
+            result = manager.preview_proxy_provider(provider)
+
+        preview_once.assert_called_once()
+        retry_provider = preview_once.call_args.args[0]
+        self.assertEqual(retry_provider['download_route'], 'system-proxy')
+        self.assertEqual(result['auto_route'], 'system-proxy')
+        self.assertIn('Windows 系统代理自动选择', result['download_route'])
 
     def test_preview_speedtest_does_not_use_network_fallback(self):
         provider = {
@@ -520,9 +569,9 @@ class RoutingConfigTests(unittest.TestCase):
         manager = routing.RoutingManager()
         with mock.patch.object(
                 manager, '_preview_proxy_provider_once', side_effect=[
-                    routing.ProviderFetchError('物理网络失败'),
                     routing.RoutingError('系统代理已不可用'),
-                ]), mock.patch.object(
+                    routing.ProviderFetchError('物理网络失败'),
+                ]) as preview_once, mock.patch.object(
                 routing, 'windows_system_proxy',
                 return_value='http://127.0.0.1:7892'), mock.patch.object(
                 subscription_store, 'cache_status',
@@ -530,6 +579,11 @@ class RoutingConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     routing.RoutingError, 'Windows 系统代理均失败'):
                 manager.preview_proxy_provider(provider)
+
+        self.assertEqual(
+            [call.args[0]['download_route']
+             for call in preview_once.call_args_list],
+            ['system-proxy', 'auto'])
 
     def test_auto_preview_retains_cached_nodes_after_all_network_routes_fail(self):
         provider = {

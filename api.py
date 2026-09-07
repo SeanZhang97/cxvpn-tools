@@ -18,6 +18,8 @@ from core import vpn_service
 from core.mihomo_activity import MihomoActivityRelay
 from core.mihomo_telemetry import MihomoTelemetryRelay
 from core.routing_speedtest import RoutingTestJobs
+from core.routing_api_tasks import RoutingTaskApi
+from core.routing_tasks import operation_scope
 from core.routing_updates import RoutingUpdateWorker
 from core.ui_state_stream import UiStateStream
 from core.worker import Worker
@@ -48,13 +50,14 @@ def _safe_console_write(line):
         pass
 
 
-class Api:
+class Api(RoutingTaskApi):
     def __init__(self):
         self.cfg = cfgmod.load()
         self._lock = threading.Lock()
         self._vpn_action_lock = threading.Lock()
         self._repair_lock = threading.Lock()
         self._routing_lock = threading.Lock()
+        self._routing_revision = 0
         self._repairing = False
         self._repair_result = None
         self._repair_run_id = 0
@@ -102,7 +105,8 @@ class Api:
         self.routing_test_jobs = RoutingTestJobs(self.log)
         self.routing_test_jobs._serializable = False
         self.routing_updates = RoutingUpdateWorker(
-            self._cfg_get, self.routing, self._routing_lock, self.log)
+            self._cfg_get, self.routing, self._routing_lock, self.log,
+            task_runner=self._routing_provider_task)
         self.routing_updates._serializable = False
         self.routing_telemetry = MihomoTelemetryRelay(
             self._cfg_get, self.routing, self.log, self._poke_ui_state)
@@ -356,6 +360,7 @@ class Api:
             'logs_version': logs_version,
             'ip_info': current_ip_info,
             'routing_telemetry': self.routing_telemetry.snapshot(),
+            'routing_revision': getattr(self, '_routing_revision', 0),
         }
 
     def get_ui_state_snapshot(self):
@@ -456,7 +461,9 @@ class Api:
         started_at = time.monotonic()
         self.log('[routing] UI 首屏快照读取开始，不执行 VPN/网卡/TUN 慢扫描')
         try:
-            result = self.routing.bootstrap(self._cfg_get().get('routing') or {})
+            config, revision = self._routing_snapshot()
+            result = self.routing.bootstrap(config)
+            result['routing_revision'] = revision
             self.log(
                 f'[routing] UI 首屏快照就绪，耗时 {time.monotonic() - started_at:.3f} 秒')
             return self._routing_result_for_ui(result)
@@ -468,8 +475,10 @@ class Api:
 
     def get_routing_setup(self):
         try:
-            return self._routing_result_for_ui(
-                self.routing.setup(self._cfg_get().get('routing') or {}))
+            config, revision = self._routing_snapshot()
+            with operation_scope(lambda: self._routing_commit(revision)):
+                result = self.routing.setup(config)
+            return self._routing_response(result, revision)
         except Exception as exc:
             self.log(f'[routing] 读取配置失败: {exc}')
             return {'ok': False, 'msg': str(exc)}
@@ -482,9 +491,9 @@ class Api:
 
     def get_routing_proxies(self):
         try:
-            groups = self.routing.proxy_overview(
-                self._cfg_get().get('routing') or {})
-            return {'ok': True, 'groups': groups}
+            config, revision = self._routing_snapshot()
+            groups = self.routing.proxy_overview(config)
+            return self._routing_response({'ok': True, 'groups': groups}, revision)
         except Exception as exc:
             return {'ok': False, 'msg': str(exc), 'groups': []}
 
@@ -604,40 +613,52 @@ class Api:
                         return applied
                     self.log(
                         f'[routing] 节点优选策略重新应用成功: provider={target_id}')
-                    return self._routing_result_for_ui({
+                    return self._routing_response({
                         **applied,
+                        'groups': self.routing.proxy_overview(normalized),
                         'msg': '节点优选策略已保存并立即应用',
                         'requires_apply': False,
                     })
-                with self._lock:
-                    committed = json.loads(json.dumps(self.cfg))
-                    committed['routing'] = normalized
-                    cfgmod.save(committed)
-                    self.cfg = committed
-
-                requires_apply = False
-                if (status.get('running') and target_mode == 'manual' and
-                        previous_mode == 'manual'):
-                    runtime_name = f'[{provider["name"]}] {selected}'
-                    try:
-                        self.routing.select_proxy_node(
-                            normalized, target_id, runtime_name)
-                    except routing.RoutingError:
-                        requires_apply = True
-                msg = ('节点偏好已保存，重新应用分流后生效'
+                runtime_result = None
+                core_running = status.get('core_running', status.get('running', False))
+                self._routing_changed()
+                if core_running and target_mode == 'manual' and previous_mode == 'manual':
+                    runtime_result = self.routing.select_proxy_node(
+                        normalized, target_id, f'[{provider["name"]}] {selected}')
+                try:
+                    with self._lock:
+                        committed = json.loads(json.dumps(self.cfg))
+                        committed['routing'] = normalized
+                        cfgmod.save(committed)
+                        self.cfg = committed
+                except Exception as save_error:
+                    if runtime_result is not None:
+                        old_provider = next(item for item in current_cfg['routing']['proxy_providers']
+                                            if item['id'] == target_id)
+                        try:
+                            self.routing.select_proxy_node(current_cfg['routing'], target_id,
+                                f'[{old_provider["name"]}] {old_provider["selected_node"]}')
+                        except Exception as rollback_error:
+                            self.log(f'[routing] 节点偏好保存回滚失败: {type(rollback_error).__name__}')
+                            raise routing.RoutingError('节点偏好保存失败且无法确认原节点恢复，请刷新运行状态') from save_error
+                    raise routing.RoutingError('节点偏好保存失败，已保留原配置') from save_error
+                if runtime_result is not None:
+                    self.routing.remember_selection(normalized, current_cfg['routing'])
+                self._routing_changed()
+                requires_apply = bool(core_running and structural_change)
+                msg = ('节点偏好已保存，开启代理时将重新应用'
                        if requires_apply else
                        '节点偏好与订阅草稿已保存，请先在订阅管理启用该订阅'
                        if not provider.get('enabled') else
-                       '节点偏好已保存并立即生效'
-                       if status.get('running') else
+                       '节点偏好已保存并确认生效' if runtime_result is not None else
                        '节点偏好已保存，开启代理时将自动应用')
-                self.log(
-                    f'[routing] 节点偏好保存成功: provider={target_id}, '
-                    f'mode={target_mode}, requires_apply={requires_apply}')
-                return self._routing_result_for_ui({
-                    'ok': True, 'msg': msg, 'config': normalized,
-                    'status': status, 'requires_apply': requires_apply,
-                })
+                self.log(f'[routing] 节点偏好保存成功: provider={target_id}, mode={target_mode}')
+                result = {'ok': True, 'msg': msg, 'config': normalized,
+                          'status': status, 'requires_apply': requires_apply}
+                if runtime_result is not None:
+                    result['groups'] = runtime_result.get('groups') or []
+                self._poke_ui_state()
+                return self._routing_response(result)
             except routing.RoutingError as exc:
                 self.log(f'[routing] 节点偏好保存失败: {exc}')
                 return {'ok': False, 'msg': str(exc)}
@@ -646,56 +667,40 @@ class Api:
                 return {'ok': False, 'msg': '节点偏好保存失败，请重试'}
 
     def refresh_routing_provider(self, provider_id):
-        with self._routing_lock:
-            try:
-                return self.routing.refresh_proxy_provider(
-                    self._cfg_get().get('routing') or {}, provider_id)
-            except Exception as exc:
-                self.log(f'[routing] 订阅更新失败: {exc}')
-                return {'ok': False, 'msg': str(exc)}
+        try:
+            return self._routing_provider_task(provider_id, lambda config: self.routing.refresh_proxy_provider(config, provider_id))
+        except routing.RoutingError as exc:
+            return {'ok': False, 'msg': str(exc)}
+        except Exception as exc:
+            self.log(f'[routing-task] refresh_routing_provider失败: {type(exc).__name__}')
+            return {'ok': False, 'msg': '订阅或节点操作失败，请重试或查看运行日志'}
 
     def preview_routing_provider(self, provider, network=None):
-        with self._routing_lock:
-            try:
-                result = self.routing.preview_proxy_provider(provider, network)
-                self.log(
-                    f'[routing] 订阅预览成功: {result["provider_name"]}，'
-                    f'{result["node_count"]} 个节点')
-                return result
-            except routing.RoutingError as exc:
-                self.log(f'[routing] 订阅预览失败: {exc}')
-                return {'ok': False, 'msg': str(exc)}
-            except Exception as exc:
-                # 未知异常只记录类型，避免未来底层错误携带订阅 URL/token。
-                self.log(f'[routing] 订阅预览异常: {type(exc).__name__}')
-                return {'ok': False, 'msg': '订阅预览发生内部错误，请重试或查看运行环境'}
+        try:
+            return self._routing_provider_task((provider or {}).get('id'), lambda config: self.routing.preview_proxy_provider(provider, network))
+        except routing.RoutingError as exc:
+            return {'ok': False, 'msg': str(exc)}
+        except Exception as exc:
+            self.log(f'[routing-task] preview_routing_provider失败: {type(exc).__name__}')
+            return {'ok': False, 'msg': '订阅或节点操作失败，请重试或查看运行日志'}
 
     def test_preview_routing_provider(self, provider, network=None):
-        """临时启动无 TUN Mihomo，对预览订阅执行节点延迟测试。"""
-        with self._routing_lock:
-            try:
-                result = self.routing.test_preview_proxy_provider(
-                    provider, network)
-                tested = len([node for node in result.get('nodes', [])
-                              if node.get('tested')])
-                self.log(f'[routing] 订阅临时测速完成: {result["provider_name"]}，'
-                         f'{tested} 个节点')
-                return result
-            except routing.RoutingError as exc:
-                self.log(f'[routing] 订阅临时测速失败: {exc}')
-                return {'ok': False, 'msg': str(exc)}
-            except Exception as exc:
-                self.log(f'[routing] 订阅临时测速异常: {type(exc).__name__}')
-                return {'ok': False, 'msg': '订阅临时测速发生内部错误，请重试'}
+        try:
+            return self._routing_provider_task((provider or {}).get('id'), lambda config: self.routing.test_preview_proxy_provider(provider, network))
+        except routing.RoutingError as exc:
+            return {'ok': False, 'msg': str(exc)}
+        except Exception as exc:
+            self.log(f'[routing-task] test_preview_routing_provider失败: {type(exc).__name__}')
+            return {'ok': False, 'msg': '订阅或节点操作失败，请重试或查看运行日志'}
 
     def start_preview_routing_test(self, provider, network=None):
         provider_copy = json.loads(json.dumps(provider or {}))
         network_copy = json.loads(json.dumps(network or {}))
 
         def runner(progress, cancel_event):
-            with self._routing_lock:
-                return self.routing.test_preview_proxy_provider(
-                    provider_copy, network_copy, progress, cancel_event)
+            return self._routing_provider_task(provider_copy.get('id'),
+                lambda config: self.routing.test_preview_proxy_provider(
+                    provider_copy, network_copy, progress, cancel_event))
 
         return self.routing_test_jobs.start(
             runner, '订阅节点测速',
@@ -706,56 +711,47 @@ class Api:
         target = str(group_id or '').strip().lower()
 
         def runner(progress, cancel_event):
-            with self._routing_lock:
-                return self.routing.test_proxy_group_stream(
-                    self._cfg_get().get('routing') or {}, target,
-                    progress, cancel_event)
+            return self._routing_provider_task(target,
+                lambda config: self.routing.test_proxy_group_stream(
+                    config, target, progress, cancel_event))
 
         return self.routing_test_jobs.start(
             runner, '代理组测速',
             lambda exc: (str(exc) if isinstance(exc, routing.RoutingError)
                          else '代理组测速发生内部错误，请重试'))
 
-    def get_routing_test_job(self, job_id):
-        return self.routing_test_jobs.get(job_id)
+    def get_routing_test_job(self, job_id, after_version=-1):
+        return self.routing_test_jobs.get(job_id, after_version)
 
     def cancel_routing_test_job(self, job_id):
         return self.routing_test_jobs.cancel(job_id)
 
     def import_routing_provider(self, provider, content, network=None):
-        with self._routing_lock:
-            try:
-                result = self.routing.import_proxy_provider(
-                    provider, content, network)
-                self.log(
-                    f'[routing] 订阅文件导入成功: {result["provider_name"]}，'
-                    f'{result["node_count"]} 个节点')
-                return result
-            except routing.RoutingError as exc:
-                self.log(f'[routing] 订阅文件导入失败: {exc}')
-                return {'ok': False, 'msg': str(exc)}
-            except Exception as exc:
-                self.log(f'[routing] 订阅文件导入异常: {type(exc).__name__}')
-                return {'ok': False, 'msg': '订阅文件导入发生内部错误，请重试'}
+        try:
+            return self._routing_provider_task((provider or {}).get('id'), lambda config: self.routing.import_proxy_provider(provider, content, network))
+        except routing.RoutingError as exc:
+            return {'ok': False, 'msg': str(exc)}
+        except Exception as exc:
+            self.log(f'[routing-task] import_routing_provider失败: {type(exc).__name__}')
+            return {'ok': False, 'msg': '订阅或节点操作失败，请重试或查看运行日志'}
 
     def test_routing_proxy_group(self, group_id):
-        with self._routing_lock:
-            try:
-                return self.routing.test_proxy_group(
-                    self._cfg_get().get('routing') or {}, group_id)
-            except Exception as exc:
-                self.log(f'[routing] 代理组测速失败: {exc}')
-                return {'ok': False, 'msg': str(exc)}
+        try:
+            return self._routing_provider_task(group_id, lambda config: self.routing.test_proxy_group(config, group_id))
+        except routing.RoutingError as exc:
+            return {'ok': False, 'msg': str(exc)}
+        except Exception as exc:
+            self.log(f'[routing-task] test_routing_proxy_group失败: {type(exc).__name__}')
+            return {'ok': False, 'msg': '订阅或节点操作失败，请重试或查看运行日志'}
 
     def test_routing_proxy_node(self, group_id, node_name):
-        with self._routing_lock:
-            try:
-                return self.routing.test_proxy_node(
-                    self._cfg_get().get('routing') or {}, group_id, node_name)
-            except Exception as exc:
-                self.log(f'[routing] 节点测速失败: {exc}')
-                return {'ok': False, 'msg': str(exc)}
-
+        try:
+            return self._routing_provider_task(group_id, lambda config: self.routing.test_proxy_node(config, group_id, node_name))
+        except routing.RoutingError as exc:
+            return {'ok': False, 'msg': str(exc)}
+        except Exception as exc:
+            self.log(f'[routing-task] test_routing_proxy_node失败: {type(exc).__name__}')
+            return {'ok': False, 'msg': '订阅或节点操作失败，请重试或查看运行日志'}
     def preview_routing_match(self, value, domain):
         try:
             result = routing.explain_domain(
@@ -788,15 +784,14 @@ class Api:
             return {'ok': False, 'msg': str(exc)}
 
     def preview_routing(self, value):
-        with self._routing_lock:
-            try:
-                result = self.routing.preview(
-                    self._routing_with_private_fields(value))
-                self.log('[routing] 配置预检通过')
-                return self._routing_result_for_ui(result)
-            except Exception as exc:
-                self.log(f'[routing] 配置预检失败: {exc}')
-                return {'ok': False, 'msg': str(exc)}
+        try:
+            result = self.routing.preview(
+                self._routing_with_private_fields(value))
+            self.log('[routing] 配置预检通过')
+            return self._routing_result_for_ui(result)
+        except Exception as exc:
+            self.log(f'[routing] 配置预检失败: {exc}')
+            return {'ok': False, 'msg': str(exc)}
 
     def apply_routing(self, value):
         with self._routing_lock:
@@ -841,6 +836,7 @@ class Api:
 
     def _apply_routing_locked(self, value, source, replacement_cfg=None):
         """在持有 _routing_lock 时提交路由和磁盘配置，并维护有效历史。"""
+        self._routing_changed()
         previous_cfg = self._cfg_get()
         previous_routing_raw = json.loads(json.dumps(
             previous_cfg.get('routing') or routing.default_config()))
@@ -892,16 +888,18 @@ class Api:
                 result.get('msg') or '配置已应用')
             if standby_pending:
                 self._start_routing_standby_reconcile('代理关闭后')
+            self._routing_changed()
             self._poke_ui_state()
-            return self._routing_result_for_ui(result)
+            return self._routing_response(result)
         except Exception as exc:
             try:
                 failed = routing.normalize_config(requested)
             except Exception:
                 failed = previous_routing
             self._history_record(failed, False, source, str(exc))
+            self._routing_changed()
             self.log(f'[routing] 应用失败: {exc}')
-            return {'ok': False, 'msg': str(exc)}
+            return self._routing_response({'ok': False, 'msg': str(exc)})
 
     def export_config_backup(self, include_subscription_urls=False):
         try:

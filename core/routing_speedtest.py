@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import uuid
-from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 
 METADATA_NODE_RE = re.compile(
@@ -40,7 +40,7 @@ def node_healthcheck_path(node, health_url, timeout=10000):
 
 
 def test_nodes(controller_request, controller_config, nodes, health_url,
-               progress=None, cancel_event=None, workers=8):
+               progress=None, cancel_event=None, workers=8, total_timeout=120):
     """并发测试节点；每完成一个节点立即回调，不测试订阅说明伪节点。"""
     cancel = cancel_event or threading.Event()
     candidates = [dict(node) for node in nodes or [] if not is_metadata_node(node)]
@@ -69,27 +69,48 @@ def test_nodes(controller_request, controller_config, nodes, health_url,
             'tested': True,
             'tested_at': int(time.time()),
         }
-        if progress:
+        if progress and not cancel.is_set():
             progress({'event': 'result', 'node': result})
         return result
 
     results = {}
-    cancellation_applied = False
-    with ThreadPoolExecutor(
-            max_workers=max(1, min(int(workers or 8), 16)),
-            thread_name_prefix='routing-speedtest') as pool:
-        futures = [pool.submit(test_one, node) for node in candidates]
-        for future in as_completed(futures):
-            try:
+    concurrency = max(1, min(int(workers or 8), 16))
+    deadline = time.monotonic() + max(.01, float(total_timeout))
+    pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix='routing-speedtest')
+    iterator = iter(candidates)
+    pending = set()
+    def submit_one():
+        node = next(iterator, None)
+        if node is not None and not cancel.is_set():
+            pending.add(pool.submit(test_one, node))
+    try:
+        for _ in range(concurrency):
+            submit_one()
+        while pending and not cancel.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                cancel.set()
+                raise TimeoutError('节点测速超过总期限，已停止未完成请求')
+            completed, _ = wait(pending, timeout=min(.2, remaining), return_when=FIRST_COMPLETED)
+            for future in completed:
+                pending.remove(future)
+                try:
+                    result = future.result()
+                except CancelledError:
+                    continue
+                if result:
+                    results[result['name']] = result
+                submit_one()
+    finally:
+        for future in pending:
+            if future.done() and not future.cancelled():
                 result = future.result()
-            except CancelledError:
-                continue
-            if result:
-                results[result['name']] = result
-            if cancel.is_set() and not cancellation_applied:
-                cancellation_applied = True
-                for pending in futures:
-                    pending.cancel()
+                if result:
+                    results[result['name']] = result
+        for future in pending:
+            future.cancel()
+        # 正在执行的回环 HTTP 请求最多等待自身 12 秒；取消不阻塞其它路由操作。
+        pool.shutdown(wait=False, cancel_futures=True)
     return results
 
 
@@ -144,6 +165,7 @@ class RoutingTestJobs:
         nodes.sort(key=lambda item: item.get('order', 0))
         return {
             'id': job['id'],
+            'version': job.get('version', 0),
             'status': job['status'],
             'total': job['total'],
             'completed': job['completed'],
@@ -158,6 +180,7 @@ class RoutingTestJobs:
         job_id = uuid.uuid4().hex
         job = {
             'id': job_id,
+            'version': 1,
             'status': 'pending',
             'total': 0,
             'completed': 0,
@@ -171,13 +194,17 @@ class RoutingTestJobs:
         }
         with self._lock:
             self._prune()
+            if sum(item['status'] in {'pending', 'running'} for item in self._jobs.values()) >= 4:
+                return {'ok': False, 'msg': '已有多个测速任务，请先等待完成或停止测速'}
             self._jobs[job_id] = job
+        self._logger(f'[routing-test] 任务已提交: job={job_id[:8]}，总期限=120秒')
 
         def progress(event):
             with self._lock:
                 current = self._jobs.get(job_id)
-                if not current:
+                if not current or current['status'] not in {'pending', 'running'}:
                     return
+                current['version'] += 1
                 kind = event.get('event')
                 if kind == 'init':
                     current['nodes'] = {
@@ -200,12 +227,11 @@ class RoutingTestJobs:
                     if name:
                         current['nodes'][name] = {
                             **previous, **result, 'state': 'completed'}
-                    current['completed'] = len([
-                        item for item in current['nodes'].values()
-                        if item.get('state') == 'completed'])
-                    current['alive'] = len([
-                        item for item in current['nodes'].values()
-                        if item.get('state') == 'completed' and item.get('alive') is True])
+                    if previous.get('state') != 'completed':
+                        current['completed'] += 1
+                        current['alive'] += int(result.get('alive') is True)
+                    else:
+                        current['alive'] += int(result.get('alive') is True) - int(previous.get('alive') is True)
                     current['failed'] = current['completed'] - current['alive']
                     current['msg'] = (
                         f'正在测速 {current["completed"]}/{current["total"]}，'
@@ -215,8 +241,8 @@ class RoutingTestJobs:
         def execute():
             try:
                 with self._lock:
-                    job['status'] = 'running'
                     job['updated_at'] = time.time()
+                self._logger(f'[routing-test] 后台已领取任务: job={job_id[:8]}')
                 result = runner(progress, job['cancel'])
                 with self._lock:
                     current = self._jobs.get(job_id)
@@ -233,7 +259,9 @@ class RoutingTestJobs:
                             f'测速完成：{current["alive"]}/'
                             f'{current["total"]} 个节点可用')
                     current['result'] = result
+                    current['version'] += 1
                     current['updated_at'] = time.time()
+                self._logger(f'[routing-test] 任务终态: job={job_id[:8]}，status={current["status"]}')
             except Exception as exc:
                 self._logger(f'[routing] 后台测速任务失败: {type(exc).__name__}')
                 safe_error = '测速任务执行失败，请重试或查看运行日志'
@@ -245,7 +273,11 @@ class RoutingTestJobs:
                 with self._lock:
                     current = self._jobs.get(job_id)
                     if current:
-                        if job['cancel'].is_set():
+                        if isinstance(exc, TimeoutError):
+                            current['status'] = 'error'
+                            current['error'] = '节点测速超过总期限，已停止未完成请求'
+                            current['msg'] = '测速超时'
+                        elif job['cancel'].is_set():
                             current['status'] = 'cancelled'
                             current['error'] = ''
                             current['msg'] = (
@@ -255,6 +287,7 @@ class RoutingTestJobs:
                             current['status'] = 'error'
                             current['error'] = safe_error
                             current['msg'] = '测速失败'
+                        current['version'] += 1
                         current['updated_at'] = time.time()
 
         threading.Thread(
@@ -262,12 +295,14 @@ class RoutingTestJobs:
             name=f'routing-speedtest-{job_id[:8]}').start()
         return {'ok': True, 'job_id': job_id, 'job': self.get(job_id)['job']}
 
-    def get(self, job_id):
+    def get(self, job_id, after_version=-1):
         with self._lock:
             self._prune()
             job = self._jobs.get(str(job_id or ''))
             if not job:
                 return {'ok': False, 'msg': '测速任务不存在或已过期'}
+            if int(after_version) == job.get('version', 0):
+                return {'ok': True, 'unchanged': True, 'version': job['version']}
             return {'ok': True, 'job': self._public(job)}
 
     def cancel(self, job_id):
@@ -276,7 +311,17 @@ class RoutingTestJobs:
             if not job:
                 return {'ok': False, 'msg': '测速任务不存在或已过期'}
             job['cancel'].set()
+            job['version'] += 1
             if job['status'] in {'pending', 'running'}:
                 job['msg'] = '正在停止测速…'
             job['updated_at'] = time.time()
             return {'ok': True, 'job': self._public(job)}
+
+    def cancel_all(self, message='测速已取消'):
+        with self._lock:
+            for job in self._jobs.values():
+                if job['status'] in {'pending', 'running'}:
+                    job['cancel'].set()
+                    job['msg'] = message
+                    job['version'] += 1
+                    job['updated_at'] = time.time()
