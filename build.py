@@ -32,8 +32,17 @@ migration = migrate_legacy_user_data(
     bundled_rule_pack_root=SOURCE_RULE_PACK_DIR)
 if migration['copied']:
     print(f'[build] 已迁移用户数据 {len(migration["copied"])} 个文件')
+if migration['replaced']:
+    print(f'[build] 已采用较新的旧版配置 {len(migration["replaced"])} 个文件')
+if migration['conflicts']:
+    preserved = sum(1 for item in migration['conflicts'] if item['backup'])
+    print(f'[build] 配置冲突 {len(migration["conflicts"])} 个，'
+          f'已保留副本 {preserved} 个')
 for warning in migration['warnings']:
     print(f'[build] 用户数据迁移警告: {warning}')
+if migration['blocking']:
+    raise RuntimeError(
+        '[build] 配置冲突副本保存失败，为防止清理旧数据已停止打包')
 
 args = [
     os.path.join(BASE, 'main.py'),

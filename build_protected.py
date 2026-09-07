@@ -206,8 +206,20 @@ def main():
     if migration['copied']:
         print('[build-protected] 已迁移用户数据 %d 个文件'
               % len(migration['copied']))
+    if migration['replaced']:
+        print('[build-protected] 已采用较新的旧版配置 %d 个文件'
+              % len(migration['replaced']))
+    if migration['conflicts']:
+        preserved = sum(
+            1 for item in migration['conflicts'] if item['backup'])
+        print('[build-protected] 配置冲突 %d 个，已保留副本 %d 个'
+              % (len(migration['conflicts']), preserved))
     for warning in migration['warnings']:
         print('[build-protected] 用户数据迁移警告: %s' % warning)
+    if migration['blocking']:
+        raise RuntimeError(
+            '[build-protected] 配置冲突副本保存失败，'
+            '为防止清理旧数据已停止打包')
     staged = compile_business_code()
     write_spec(staged)
     PyInstaller.__main__.run(

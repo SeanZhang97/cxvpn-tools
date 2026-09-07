@@ -140,6 +140,18 @@ def main():
     if _DATA_MIGRATION['copied']:
         _boot_log(
             f'user data migrated: {len(_DATA_MIGRATION["copied"])} files')
+    if _DATA_MIGRATION['replaced']:
+        _boot_log(
+            f'user data replaced with newer legacy data: '
+            f'{len(_DATA_MIGRATION["replaced"])} files')
+    if _DATA_MIGRATION['conflicts']:
+        preserved = sum(
+            1 for item in _DATA_MIGRATION['conflicts'] if item['backup'])
+        _boot_log(
+            f'user data migration conflicts: '
+            f'{len(_DATA_MIGRATION["conflicts"])}; preserved={preserved}')
+    for issue in _DATA_MIGRATION['blocking']:
+        _boot_log(f'user data migration blocking issue: {issue}')
     for warning in _DATA_MIGRATION['warnings']:
         _boot_log(f'user data migration warning: {warning}')
     instance = SingleInstanceGuard()

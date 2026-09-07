@@ -260,14 +260,69 @@
         <section class="proxy-connect-card" aria-labelledby="proxy-state-title">
           <div class="proxy-connect-main">
             <div id="proxy-orbit" class="proxy-orbit" aria-hidden="true">
-              <img class="proxy-orbit-layer proxy-orbit-pulse" src="assets/chaoxing-network-orbit.png" alt="">
-              <img class="proxy-orbit-layer proxy-orbit-base" src="assets/chaoxing-network-orbit.png" alt="">
-              <img class="proxy-orbit-layer proxy-orbit-motion proxy-orbit-motion-primary" src="assets/chaoxing-network-orbit.png" alt="">
-              <img class="proxy-orbit-layer proxy-orbit-motion proxy-orbit-motion-secondary" src="assets/chaoxing-network-orbit.png" alt="">
-              <img class="proxy-orbit-layer proxy-logo-base" src="assets/chaoxing-line.png" alt="">
-              <img class="proxy-orbit-layer proxy-logo-charge" src="assets/chaoxing-line-paths.png" alt="">
-              <img class="proxy-orbit-layer proxy-logo-scan" src="assets/chaoxing-line-paths.png" alt="">
-              <img class="proxy-orbit-layer proxy-star-ignite" src="assets/chaoxing-line-star.png" alt="">
+              <svg class="proxy-emblem" viewBox="0 0 160 160" fill="none" focusable="false">
+                <defs>
+                  <linearGradient id="proxy-emblem-color" x1="40" y1="143" x2="117" y2="33" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#419ddd"/><stop offset=".48" stop-color="#80d7f2"/><stop offset="1" stop-color="#96bcf3"/>
+                  </linearGradient>
+                  <linearGradient id="proxy-emblem-glint" x1="24" y1="132" x2="139" y2="31" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#24b9fa"/><stop offset=".48" stop-color="#5172b9" stop-opacity=".15"/><stop offset="1" stop-color="#a6a4ed"/>
+                  </linearGradient>
+                  <radialGradient id="proxy-emblem-glow">
+                    <stop stop-color="#43c5ff" stop-opacity=".65"/><stop offset=".35" stop-color="#289be9" stop-opacity=".24"/><stop offset="1" stop-color="#289be9" stop-opacity="0"/>
+                  </radialGradient>
+                  <!-- 保留超星标志的扇形展开与倾斜五角星，末端留窄缝，避免描边在星角粘连。 -->
+                  <!-- 底部共用起点 (80,143) 位于半径 63 的内圈上，与两侧充能弧衔接。 -->
+                  <path id="proxy-emblem-route-1" pathLength="100" d="M80 143C79 121 43 113 45 91C48 78 64 64 85.2 54.5"/>
+                  <path id="proxy-emblem-route-2" pathLength="100" d="M80 143C81 122 57 104 58 88C59 77 75 63 89 56"/>
+                  <path id="proxy-emblem-route-3" pathLength="100" d="M80 143C83 123 71 105 70 90C69 77 82 65 93 58"/>
+                  <path id="proxy-emblem-route-4" pathLength="100" d="M80 143C83 125 96 116 99 108C84 90 86 80 96 68.4"/>
+                  <path id="proxy-emblem-star-shape" d="M97.3 35.2L104.6 44.8L115.5 43.2L108.8 52.5L114.9 63.4L104 60.2L96.3 66.9L96.6 56.3L85.8 51.8L96 47.4Z"/>
+                </defs>
+                <g class="proxy-emblem-rings" fill="none">
+                  <circle cx="80" cy="80" r="72" stroke="#54749c" stroke-width=".6" opacity=".28"/>
+                  <circle cx="80" cy="80" r="68" stroke="url(#proxy-emblem-glint)" stroke-width=".8" opacity=".65"/>
+                  <circle cx="80" cy="80" r="63" stroke="#6283b0" stroke-width=".6" opacity=".28"/>
+                  <circle cx="80" cy="80" r="70" stroke="#89b8dc" stroke-width="1.5" pathLength="100" stroke-dasharray=".22 3.78" opacity=".28"/>
+                  <g stroke="url(#proxy-emblem-glint)" stroke-linecap="round">
+                    <path d="M22 47A67 67 0 0 1 57 17M109 140A67 67 0 0 1 43 136" stroke-width="1.8"/>
+                    <path d="M138 45A67 67 0 0 1 126 129" stroke-width="1.1"/>
+                  </g>
+                </g>
+                <g class="proxy-emblem-orbit" fill="none" stroke-linecap="round">
+                  <circle cx="80" cy="80" r="68" pathLength="100" stroke="url(#proxy-emblem-glint)" stroke-width="1.8" stroke-dasharray="13 37 6 44"/>
+                  <circle cx="80" cy="12" r="1.3" fill="#9bdfff" stroke="none"/>
+                </g>
+                <g class="proxy-emblem-nodes" fill="#96cbeb">
+                  <circle cx="45" cy="19" r="1"/><circle cx="150" cy="80" r="1.1"/>
+                  <circle cx="115" cy="141" r="1"/><circle cx="30" cy="130" r="1.1"/>
+                  <circle cx="10" cy="80" r=".8"/><circle cx="80" cy="10" r=".8"/>
+                </g>
+                <g class="proxy-emblem-mark" fill="none" stroke="url(#proxy-emblem-color)" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+                  <use href="#proxy-emblem-route-1"/><use href="#proxy-emblem-route-2"/>
+                  <use href="#proxy-emblem-route-3"/><use href="#proxy-emblem-route-4"/>
+                  <use href="#proxy-emblem-star-shape"/>
+                  <use href="#proxy-emblem-star-shape" transform="translate(48.48 24.96) scale(.52)" stroke-width=".8" opacity=".4"/>
+                </g>
+                <g class="proxy-emblem-feed" fill="none" stroke="#81defb" stroke-width="1.6" stroke-linecap="round">
+                  <path class="proxy-emblem-feed-line" pathLength="100" d="M48.5 134.56A63 63 0 0 0 80 143"/>
+                  <path class="proxy-emblem-feed-line" pathLength="100" d="M111.5 134.56A63 63 0 0 1 80 143"/>
+                </g>
+                <g class="proxy-emblem-source">
+                  <circle cx="80" cy="143" r="10" fill="url(#proxy-emblem-glow)"/>
+                  <circle cx="80" cy="143" r="1.5" fill="#b0eaff"/>
+                </g>
+                <g class="proxy-emblem-energy" fill="none" stroke="#b3ecff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <use class="proxy-emblem-stream" href="#proxy-emblem-route-1"/>
+                  <use class="proxy-emblem-stream" href="#proxy-emblem-route-2"/>
+                  <use class="proxy-emblem-stream" href="#proxy-emblem-route-3"/>
+                  <use class="proxy-emblem-stream" href="#proxy-emblem-route-4"/>
+                  <g class="proxy-emblem-star-energy">
+                    <circle cx="101" cy="52" r="19" fill="url(#proxy-emblem-glow)" stroke="none"/>
+                    <use href="#proxy-emblem-star-shape"/>
+                  </g>
+                </g>
+              </svg>
             </div>
             <div class="proxy-connect-copy">
               <span class="proxy-state-kicker">系统流量</span>

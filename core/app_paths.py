@@ -2,9 +2,12 @@
 """应用资源目录、当前用户数据目录与旧版数据迁移。"""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import sys
+import tempfile
 
 
 APP_NAME = 'CXVPNTools'
@@ -21,10 +24,12 @@ USER_DATA_DIRS = (
     'webview_data',
     'browser_data',
     'captcha_cache',
+    'routing',
     'routing_data',
     'rule-packs',
 )
 RULE_PACK_FILES = ('local-direct-v1.txt', 'cn-direct-v1.txt')
+MIGRATION_BACKUP_DIR = 'migration-backups'
 
 
 def resource_root():
@@ -67,6 +72,102 @@ def _copy_file_if_missing(source, target, copied, warnings):
         warnings.append(f'{source}: {type(exc).__name__}: {exc}')
 
 
+def _file_digest(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _valid_config_file(path):
+    try:
+        with open(path, encoding='utf-8-sig') as stream:
+            return isinstance(json.load(stream), dict)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+
+
+def _preserve_config_copy(source, target_root, digest, copied, warnings):
+    """把即将被舍弃的冲突配置保存在用户目录，返回备份路径。"""
+    modified_ns = os.stat(source).st_mtime_ns
+    backup = os.path.join(
+        target_root, MIGRATION_BACKUP_DIR,
+        f'config-{modified_ns}-{digest[:12]}.json')
+    _copy_file_if_missing(source, backup, copied, warnings)
+    return backup if os.path.isfile(backup) else ''
+
+
+def _replace_file(source, target):
+    directory = os.path.dirname(target)
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix='migration.', suffix='.tmp', dir=directory)
+    os.close(descriptor)
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _merge_config_file(source, target, target_root, copied, replaced,
+                       conflicts, blocking, warnings):
+    """合并主配置；不同内容按有效性和修改时间择新，并保留另一份。"""
+    if not os.path.isfile(source) or os.path.islink(source):
+        return
+    if not os.path.exists(target):
+        _copy_file_if_missing(source, target, copied, warnings)
+        return
+    try:
+        source_digest = _file_digest(source)
+        target_digest = _file_digest(target)
+        if source_digest == target_digest:
+            return
+
+        source_valid = _valid_config_file(source)
+        target_valid = _valid_config_file(target)
+        source_newer = os.stat(source).st_mtime_ns > os.stat(target).st_mtime_ns
+        use_source = source_valid and (not target_valid or source_newer)
+        discarded = target if use_source else source
+        discarded_digest = target_digest if use_source else source_digest
+        backup = _preserve_config_copy(
+            discarded, target_root, discarded_digest, copied, warnings)
+        if not backup:
+            blocking.append(
+                f'配置冲突副本保存失败，已保留当前配置: {source}')
+            conflicts.append({
+                'source': source,
+                'target': target,
+                'kept': target,
+                'backup': '',
+                'reason': 'backup-failed',
+            })
+            return
+        conflicts.append({
+            'source': source,
+            'target': target,
+            'kept': source if use_source else target,
+            'backup': backup,
+            'reason': ('target-invalid' if use_source and not target_valid else
+                       'source-newer' if use_source else
+                       'source-invalid' if not source_valid else
+                       'target-newer-or-equal'),
+        })
+        if use_source:
+            _replace_file(source, target)
+            replaced.append(target)
+    except OSError as exc:
+        warnings.append(f'{source}: {type(exc).__name__}: {exc}')
+
+
 def _merge_directory(source, target, copied, warnings):
     if not os.path.isdir(source) or _same_path(source, target):
         return
@@ -95,10 +196,14 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
                              bundled_rule_pack_root=None):
     """把便携目录和旧产品 LocalAppData 数据合并到当前用户目录。
 
-    迁移只复制目标中不存在的文件，不删除旧数据，也不跟随符号链接。
+    普通文件只复制目标中不存在的内容；配置冲突时保留有效且较新的版本，
+    并把另一版本备份到用户目录。不删除旧数据，也不跟随符号链接。
     """
     target_root = os.path.abspath(data_root or user_data_root())
     copied = []
+    replaced = []
+    conflicts = []
+    blocking = []
     warnings = []
     try:
         os.makedirs(target_root, exist_ok=True)
@@ -106,6 +211,9 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
         return {
             'data_root': target_root,
             'copied': copied,
+            'replaced': replaced,
+            'conflicts': conflicts,
+            'blocking': blocking,
             'warnings': [f'{target_root}: {type(exc).__name__}: {exc}'],
         }
 
@@ -123,9 +231,14 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
             continue
         seen.add(key)
         for filename in USER_DATA_FILES:
-            _copy_file_if_missing(
-                os.path.join(source_root, filename),
-                os.path.join(target_root, filename), copied, warnings)
+            source = os.path.join(source_root, filename)
+            target = os.path.join(target_root, filename)
+            if filename == 'config.json':
+                _merge_config_file(
+                    source, target, target_root, copied, replaced, conflicts,
+                    blocking, warnings)
+            else:
+                _copy_file_if_missing(source, target, copied, warnings)
         for dirname in USER_DATA_DIRS:
             _merge_directory(
                 os.path.join(source_root, dirname),
@@ -162,4 +275,11 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
             os.path.join(bundled, filename),
             os.path.join(target_root, 'rule-packs', filename),
             copied, warnings)
-    return {'data_root': target_root, 'copied': copied, 'warnings': warnings}
+    return {
+        'data_root': target_root,
+        'copied': copied,
+        'replaced': replaced,
+        'conflicts': conflicts,
+        'blocking': blocking,
+        'warnings': warnings,
+    }
