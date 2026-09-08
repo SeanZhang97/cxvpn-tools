@@ -3,6 +3,7 @@
 import datetime
 import json
 import os
+import queue
 import platform
 import sys
 import threading
@@ -26,6 +27,83 @@ from core.worker import Worker
 
 LOG_MAX = 500
 LOG_FILE_MAX = 2 * 1024 * 1024  # 运行日志文件上限 2MB, 超限截断保留尾部
+
+
+def _log_single_line(value):
+    """将单条事件规范化为一行，避免多行模型回复破坏日志结构。"""
+    return str(value).replace('\r', r'\r').replace('\n', r'\n')
+
+
+class _LogWriter:
+    """有界异步运行日志写入器，避免磁盘 I/O 阻塞业务线程。"""
+
+    def __init__(self, path, limit):
+        self.path = path
+        self.limit = limit
+        self._queue = queue.Queue(maxsize=2000)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name='run-log-writer', daemon=True)
+        self._thread.start()
+
+    def submit(self, line):
+        try:
+            self._queue.put_nowait(line)
+        except queue.Full:
+            # 日志不能反向阻塞业务；丢弃最旧的一条后保留最新证据。
+            try:
+                self._queue.get_nowait()
+                self._queue.put_nowait(line)
+            except queue.Empty:
+                pass
+
+    def _rotate_if_needed(self, stream):
+        if stream.tell() <= self.limit:
+            return stream
+        stream.close()
+        backup = self.path + '.1'
+        try:
+            if os.path.exists(backup):
+                os.replace(backup, self.path + '.2')
+            os.replace(self.path, backup)
+        except OSError:
+            pass
+        return open(self.path, 'a', encoding='utf-8')
+
+    def _run(self):
+        stream = None
+        try:
+            while not self._stop.is_set() or not self._queue.empty():
+                try:
+                    line = self._queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                try:
+                    if stream is None:
+                        stream = open(self.path, 'a', encoding='utf-8')
+                    stream.write(line + '\n')
+                    stream.flush()
+                    stream = self._rotate_if_needed(stream)
+                except (OSError, ValueError):
+                    # 日志是旁路能力，磁盘错误不能影响业务。
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except (OSError, ValueError):
+                            pass
+                    stream = None
+                finally:
+                    self._queue.task_done()
+        finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+    def close(self, timeout=2):
+        self._stop.set()
+        self._thread.join(timeout=max(0, timeout))
 
 
 def _safe_console_write(line):
@@ -80,6 +158,8 @@ class Api(RoutingTaskApi):
         self._ip_info_lock = threading.Lock()
         self._ip_info_thread = None
         self._ip_info_refresh_queued = False
+        self._ip_info_failures = 0
+        self._ip_info_retry_after = 0.0
         self._ip_info = {
             'loading': False,
             'checked_at': 0,
@@ -118,6 +198,8 @@ class Api(RoutingTaskApi):
             self._build_ui_snapshot, self.log,
             interval=1.5 if self.cfg.get('lightweight_mode') else 0.5)
         self._ui_state_stream._serializable = False
+        self._log_writer = _LogWriter(
+            os.path.join(cfgmod.BASE, 'run.log'), LOG_FILE_MAX)
 
     # ---------- 基础设施 ----------
     def _cfg_get(self):
@@ -132,22 +214,22 @@ class Api(RoutingTaskApi):
             cfgmod.save(self.cfg)
 
     def log(self, msg):
-        line = f'{datetime.datetime.now():%H:%M:%S} {msg}'
+        line = _log_single_line(
+            f'{datetime.datetime.now():%H:%M:%S} {msg}')
         with self._lock:
             self.logs.append(line)
             self._log_version = getattr(self, '_log_version', 0) + 1
             if len(self.logs) > LOG_MAX:
                 self.logs = self.logs[-LOG_MAX:]
-            # 运行日志同步落盘 run.log (供事后追溯, 含验证码等关键信息)
+        writer = getattr(self, '_log_writer', None)
+        if writer is not None:
+            writer.submit(line)
+        else:
+            # 兼容极简测试替身；正式 Api 在 __init__ 中使用异步写入器。
             try:
                 p = os.path.join(cfgmod.BASE, 'run.log')
-                with open(p, 'a', encoding='utf-8') as f:
-                    f.write(line + '\n')
-                if os.path.getsize(p) > LOG_FILE_MAX:
-                    with open(p, 'r', encoding='utf-8') as f:
-                        lines = f.readlines()[-2000:]
-                    with open(p, 'w', encoding='utf-8') as f:
-                        f.writelines(lines)
+                with open(p, 'a', encoding='utf-8') as stream:
+                    stream.write(line + '\n')
             except OSError:
                 pass
         _safe_console_write(line)
@@ -423,6 +505,9 @@ class Api(RoutingTaskApi):
             proxy_guard.mark_clean()
         except Exception as exc:
             self.log(f'[proxy] 清除代理脏标记失败: {exc}')
+        writer = getattr(self, '_log_writer', None)
+        if writer is not None:
+            writer.close()
 
     # ---------- 配置 ----------
     def get_config(self):
@@ -1186,7 +1271,8 @@ class Api(RoutingTaskApi):
         queued = False
         with self._ip_info_lock:
             checked_at = float(self._ip_info.get('checked_at') or 0)
-            stale = now - checked_at >= 300
+            stale = (now - checked_at >= 300 and
+                     now >= float(getattr(self, '_ip_info_retry_after', 0)))
             running = bool(self._ip_info.get('loading'))
             if running and force_refresh:
                 queued = not self._ip_info_refresh_queued
@@ -1221,6 +1307,8 @@ class Api(RoutingTaskApi):
                 incoming = result or ip_info._empty_entry('查询未返回结果')
                 with self._ip_info_lock:
                     previous = self._ip_info.get(name) or {}
+                    previous_ok = bool(previous.get('ok') and
+                                       not previous.get('stale'))
                     if not incoming.get('ok') and previous.get('ok'):
                         preserved = dict(previous)
                         preserved['stale'] = True
@@ -1230,9 +1318,10 @@ class Api(RoutingTaskApi):
                     completed += 1
                 outcome = '成功' if result and result.get('ok') else '失败'
                 elapsed = time.monotonic() - started_at
-                self.log(
-                    f'[ip] {labels.get(name, name)}查询{outcome}，'
-                    f'进度 {completed}/3，耗时 {elapsed:.2f} 秒')
+                if outcome == '失败' or not previous_ok:
+                    self.log(
+                        f'[ip] {labels.get(name, name)}查询{outcome}，'
+                        f'进度 {completed}/3，耗时 {elapsed:.2f} 秒')
 
             try:
                 result = ip_info.collect_ip_info(on_result=publish_result)
@@ -1251,6 +1340,15 @@ class Api(RoutingTaskApi):
                 rerun = self._ip_info_refresh_queued
                 self._ip_info_refresh_queued = False
                 self._ip_info['loading'] = bool(rerun)
+                if available < 3:
+                    self._ip_info_failures = min(
+                        6, int(getattr(self, '_ip_info_failures', 0)) + 1)
+                    delay = min(
+                        1800, 300 * (2 ** (self._ip_info_failures - 1)))
+                    self._ip_info_retry_after = time.time() + delay
+                else:
+                    self._ip_info_failures = 0
+                    self._ip_info_retry_after = 0.0
             elapsed = time.monotonic() - started_at
             if error:
                 self.log(
@@ -1260,6 +1358,10 @@ class Api(RoutingTaskApi):
                 self.log(
                     f'[ip] 网络出口信息刷新完成（{available}/3），'
                     f'耗时 {elapsed:.2f} 秒')
+            if not error and available < 3:
+                self.log(
+                    f'[ip] 部分探测失败，下一次刷新将退避 '
+                    f'{max(0, self._ip_info_retry_after - time.time()):.0f} 秒')
             if not rerun:
                 break
             self.log('[ip] 后台已领取排队的网络出口刷新请求')

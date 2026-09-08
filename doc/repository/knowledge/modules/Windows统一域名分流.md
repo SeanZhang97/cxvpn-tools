@@ -3,7 +3,7 @@
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
 界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
 关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置备份, 配置历史, 诊断包, DNS高级模式, nameserver-policy, 托盘快捷操作, 全局快捷键, 轻量模式
-最后验证：2026-09-06 | 分支：main
+最后验证：2026-09-08 | 分支：main
 
 ## 职责边界
 
@@ -581,6 +581,8 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   `MihomoActivityRelay` 通过 `/connections` WebSocket 中继当前活动连接与本次页面会话内最近关闭
   记录，字段限于目标主机/IP/端口、进程文件名、规则、规则载荷、代理链、流量和开始时间；支持
   搜索、排序、清空关闭历史以及通过后端 `DELETE /connections[/<id>]` 关闭连接。
+- 网络代理首页复用轻量遥测维护最近 60 秒的上下行速率采样，以同一纵轴绘制 SVG 趋势图；
+  代理未连接、正在连接或重连时清空采样并归零，避免把上一会话流量误显示为当前速率。
 - 一级“日志”页把 `/logs?level=debug` 的 Mihomo 核心日志与原程序运行日志分开。核心日志支持级别、
   搜索、暂停、清空和正倒序；Controller secret、订阅 URL、URL 凭据、敏感查询参数和 Bearer token
   在进入 UI 前脱敏，核心日志默认只保存在内存，不写入 `run.log`。

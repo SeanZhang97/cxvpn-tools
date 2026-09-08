@@ -253,7 +253,7 @@
     <section id="page-proxy" class="page standard-page proxy-page">
       <div class="proxy-view active" data-proxy-view="home">
         <div class="proxy-heading">
-          <header><span class="routing-eyebrow">BUILT-IN MIHOMO PROXY</span><h2>网络代理</h2><p>订阅、选点，然后一键连接</p></header>
+          <header><span class="routing-eyebrow">BUILT-IN MIHOMO PROXY</span><h2 class="module-title"><span class="module-icon module-icon-proxy" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.8 12h16.4M12 3.5c2.2 2.4 3.3 5.2 3.3 8.5s-1.1 6.1-3.3 8.5c-2.2-2.4-3.3-5.2-3.3-8.5S9.8 5.9 12 3.5Z"/></svg></span><span>网络代理</span></h2><p>订阅、选点，然后一键连接</p></header>
           <div class="proxy-service-state"><span id="proxy-service-dot" aria-hidden="true"></span><strong id="proxy-service-label" role="status" aria-live="polite" aria-atomic="true">正在检查服务</strong><button id="btn-proxy-refresh" class="btn ghost" type="button">刷新</button></div>
         </div>
 
@@ -348,17 +348,17 @@
           </div>
           <div class="proxy-current-stack">
             <button id="proxy-current-provider" class="proxy-current-row" type="button">
-              <span><small>当前订阅</small><strong id="proxy-provider-name">尚未配置</strong></span><em id="proxy-provider-meta">前往添加订阅</em>
+              <span class="proxy-current-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></span><span class="proxy-current-copy"><small>当前订阅</small><strong id="proxy-provider-name">尚未配置</strong></span><em id="proxy-provider-meta">前往添加订阅</em>
             </button>
             <button id="proxy-current-node" class="proxy-current-row" type="button">
-              <span><small>当前节点</small><strong id="proxy-node-name">等待选择</strong></span><em id="proxy-node-delay">查看节点</em>
+              <span class="proxy-current-icon proxy-current-icon-node" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span><span class="proxy-current-copy"><small>当前节点</small><strong id="proxy-node-name">等待选择</strong></span><em id="proxy-node-delay">查看节点</em>
             </button>
           </div>
         </section>
 
         <div class="proxy-dashboard-grid">
           <section class="proxy-summary-card">
-            <header><h3>订阅概览</h3><button id="btn-proxy-manage" type="button">管理订阅</button></header>
+            <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-subscription" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3.8h9l3 3V20H6z"/><path d="M15 3.8V7h3M9 11h6M9 14.5h6M9 18h3"/></svg></span><span>订阅概览</span></h3><button id="btn-proxy-manage" type="button">管理订阅</button></header>
             <dl class="proxy-summary-list">
               <div><dt>已启用订阅</dt><dd id="proxy-provider-count">0 个</dd></div>
               <div><dt>可选节点</dt><dd id="proxy-node-count">0 个</dd></div>
@@ -367,7 +367,7 @@
             <div id="proxy-subscription-health" class="proxy-subscription-health hidden" role="status" aria-live="polite"></div>
           </section>
           <section class="proxy-mode-card">
-            <header><h3>流量策略</h3><span id="proxy-mode-status">规则模式</span></header>
+            <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="18" cy="18" r="2.2"/><path d="M8.2 6h3.1a4 4 0 0 1 4 4v.1a4 4 0 0 0 4 4H18"/><path d="m13 10 2.3-2.3L17.6 10"/></svg></span><span>流量策略</span></h3><span id="proxy-mode-status">规则模式</span></header>
             <div class="proxy-mode-switch" role="radiogroup" aria-label="代理连接模式">
               <button type="button" class="active" data-proxy-mode="rule" role="radio" aria-checked="true">规则模式</button>
               <button type="button" data-proxy-mode="global" role="radio" aria-checked="false">全局模式</button>
@@ -380,7 +380,20 @@
             </dl>
           </section>
           <section class="proxy-traffic-card">
-            <header><h3>服务状态</h3><div class="proxy-status-pair" role="status" aria-live="polite" aria-atomic="true"><span id="proxy-session-state">正在检查</span><span id="proxy-stream-state" class="proxy-stream-state">等待服务</span></div></header>
+            <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-activity" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l2.1-6.5L13 18l2.3-6H21"/></svg></span><span>服务状态</span></h3><div class="proxy-status-pair" role="status" aria-live="polite" aria-atomic="true"><span id="proxy-session-state">正在检查</span><span id="proxy-stream-state" class="proxy-stream-state">等待服务</span></div></header>
+            <div class="proxy-rate-panel" aria-label="过去 60 秒实时速率趋势">
+              <div class="proxy-rate-panel-head">
+                <div class="proxy-rate-heading"><span class="proxy-rate-pulse" aria-hidden="true"></span><div><strong>实时速率</strong><small>过去 60 秒</small></div></div>
+                <div class="proxy-rate-legend" aria-hidden="true"><span class="proxy-rate-legend-up">上行</span><span class="proxy-rate-legend-down">下行</span></div>
+              </div>
+              <svg id="proxy-rate-chart" class="proxy-rate-chart" viewBox="0 0 360 104" preserveAspectRatio="none" role="img" aria-label="实时上行与下行速率趋势图">
+                <path class="proxy-rate-grid" d="M0 13.5H360M0 39.5H360M0 65.5H360M0 91.5H360"/>
+                <path id="proxy-upload-chart-fill" class="proxy-rate-area proxy-rate-area-up" d="M0 92L360 92Z"/>
+                <path id="proxy-download-chart-fill" class="proxy-rate-area proxy-rate-area-down" d="M0 92L360 92Z"/>
+                <path id="proxy-upload-chart" class="proxy-rate-line proxy-rate-line-up" d="M0 92L360 92"/>
+                <path id="proxy-download-chart" class="proxy-rate-line proxy-rate-line-down" d="M0 92L360 92"/>
+              </svg>
+            </div>
             <div class="proxy-traffic-values">
               <div><small>配置状态</small><strong id="proxy-config-state">未启用</strong></div>
               <div><small>服务进程</small><strong id="proxy-runtime-state">未运行</strong></div>
@@ -394,21 +407,21 @@
         </div>
 
         <section class="proxy-recent-card">
-          <header><h3>当前连接</h3><span id="proxy-current-mode">规则模式</span></header>
+          <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-connections" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 12h7"/></svg></span><span>当前连接</span></h3><span id="proxy-current-mode">规则模式</span></header>
           <div class="proxy-recent-row"><span class="proxy-health-dot"></span><strong id="proxy-recent-node">尚未连接代理节点</strong><span id="proxy-recent-delay">-- ms</span><small id="proxy-recent-source">等待服务启动</small></div>
         </section>
 
         <div class="proxy-shortcuts">
-          <button id="btn-proxy-subscriptions" type="button"><strong>管理订阅</strong><small>添加、更新或切换订阅</small><span>打开</span></button>
-          <button id="btn-proxy-nodes" type="button"><strong>查看全部节点</strong><small>搜索、测速并选择节点</small><span>打开</span></button>
-          <button id="btn-proxy-routing" type="button"><strong>高级分流</strong><small>配置域名与 Windows VPN 出口</small><span>打开</span></button>
+          <button id="btn-proxy-subscriptions" type="button"><span class="proxy-shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></span><span class="proxy-shortcut-copy"><strong>管理订阅</strong><small>添加、更新或切换订阅</small></span><span class="proxy-shortcut-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span></button>
+          <button id="btn-proxy-nodes" type="button"><span class="proxy-shortcut-icon proxy-shortcut-icon-node" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span><span class="proxy-shortcut-copy"><strong>查看全部节点</strong><small>搜索、测速并选择节点</small></span><span class="proxy-shortcut-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span></button>
+          <button id="btn-proxy-routing" type="button"><span class="proxy-shortcut-icon proxy-shortcut-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 6h3a4 4 0 0 1 4 4v.5a4 4 0 0 0 4 4"/><path d="m13 10 2-2 2 2"/></svg></span><span class="proxy-shortcut-copy"><strong>高级分流</strong><small>配置域名与 Windows VPN 出口</small></span><span class="proxy-shortcut-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span></button>
         </div>
       </div>
 
       <div class="proxy-view" data-proxy-view="nodes">
         <div class="proxy-subpage-heading">
           <button id="btn-proxy-nodes-back" class="btn ghost" type="button">返回网络代理</button>
-          <div><span class="routing-eyebrow">PROXY NODE LIBRARY</span><h2>全部节点</h2><p>按订阅筛选、测速并选择实际代理节点</p></div>
+          <div><span class="routing-eyebrow">PROXY NODE LIBRARY</span><h2 class="module-title"><span class="module-icon module-icon-nodes" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span><span>全部节点</span></h2><p>按订阅筛选、测速并选择实际代理节点</p></div>
           <div class="proxy-node-stats"><strong id="proxy-node-total">0</strong><span id="proxy-node-total-label">节点</span><strong id="proxy-node-alive-total">0</strong><span>可用</span></div>
         </div>
         <p id="routing-node-feedback" class="form-feedback routing-node-feedback" role="status" aria-live="polite"></p>
@@ -478,7 +491,7 @@
     </section>
 
     <section id="page-subscriptions" class="page standard-page routing-workspace-page">
-      <header class="routing-workspace-heading"><span class="routing-eyebrow">PROXY SUBSCRIPTIONS</span><h2>订阅</h2><p>集中管理订阅源、更新方式与节点选择策略</p></header>
+      <header class="routing-workspace-heading"><span class="routing-eyebrow">PROXY SUBSCRIPTIONS</span><h2 class="module-title"><span class="module-icon module-icon-subscription" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3.8h9l3 3V20H6z"/><path d="M15 3.8V7h3M9 11h6M9 14.5h6M9 18h3"/></svg></span><span>订阅</span></h2><p>集中管理订阅源、更新方式与节点选择策略</p></header>
       <div id="routing-subscriptions-mount"></div>
     </section>
 
@@ -487,17 +500,17 @@
     </section>
 
     <section id="page-rules" class="page standard-page routing-workspace-page">
-      <header class="routing-workspace-heading"><span class="routing-eyebrow">ROUTING RULES</span><h2>规则</h2><p>查看规则优先级、内置规则包与实际出口</p></header>
+      <header class="routing-workspace-heading"><span class="routing-eyebrow">ROUTING RULES</span><h2 class="module-title"><span class="module-icon module-icon-rules" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2.1"/><circle cx="15" cy="12" r="2.1"/><circle cx="11" cy="18" r="2.1"/></svg></span><span>规则</span></h2><p>查看规则优先级、内置规则包与实际出口</p></header>
       <div id="routing-rules-mount"></div>
     </section>
 
     <section id="page-connections" class="page standard-page activity-page">
-      <header class="activity-heading"><div><span class="routing-eyebrow">MIHOMO CONNECTIONS</span><h2>连接</h2><p>实时查看经过代理核心的活动连接与最近关闭记录</p></div><span id="connections-stream-state" class="activity-stream-state">等待页面激活</span></header>
+      <header class="activity-heading"><div><span class="routing-eyebrow">MIHOMO CONNECTIONS</span><h2 class="module-title"><span class="module-icon module-icon-connections" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6M12 9v6"/></svg></span><span>连接</span></h2><p>实时查看经过代理核心的活动连接与最近关闭记录</p></div><span id="connections-stream-state" class="activity-stream-state">等待页面激活</span></header>
       <div class="activity-metrics">
-        <div><span>活动连接</span><strong id="connections-active-count">0</strong></div>
-        <div><span>累计上传</span><strong id="connections-upload-total">0 B</strong></div>
-        <div><span>累计下载</span><strong id="connections-download-total">0 B</strong></div>
-        <div><span>最近关闭</span><strong id="connections-closed-count">0</strong></div>
+        <div><span class="activity-metric-label"><i aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 12h7"/></svg></i>活动连接</span><strong id="connections-active-count">0</strong></div>
+        <div><span class="activity-metric-label"><i class="upload" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 19V5M7 10l5-5 5 5"/></svg></i>累计上传</span><strong id="connections-upload-total">0 B</strong></div>
+        <div><span class="activity-metric-label"><i class="download" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M7 14l5 5 5-5"/></svg></i>累计下载</span><strong id="connections-download-total">0 B</strong></div>
+        <div><span class="activity-metric-label"><i class="closed" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/><circle cx="12" cy="12" r="9"/></svg></i>最近关闭</span><strong id="connections-closed-count">0</strong></div>
       </div>
       <section class="card activity-shell">
         <div class="activity-toolbar">
@@ -626,7 +639,7 @@
 
       <div id="routing-panel-rules" class="routing-tab-panel" role="tabpanel" aria-labelledby="routing-tab-rules" aria-hidden="true" data-routing-panel="rules">
         <section class="card routing-default-card">
-          <div class="routing-rules-head"><div><h3>默认出口与命中测试</h3><p>规则从上到下匹配；未命中时使用默认出口。仅支持域名，不支持 URL 路径。</p></div></div>
+          <div class="routing-rules-head"><div><h3 class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 4 4h-1"/></svg></span><span>默认出口与命中测试</span></h3><p>规则从上到下匹配；未命中时使用默认出口。仅支持域名，不支持 URL 路径。</p></div></div>
           <div class="routing-rule-tools">
             <div class="field grow"><label for="routing-default">未命中规则的默认出口</label><select id="routing-default"></select></div>
             <div class="field grow"><label for="routing-builtin-pack">本地规则包</label><select id="routing-builtin-pack"><option value="off">off</option><option value="local-direct-v1">local-direct-v1</option><option value="cn-direct-v1">cn-direct-v1（本地文件）</option></select></div>
@@ -636,7 +649,7 @@
           <div id="routing-test-result" class="routing-test-result hidden"></div>
         </section>
         <section class="card builtin-rules-card">
-          <div class="routing-rules-head builtin-rules-head"><div><h3>规则包明细（界面只读）</h3><p id="builtin-rules-description">选择规则包后，可在这里检查本地文件当前加载的规则。</p></div><span id="builtin-rules-count" class="builtin-rules-count">0 条</span></div>
+          <div class="routing-rules-head builtin-rules-head"><div><h3 class="card-title-with-icon"><span class="card-icon card-icon-rules" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h14M5 12h14M5 19h9"/><path d="M8 3v4M15 10v4M11 17v4"/></svg></span><span>规则包明细（界面只读）</span></h3><p id="builtin-rules-description">选择规则包后，可在这里检查本地文件当前加载的规则。</p></div><span id="builtin-rules-count" class="builtin-rules-count">0 条</span></div>
           <div class="builtin-rules-toolbar">
             <input id="builtin-rules-search" type="search" placeholder="搜索域名、网段或规则类型" aria-label="搜索内置规则">
             <select id="builtin-rules-type" aria-label="筛选内置规则类型"><option value="all">全部类型</option><option value="domain">域名规则</option><option value="ip">IP 网段</option></select>
@@ -647,7 +660,7 @@
           <div id="builtin-rules-empty" class="routing-empty">当前规则包不包含规则。</div>
         </section>
         <section class="card routing-rules-card">
-          <div class="routing-rules-head"><div><h3>有序域名规则</h3><p>精确域名、域名后缀和通配符均可配置；越靠上优先级越高。</p></div><button id="btn-routing-add" class="btn ghost">＋ 添加规则</button></div>
+          <div class="routing-rules-head"><div><h3 class="card-title-with-icon"><span class="card-icon card-icon-rules" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h10M5 18h6"/><circle cx="18" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></svg></span><span>有序域名规则</span></h3><p>精确域名、域名后缀和通配符均可配置；越靠上优先级越高。</p></div><button id="btn-routing-add" class="btn ghost">＋ 添加规则</button></div>
           <div id="routing-rules" class="routing-rules"></div>
           <div id="routing-rules-empty" class="routing-empty">尚未添加规则，全部流量使用默认出口。</div>
         </section>
@@ -655,7 +668,7 @@
 
       <div id="routing-panel-providers" class="routing-tab-panel" role="tabpanel" aria-labelledby="routing-tab-providers" aria-hidden="true" data-routing-panel="providers">
         <section class="card routing-providers-card">
-          <div class="routing-rules-head"><div><h3>代理订阅</h3><p>添加后可直接获取并预览节点，无需启用 TUN；保存应用后才参与实际分流。</p></div><button id="btn-routing-provider-add" class="btn ghost">＋ 添加订阅</button></div>
+          <div class="routing-rules-head"><div><h3 class="card-title-with-icon"><span class="card-icon card-icon-subscription" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></span><span>代理订阅</span></h3><p>添加后可直接获取并预览节点，无需启用 TUN；保存应用后才参与实际分流。</p></div><button id="btn-routing-provider-add" class="btn ghost">＋ 添加订阅</button></div>
           <div id="routing-providers" class="routing-providers"></div>
           <div id="routing-providers-empty" class="routing-empty">尚未添加代理订阅，仅可使用物理网络或 Windows VPN。</div>
         </section>

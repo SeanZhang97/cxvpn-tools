@@ -1239,7 +1239,12 @@ def _provider_proxy_catalog(payload):
             if not isinstance(node, dict):
                 continue
             node_name = str(node.get('name') or '')
-            if not node_name:
+            # Controller 的 /providers/proxies 在新版 Mihomo 中会同时返回
+            # provider 节点和策略组对象（AUTO-*、PROXY-* 等）。策略组不是
+            # 可选代理节点，必须在目录归一化阶段排除，避免聚合组把它们混入
+            # 全部节点列表或持久化快照。
+            if (not node_name or node_name.upper() in _NON_PROXY_NAMES
+                    or _is_proxy_group(node)):
                 continue
             catalog[node_name] = {
                 **node, 'provider_name': str(provider_name or '')}
@@ -1259,6 +1264,65 @@ def _resolve_selected_proxy(proxies, selected, maximum_depth=8):
             break
         current = str(item.get('now') or current)
     return current
+
+
+_PROXY_GROUP_TYPES = {
+    'select', 'url-test', 'fallback', 'load-balance', 'relay', 'smart',
+    'compatibility',
+}
+_NON_PROXY_NAMES = frozenset({
+    'DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'PHYSICAL',
+})
+
+
+def _is_proxy_group(value):
+    """判断 Controller 返回的代理对象是否为策略组而非真实节点。"""
+    if not isinstance(value, dict):
+        return False
+    return ('all' in value or str(value.get('type') or '').strip().lower()
+            in _PROXY_GROUP_TYPES)
+
+
+def _expand_proxy_names(proxies, names, maximum_depth=8):
+    """展开运行态策略组，只保留叶子节点名称并去重。"""
+    result = []
+    emitted = set()
+
+    def visit(raw_name, depth, ancestors):
+        name = str(raw_name or '').strip()
+        if not name or name.upper() in _NON_PROXY_NAMES or name in ancestors:
+            return
+        item = proxies.get(name)
+        if (_is_proxy_group(item) and depth < maximum_depth):
+            children = item.get('all')
+            if isinstance(children, list):
+                next_ancestors = ancestors | {name}
+                for child in children:
+                    visit(child, depth + 1, next_ancestors)
+                return
+        if _is_proxy_group(item):
+            return
+        if name not in emitted:
+            emitted.add(name)
+            result.append(name)
+
+    for name in names or []:
+        visit(name, 0, set())
+    return result
+
+
+def _provider_catalog_names(catalog, provider_id, prefix=''):
+    """按 provider key 优先筛选节点，兼容旧核心缺少名称前缀的返回。"""
+    expected_provider = f'provider-{provider_id}'
+    names = []
+    for name, node in (catalog or {}).items():
+        if not isinstance(node, dict):
+            continue
+        provider_name = str(node.get('provider_name') or '').strip()
+        if provider_name == expected_provider or (
+                prefix and str(name).startswith(prefix)):
+            names.append(str(name))
+    return names
 
 
 def _history_tested_at(history_item):
@@ -1567,9 +1631,25 @@ if ($service) {{
             prefix = '' if group_id == 'all' else f'[{display_name}] '
             provider = next((item for item in normalized['proxy_providers']
                              if item['id'] == group_id), None)
-            node_names = list(group.get('all') or [])
-            if provider and _auto_policy.is_enabled(provider):
-                node_names = [name for name in provider_catalog if name.startswith(prefix)]
+            # /proxies 的 all 可能暂时指向旧配置留下的 AUTO-* 策略组（例如
+            # 用户刚从自动优选切到手动模式，常驻核心尚未重载配置）。先递归
+            # 展开组成员，避免把策略组本身伪装成真实节点；provider 接口可用
+            # 时再合并其完整节点目录，补回尚未出现在运行态组中的节点。
+            node_names = _expand_proxy_names(
+                proxies, group.get('all') or [])
+            if provider:
+                catalog_names = _provider_catalog_names(
+                    provider_catalog, provider['id'], prefix)
+                if _auto_policy.is_enabled(provider):
+                    node_names = catalog_names
+                elif catalog_names:
+                    node_names = list(dict.fromkeys(
+                        [*node_names, *catalog_names]))
+            elif provider_catalog:
+                # 全部代理组通常只列出各订阅的上层组；当其中某个订阅仍是
+                # 旧 AUTO-* 结构时，直接从 provider 目录补齐真实叶子节点。
+                node_names = list(dict.fromkeys(
+                    [*node_names, *provider_catalog]))
             for node_name in node_names:
                 generic_node = proxies.get(node_name)
                 node = (generic_node if isinstance(generic_node, dict)
@@ -1592,12 +1672,18 @@ if ($service) {{
                         node.get('provider-name') or
                         node.get('provider_name') or ''),
                 })
+            selected = _resolve_selected_proxy(
+                proxies, group.get('now') or '')
+            # 运行态选择仍可能停留在已淘汰的内部策略组。UI 只能把真实叶子
+            # 节点标记为当前节点，避免显示 AUTO-…-FALLBACK 之类内部名称。
+            if (selected not in node_names and
+                    _is_proxy_group(proxies.get(selected))):
+                selected = ''
             result.append({
                 'id': group_id,
                 'name': display_name,
                 'strategy': strategy,
-                'selected': _resolve_selected_proxy(
-                    proxies, group.get('now') or ''),
+                'selected': selected,
                 'nodes': nodes,
                 'alive_count': len([
                     item for item in nodes if item['alive'] is True]),

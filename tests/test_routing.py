@@ -1076,6 +1076,49 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(node['tested_at'], 1_788_237_296)
         self.assertEqual(node['provider_name'], 'provider-default')
 
+    def test_proxy_overview_excludes_strategy_groups_from_provider_catalog(self):
+        config = routing.normalize_config(self.base_config())
+        manager = routing.RoutingManager()
+        node_name = '[默认订阅] 节点 A'
+        proxies = {
+            'PROXY': {
+                'all': ['PROXY-default', 'DIRECT', 'REJECT', 'PHYSICAL'],
+                'now': 'PROXY-default',
+            },
+            'PROXY-default': {
+                'all': ['AUTO-default-1-FALLBACK'],
+                'now': node_name,
+            },
+            'AUTO-default-1-FALLBACK': {
+                'type': 'fallback', 'all': [node_name], 'now': node_name,
+            },
+            node_name: {'type': 'Vless', 'alive': True,
+                        'history': [{'delay': 48}]},
+        }
+        provider_payload = {'providers': {
+            'AUTO-default-1-FALLBACK': {'proxies': [
+                {'name': 'AUTO-default-1-PINNED', 'type': 'Fallback'}]},
+            'PROXY-default': {'proxies': [
+                {'name': 'PROXY-default', 'type': 'Fallback'}]},
+            'provider-default': {'proxies': [{
+                'name': node_name, 'provider-name': 'provider-default',
+                'type': 'Vless', 'alive': True,
+                'history': [{'delay': 48}],
+            }, {
+                'name': 'PHYSICAL', 'provider-name': 'provider-default',
+                'type': 'direct',
+            }]},
+        }}
+        with mock.patch.object(
+                manager, '_controller_request',
+                side_effect=[{'proxies': proxies}, provider_payload]):
+            groups = manager.proxy_overview(config)
+
+        aggregate = next(item for item in groups if item['id'] == 'all')
+        self.assertEqual([item['name'] for item in aggregate['nodes']],
+                         [node_name])
+        self.assertEqual(aggregate['alive_count'], 1)
+
     def test_single_provider_node_uses_provider_healthcheck_endpoint(self):
         config = routing.normalize_config(self.base_config())
         manager = routing.RoutingManager()

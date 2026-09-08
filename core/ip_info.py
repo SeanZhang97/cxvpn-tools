@@ -2,6 +2,8 @@
 """采集本机、国内探测点和海外探测点看到的 IPv4 出口信息。"""
 import json
 import ipaddress
+import threading
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -14,6 +16,9 @@ _OVERSEAS_TRACE_URLS = (
     'https://cloudflare.com/cdn-cgi/trace',
     'https://www.cloudflare.com/cdn-cgi/trace',
 )
+_METADATA_CACHE_TTL = 900
+_metadata_cache = {}
+_metadata_cache_lock = threading.Lock()
 
 
 def _empty_entry(error=''):
@@ -218,22 +223,58 @@ def query_domestic():
 
 
 def query_overseas():
-    errors = []
     bypass_proxy = not _system_proxy_for_active_tunnel()
-    for url in _OVERSEAS_TRACE_URLS:
-        try:
-            result = _parse_cloudflare_trace(
-                _request_text(url, bypass_proxy=bypass_proxy))
+    # 两个 Cloudflare 入口并发竞速，避免主入口慢时串行等待两个 6 秒超时。
+    pool = ThreadPoolExecutor(
+        max_workers=len(_OVERSEAS_TRACE_URLS), thread_name_prefix='ip-trace')
+    futures = {}
+    try:
+        futures = {
+            pool.submit(_request_text, url, bypass_proxy=bypass_proxy): url
+            for url in _OVERSEAS_TRACE_URLS}
+        errors = []
+        for future in as_completed(futures):
+            url = futures[future]
+            try:
+                payload = future.result()
+                result = _parse_cloudflare_trace(payload)
+            except Exception as error:
+                errors.append(f'{url}: {error}')
+                continue
+            address = result['ip']
+            with _metadata_cache_lock:
+                cached = _metadata_cache.get(address)
+                fresh = (cached and time.monotonic() - cached[0]
+                         < _METADATA_CACHE_TTL)
+            if fresh:
+                result.update(cached[1])
+                return result
             try:
                 metadata = _parse_overseas(_request_json(
-                    f'https://ipapi.co/{result["ip"]}/json/'))
+                    f'https://ipapi.co/{address}/json/'))
                 result['location'] = metadata['location']
                 result['provider'] = metadata['provider']
+                with _metadata_cache_lock:
+                    now = time.monotonic()
+                    for key, value in list(_metadata_cache.items()):
+                        if now - value[0] >= _METADATA_CACHE_TTL:
+                            _metadata_cache.pop(key, None)
+                    if len(_metadata_cache) >= 128:
+                        oldest = min(_metadata_cache,
+                                     key=lambda key: _metadata_cache[key][0])
+                        _metadata_cache.pop(oldest, None)
+                    _metadata_cache[address] = (time.monotonic(), {
+                        'location': result['location'],
+                        'provider': result['provider'],
+                    })
             except Exception as error:
                 result['error'] = f'位置查询失败: {error}'
             return result
-        except Exception as error:
-            errors.append(f'{url}: {error}')
+    finally:
+        for future in futures:
+            future.cancel()
+        # 已领取的网络请求受 6 秒 socket 超时约束，不等待慢入口拖延赢家。
+        pool.shutdown(wait=False, cancel_futures=True)
     return _empty_entry('; '.join(errors) or '海外探测点不可用')
 
 

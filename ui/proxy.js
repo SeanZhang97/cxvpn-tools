@@ -11,6 +11,8 @@
   let latestObservability = null;
   let telemetryState = { phase: 'idle' };
   let telemetryData = { up: 0, down: 0, upTotal: 0, downTotal: 0 };
+  const RATE_WINDOW_MS = 60 * 1000;
+  let rateHistory = { up: [], down: [] };
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value || {}));
@@ -142,6 +144,50 @@
     if (element) element.textContent = value;
   }
 
+  function resetRateHistory() {
+    rateHistory = { up: [], down: [] };
+  }
+
+  function ratePath(samples, maxValue, closeArea = false, now = Date.now()) {
+    const width = 360;
+    const baseline = 92;
+    const top = 10;
+    const usableHeight = baseline - top;
+    const scale = Math.max(1, Number(maxValue) || 1);
+    const start = now - RATE_WINDOW_MS;
+    const points = samples.map(sample => {
+      const x = width * Math.max(0, Math.min(1, (sample.time - start) / RATE_WINDOW_MS));
+      const normalized = Math.max(0, Math.min(1, Number(sample.value || 0) / scale));
+      const y = baseline - normalized * usableHeight;
+      return [x, y];
+    });
+    if (!points.length) return `M0 ${baseline}L${width} ${baseline}`;
+    const line = points.map(([x, y], index) => `${index ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+    if (!closeArea) {
+      if (points.length > 1) return line;
+      return `${line}l.1 0`;
+    }
+    const firstX = points[0][0].toFixed(1);
+    const lastX = points[points.length - 1][0].toFixed(1);
+    return `M${firstX} ${baseline} ${line.replace(/^M/, 'L')} L${lastX} ${baseline} Z`;
+  }
+
+  function renderRateChart() {
+    const upload = byId('proxy-upload-chart');
+    const download = byId('proxy-download-chart');
+    const uploadFill = byId('proxy-upload-chart-fill');
+    const downloadFill = byId('proxy-download-chart-fill');
+    if (!upload || !download || !uploadFill || !downloadFill) return;
+    const now = Date.now();
+    const max = Math.max(1, ...rateHistory.up.map(item => item.value), ...rateHistory.down.map(item => item.value));
+    upload.setAttribute('d', ratePath(rateHistory.up, max, false, now));
+    download.setAttribute('d', ratePath(rateHistory.down, max, false, now));
+    uploadFill.setAttribute('d', ratePath(rateHistory.up, max, true, now));
+    downloadFill.setAttribute('d', ratePath(rateHistory.down, max, true, now));
+    const chart = byId('proxy-rate-chart');
+    if (chart) chart.setAttribute('aria-label', `实时上行 ${window.RoutingTelemetryTools?.formatRate?.(telemetryData.up) || '0 B/s'}，下行 ${window.RoutingTelemetryTools?.formatRate?.(telemetryData.down) || '0 B/s'}，过去 60 秒趋势图`);
+  }
+
   function renderOperationNotice() {
     const notice = byId('proxy-operation-notice');
     if (!notice) return;
@@ -172,6 +218,7 @@
     const tools = window.RoutingTelemetryTools;
     setText('proxy-upload-rate', tools?.formatRate?.(telemetryData.up) || '0 B/s');
     setText('proxy-download-rate', tools?.formatRate?.(telemetryData.down) || '0 B/s');
+    renderRateChart();
     const state = byId('proxy-stream-state');
     if (!state) return;
     const labels = {
@@ -186,6 +233,12 @@
 
   function updateTelemetry(data) {
     telemetryData = { ...telemetryData, ...(data || {}) };
+    const now = Date.now();
+    const cutoff = now - RATE_WINDOW_MS;
+    rateHistory.up.push({ time: now, value: Math.max(0, Number(telemetryData.up) || 0) });
+    rateHistory.down.push({ time: now, value: Math.max(0, Number(telemetryData.down) || 0) });
+    rateHistory.up = rateHistory.up.filter(item => item.time >= cutoff);
+    rateHistory.down = rateHistory.down.filter(item => item.time >= cutoff);
     renderTelemetry();
   }
 
@@ -193,6 +246,7 @@
     telemetryState = state || { phase: 'idle' };
     if (telemetryState.phase !== 'connected') {
       telemetryData = { up: 0, down: 0, upTotal: 0, downTotal: 0 };
+      resetRateHistory();
     }
     renderTelemetry();
   }

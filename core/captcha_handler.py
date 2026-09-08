@@ -23,6 +23,7 @@ import os
 import re
 import statistics
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -31,6 +32,34 @@ try:
     from . import config as _cfg
 except ImportError:  # 直接运行旧目录时兼容
     import config as _cfg
+
+
+_VLM_TIMEOUT = 35
+_VLM_CIRCUIT_THRESHOLD = 3
+_VLM_CIRCUIT_COOLDOWN = 120
+_vlm_state_lock = threading.Lock()
+_vlm_failures = 0
+_vlm_block_until = 0.0
+
+
+def _vlm_circuit_open():
+    with _vlm_state_lock:
+        return time.monotonic() < _vlm_block_until
+
+
+def _vlm_mark_success():
+    global _vlm_failures, _vlm_block_until
+    with _vlm_state_lock:
+        _vlm_failures = 0
+        _vlm_block_until = 0.0
+
+
+def _vlm_mark_failure():
+    global _vlm_failures, _vlm_block_until
+    with _vlm_state_lock:
+        _vlm_failures += 1
+        if _vlm_failures >= _VLM_CIRCUIT_THRESHOLD:
+            _vlm_block_until = time.monotonic() + _VLM_CIRCUIT_COOLDOWN
 
 PROMPT = """Two images are provided.
 Image 1: a 2x-enlarged icon-click CAPTCHA sprite. Its TOP 2/3 (the photo
@@ -879,7 +908,9 @@ class VlmUnavailableError(RuntimeError):
     """视觉模型服务当前不可用，应立即降级到人工点选。"""
 
 
-def _vlm_call(sprite_bytes, cfg, timeout=60, log=None, tip_bytes=None):
+def _vlm_call(sprite_bytes, cfg, timeout=_VLM_TIMEOUT, log=None, tip_bytes=None):
+    if _vlm_circuit_open():
+        raise VlmUnavailableError('视觉模型连续失败，已暂时熔断')
     up = _upscale_sprite(sprite_bytes)
     b64 = base64.b64encode(up).decode()
     content = [{'type': 'text',
@@ -922,12 +953,15 @@ def _vlm_call(sprite_bytes, cfg, timeout=60, log=None, tip_bytes=None):
             body = ''
         if log:
             log(f'[vlm] HTTP {e.code} {endpoint}: {body or e.reason}')
+        _vlm_mark_failure()
         raise VlmUnavailableError(
             f'HTTP {e.code}: {body or e.reason}') from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         if log:
             log(f'[vlm] 连接失败 {endpoint}: {e}')
+        _vlm_mark_failure()
         raise VlmUnavailableError(str(e)) from e
+    _vlm_mark_success()
     msg = data['choices'][0]['message']
     content = msg.get('content') or ''
     if log:
@@ -1594,7 +1628,8 @@ def _hybrid_shape_scores(sprite_bytes, comps, order):
         return None
 
 
-def _ai_name_order(marked_dataurl, guides, cfg, log=print, timeout=60,
+def _ai_name_order(marked_dataurl, guides, cfg, log=print,
+                   timeout=_VLM_TIMEOUT,
                    candidate_count=None, prompt_text=None,
                    require_name_match=False):
     """AI 视觉匹配: 指令图标 -> 主图编号序列; 返回 [n1,n2,n3] 或 None
@@ -1604,6 +1639,8 @@ def _ai_name_order(marked_dataurl, guides, cfg, log=print, timeout=60,
     [(bytes, mime) x1] 整条指令行模式 (HYBRID_PROMPT_STRIP)。
     旧版要求 AI 先命名再词汇对齐, 小图标命名易错; 单步直接匹配收窄错误面。
     """
+    if _vlm_circuit_open():
+        raise VlmUnavailableError('视觉模型连续失败，已暂时熔断')
     prompt = prompt_text or (
         HYBRID_PROMPT if len(guides) == 3 else HYBRID_PROMPT_STRIP)
     if candidate_count:
@@ -1645,12 +1682,15 @@ def _ai_name_order(marked_dataurl, guides, cfg, log=print, timeout=60,
             body = ''
         if log:
             log(f'[vlm] HTTP {e.code} {endpoint}: {body or e.reason}')
+        _vlm_mark_failure()
         raise VlmUnavailableError(
             f'HTTP {e.code}: {body or e.reason}') from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         if log:
             log(f'[vlm] 连接失败 {endpoint}: {e}')
+        _vlm_mark_failure()
         raise VlmUnavailableError(str(e)) from e
+    _vlm_mark_success()
     msg = data['choices'][0]['message']
     text = msg.get('content') or ''
     if log:

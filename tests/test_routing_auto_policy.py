@@ -209,6 +209,80 @@ class RoutingAutoPolicyTests(unittest.TestCase):
         self.assertEqual(group['nodes'][0]['display_name'],
                          '日本东京08｜高速专线推荐')
 
+    def test_manual_overview_ignores_stale_auto_group_and_uses_provider_catalog(self):
+        """切换手动模式后，旧 AUTO-* 组不得被当成节点展示。"""
+        config = policy_config()
+        provider = config['proxy_providers'][0]
+        provider['selection_mode'] = 'manual'
+        provider['selected_node'] = '日本东京 01'
+        node_a = '[订阅一] 日本东京 01'
+        node_b = '[订阅一] 美国洛杉矶 01'
+        stale_group = 'AUTO-alpha-1-FALLBACK'
+        proxies = {
+            'PROXY-alpha': {
+                'all': [stale_group], 'now': stale_group,
+            },
+            # 常驻核心尚未重载手动配置时，这个内部组可能没有可展开的
+            # all 成员；真实节点仍会由 /providers/proxies 返回。
+            stale_group: {'type': 'fallback', 'now': stale_group},
+        }
+        provider_payload = {'providers': {'provider-alpha': {'proxies': [
+            {'name': node_a, 'provider-name': 'provider-alpha',
+             'alive': True, 'history': [{'delay': 42}]},
+            {'name': node_b, 'provider-name': 'provider-alpha',
+             'alive': True, 'history': [{'delay': 88}]},
+        ]}}}
+        manager = routing.RoutingManager()
+        with mock.patch.object(
+                manager, '_controller_request',
+                side_effect=[{'proxies': proxies}, provider_payload]):
+            groups = manager.proxy_overview(config)
+
+        group = next(item for item in groups if item['id'] == 'alpha')
+        self.assertEqual([item['name'] for item in group['nodes']],
+                         [node_a, node_b])
+        self.assertNotIn(stale_group,
+                         [item['name'] for item in group['nodes']])
+        self.assertEqual(group['selected'], '')
+
+    def test_proxy_overview_expands_nested_groups_before_catalog_merge(self):
+        config = policy_config()
+        node_a = '[订阅一] 日本东京 01'
+        node_b = '[订阅一] 美国洛杉矶 01'
+        proxies = {
+            'PROXY-alpha': {
+                'all': ['AUTO-alpha-1-FALLBACK'],
+                'now': 'AUTO-alpha-1-FALLBACK',
+            },
+            'AUTO-alpha-1-FALLBACK': {
+                'type': 'fallback',
+                'all': ['AUTO-alpha-1-REGION'],
+                'now': 'AUTO-alpha-1-REGION',
+            },
+            'AUTO-alpha-1-REGION': {
+                'type': 'url-test',
+                'all': [node_a],
+                'now': node_a,
+            },
+            node_a: {'alive': True, 'history': [{'delay': 31}]},
+        }
+        provider_payload = {'providers': {'provider-alpha': {'proxies': [
+            {'name': node_a, 'provider-name': 'provider-alpha',
+             'alive': True, 'history': [{'delay': 31}]},
+            {'name': node_b, 'provider-name': 'provider-alpha',
+             'alive': True, 'history': [{'delay': 66}]},
+        ]}}}
+        manager = routing.RoutingManager()
+        with mock.patch.object(
+                manager, '_controller_request',
+                side_effect=[{'proxies': proxies}, provider_payload]):
+            groups = manager.proxy_overview(config)
+
+        group = next(item for item in groups if item['id'] == 'alpha')
+        self.assertEqual([item['name'] for item in group['nodes']],
+                         [node_a, node_b])
+        self.assertEqual(group['selected'], node_a)
+
 
 if __name__ == '__main__':
     unittest.main()

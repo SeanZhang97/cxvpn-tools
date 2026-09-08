@@ -46,7 +46,10 @@ window.addEventListener('pywebviewready', async () => {
     await loadDesktopSettings();
     await syncBrowserVisibility();
     await startUiStateSubscription();
-    setInterval(() => void refreshIpInfo(), 60000);
+    // 后端缓存窗口为 5 分钟；仅总览页需要网络出口数据，隐藏页面不重复触发探测。
+    setInterval(() => {
+      if (curPage === 'overview') void refreshIpInfo();
+    }, 300000);
   } catch (e) {
     console.error(e);
     toast({ ok: false, msg: `界面初始化失败：${friendlyError(e)}` });
