@@ -309,6 +309,19 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(provider['nodes'][0]['delay'], 68)
         self.assertEqual(provider['alive_count'], 1)
 
+    def test_runtime_alive_without_history_is_not_reported_as_tested(self):
+        config = routing.normalize_config(self.base_config())
+        node_name = '[默认订阅] 香港 01'
+        payload = {'proxies': {
+            'PROXY': {'all': [node_name], 'now': node_name},
+            'PROXY-default': {'all': [node_name], 'now': node_name},
+            node_name: {'alive': True, 'history': []},
+        }}
+        manager = routing.RoutingManager()
+        with mock.patch.object(manager, '_controller_request', return_value=payload):
+            groups = manager.proxy_overview(config)
+        self.assertFalse(groups[1]['nodes'][0]['tested'])
+
     def test_explains_domain_with_ordered_match_and_default(self):
         config = self.base_config()
 
@@ -1047,6 +1060,7 @@ class RoutingConfigTests(unittest.TestCase):
         health_path = next(call.args[1] for call in request.call_args_list
                            if '/healthcheck?' in call.args[1])
         self.assertIn('/providers/proxies/provider-default/', health_path)
+
 
     def test_proxy_overview_merges_provider_only_nodes(self):
         config = routing.normalize_config(self.base_config())

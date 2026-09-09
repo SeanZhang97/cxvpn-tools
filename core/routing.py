@@ -1699,7 +1699,12 @@ if ($service) {{
                     'delay': delay if isinstance(delay, int) and delay > 0 else 0,
                     'alive': (node.get('alive')
                               if isinstance(node.get('alive'), bool) else None),
-                    'tested': isinstance(node.get('alive'), bool),
+                    # Mihomo may expose a stale/default alive flag before the
+                    # first health-check history entry. It must not be shown
+                    # as a completed test in the node workspace.
+                    'tested': bool(history and isinstance(last, dict) and
+                                   (_history_tested_at(last) or
+                                    isinstance(last.get('delay'), int))),
                     'tested_at': _history_tested_at(last),
                     'type': str(node.get('type') or ''),
                     'provider_name': str(

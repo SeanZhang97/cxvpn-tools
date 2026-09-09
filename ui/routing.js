@@ -47,6 +47,21 @@
   const byId = id => document.getElementById(id);
   const backend = () => window.pywebview.api;
   const nodeTools = window.RoutingNodeTools;
+
+  function formatNodeCheckedAt(value) {
+    const timestamp = Number(value);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return '上次检查：未记录';
+    const date = new Date(timestamp * 1000);
+    if (Number.isNaN(date.getTime())) return '上次检查：未记录';
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      second: '2-digit', hour12: false,
+    }).formatToParts(date).reduce((result, part) => {
+      result[part.type] = part.value;
+      return result;
+    }, {});
+    return `上次检查：${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+  }
   let openSelect = null;
   let selectSequence = 0;
 
@@ -569,7 +584,7 @@
         const stageNodes = autoPolicyStageNodes(stage);
         stageNodes.forEach(node => {
           const name = autoPolicyNodeText(node);
-          const detail = node.alive === false ? '最近检测不可用' : Number(node.delay) > 0 ? `${node.delay} ms` : '未测速';
+          const detail = `${node.alive === false ? '最近检测不可用' : Number(node.delay) > 0 ? `${node.delay} ms` : '未测速'} · ${formatNodeCheckedAt(node.tested_at).replace('上次检查：', '')}`;
           preferredNode.append(option(name, name, detail));
         });
         if (stage.preferred_node && !stageNodes.some(node => autoPolicyNodeText(node) === stage.preferred_node)) {
@@ -1705,8 +1720,12 @@
           : !node.tested ? '未测速' : node.delay ? `${node.delay} ms`
           : node.alive === true ? '可用 / 无延迟' : node.alive === false ? '不可用' : '未测速';
         head.append(identity, delay);
-        const meta = document.createElement('small');
-        meta.textContent = `${node.type || '代理节点'}${group.preview ? ' · 已持久化节点' : ''}`;
+        const meta = document.createElement('div'); meta.className = 'routing-node-meta';
+        const type = document.createElement('small');
+        type.textContent = `${node.type || '代理节点'}${group.preview ? ' · 已持久化节点' : ''}`;
+        const checkedAt = document.createElement('small'); checkedAt.className = 'routing-node-checked-at';
+        checkedAt.textContent = formatNodeCheckedAt(node.tested_at);
+        meta.append(type, checkedAt);
         const action = document.createElement('div'); action.className = 'routing-node-action';
         const badge = document.createElement('span');
         badge.textContent = runtimeSelected ? '当前使用' : manualSelected ? '待启用' : provider?.selection_mode === 'auto' ? '自动模式候选' : '可设为目标节点';
