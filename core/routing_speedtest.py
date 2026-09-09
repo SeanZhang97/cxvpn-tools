@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import re
 import threading
 import time
@@ -18,6 +19,11 @@ METADATA_NODE_RE = re.compile(
     r'(?:GB|MB|TB)\s*(?:剩余|可用)|(?:距离|下次).*重置|'
     r'\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}', re.I)
 JOB_TTL_SECONDS = 15 * 60
+# Keep the controller request timeout slightly above Mihomo's healthcheck
+# timeout.  These are intentionally module constants so callers can opt into
+# a different budget without having to duplicate the endpoint contract.
+DEFAULT_HEALTHCHECK_TIMEOUT_MS = 10_000
+DEFAULT_NODE_REQUEST_TIMEOUT_SECONDS = 12.0
 
 
 def is_metadata_node(node):
@@ -25,10 +31,13 @@ def is_metadata_node(node):
         node.get('display_name') or node.get('name') or '')))
 
 
-def node_healthcheck_path(node, health_url, timeout=10000):
+def node_healthcheck_path(node, health_url, timeout=DEFAULT_HEALTHCHECK_TIMEOUT_MS):
     """生成兼容普通代理和 proxy-provider 节点的测速路径。"""
     name = str(node.get('name') or '')
-    provider_name = str(node.get('provider_name') or '').strip()
+    # Runtime snapshots use ``provider_name``; callers importing Clash Verge
+    # style proxy records commonly expose the same value as ``provider``.
+    provider_name = str(
+        node.get('provider_name') or node.get('provider') or '').strip()
     query = urllib.parse.urlencode({
         'url': health_url, 'timeout': int(timeout), 'expected': 204})
     encoded_name = urllib.parse.quote(name, safe='')
@@ -37,6 +46,26 @@ def node_healthcheck_path(node, health_url, timeout=10000):
         return (f'/providers/proxies/{encoded_provider}/{encoded_name}'
                 f'/healthcheck?{query}')
     return f'/proxies/{encoded_name}/delay?{query}'
+
+
+def _coerce_delay(value):
+    """Normalize Mihomo's delay value without accepting sentinel booleans.
+
+    Mihomo normally returns an integer, but proxy-provider implementations and
+    older controller builds have returned numeric strings/floats.  Treating
+    those as a failed probe made otherwise healthy nodes appear unavailable.
+    Boolean values are explicitly rejected because ``bool`` subclasses
+    ``int`` in Python and must not become a 1ms result.
+    """
+    if isinstance(value, bool):
+        return 0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(number) or number <= 0:
+        return 0
+    return max(1, int(round(number)))
 
 
 def test_nodes(controller_request, controller_config, nodes, health_url,
@@ -53,21 +82,26 @@ def test_nodes(controller_request, controller_config, nodes, health_url,
             return None
         if progress:
             progress({'event': 'testing', 'name': name})
-        path = node_healthcheck_path(node, health_url, timeout=10000)
+        started = time.monotonic()
+        path = node_healthcheck_path(
+            node, health_url, timeout=DEFAULT_HEALTHCHECK_TIMEOUT_MS)
         delay = 0
         try:
             payload = controller_request(
-                controller_config, path, timeout=12)
+                controller_config, path,
+                timeout=DEFAULT_NODE_REQUEST_TIMEOUT_SECONDS)
             value = payload.get('delay') if isinstance(payload, dict) else 0
-            delay = value if isinstance(value, int) and value > 0 else 0
+            delay = _coerce_delay(value)
         except (OSError, ValueError, urllib.error.URLError):
             delay = 0
+        elapsed_ms = max(0, int(round((time.monotonic() - started) * 1000)))
         result = {
             **node,
             'delay': delay,
             'alive': delay > 0,
             'tested': True,
             'tested_at': int(time.time()),
+            'elapsed_ms': elapsed_ms,
         }
         if progress and not cancel.is_set():
             progress({'event': 'result', 'node': result})

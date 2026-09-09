@@ -172,6 +172,121 @@
     return `M${firstX} ${baseline} ${line.replace(/^M/, 'L')} L${lastX} ${baseline} Z`;
   }
 
+  function rateSamples() {
+    const times = new Set([...rateHistory.up, ...rateHistory.down].map(item => item.time));
+    return [...times].sort((a, b) => a - b).map(time => {
+      const nearest = samples => samples.reduce((best, item) => {
+        if (!best || Math.abs(item.time - time) < Math.abs(best.time - time)) return item;
+        return best;
+      }, null);
+      const up = nearest(rateHistory.up);
+      const down = nearest(rateHistory.down);
+      return { time, up, down, node: up?.node || down?.node || '' };
+    });
+  }
+
+  function formatRateValue(value) {
+    const formatter = window.RoutingTelemetryTools?.formatRate;
+    if (formatter) return formatter(value);
+    const amount = Math.max(0, Number(value) || 0);
+    if (amount >= 1024 * 1024) return `${(amount / (1024 * 1024)).toFixed(1)} MB/s`;
+    if (amount >= 1024) return `${(amount / 1024).toFixed(1)} KB/s`;
+    return `${Math.round(amount)} B/s`;
+  }
+
+  function ratePoint(value, maxValue, time, now = Date.now()) {
+    const start = now - RATE_WINDOW_MS;
+    const x = 360 * Math.max(0, Math.min(1, (time - start) / RATE_WINDOW_MS));
+    const normalized = Math.max(0, Math.min(1, (Number(value) || 0) / Math.max(1, Number(maxValue) || 1)));
+    return { x, y: 92 - normalized * 82 };
+  }
+
+  function hideRateTooltip() {
+    const tooltip = byId('proxy-rate-tooltip');
+    if (!tooltip) return;
+    tooltip.classList.add('hidden');
+    tooltip.setAttribute('aria-hidden', 'true');
+    ['proxy-rate-crosshair', 'proxy-rate-hover-up', 'proxy-rate-hover-down'].forEach(id => {
+      const element = byId(id);
+      if (element) element.style.display = 'none';
+    });
+  }
+
+  function showRateTooltip(sample, x, maxValue) {
+    const tooltip = byId('proxy-rate-tooltip');
+    const chart = byId('proxy-rate-chart');
+    const wrap = chart?.parentElement;
+    if (!tooltip || !chart || !wrap || !sample) return;
+    const now = Date.now();
+    const up = sample.up || { value: 0 };
+    const down = sample.down || { value: 0 };
+    const upPoint = ratePoint(up.value, maxValue, sample.time, now);
+    const downPoint = ratePoint(down.value, maxValue, sample.time, now);
+    tooltip.classList.remove('hidden');
+    tooltip.setAttribute('aria-hidden', 'false');
+    setText('proxy-rate-tooltip-time', new Date(sample.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    setText('proxy-rate-tooltip-node', sample.node || byId('proxy-node-name')?.textContent?.trim() || '当前节点');
+    setText('proxy-rate-tooltip-up-value', `上行 ${formatRateValue(up.value)}`);
+    setText('proxy-rate-tooltip-down-value', `下行 ${formatRateValue(down.value)}`);
+    const wrapRect = wrap.getBoundingClientRect();
+    const chartRect = chart.getBoundingClientRect();
+    const sampleX = upPoint.x || downPoint.x || x;
+    const pointerRatio = Math.max(0, Math.min(1, sampleX / 360));
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const tooltipWidth = tooltipRect.width || 146;
+    const tooltipHeight = tooltipRect.height || 78;
+    const chartHeight = chartRect.height || 88;
+    const chartOffsetY = chartRect.top - wrapRect.top;
+    const anchorY = chartOffsetY + Math.min(upPoint.y, downPoint.y) / 104 * chartHeight;
+    const minTop = 4;
+    const maxTop = Math.max(minTop, wrapRect.height - tooltipHeight - 4);
+    const aboveTop = anchorY - tooltipHeight - 10;
+    const belowTop = anchorY + 10;
+    const above = aboveTop >= minTop;
+    const desiredTop = above ? aboveTop : belowTop;
+    const top = Math.max(minTop, Math.min(maxTop, desiredTop));
+    const actuallyAbove = top < anchorY;
+    const half = tooltipWidth / 2;
+    const left = Math.max(half + 4, Math.min(wrapRect.width - half - 4, pointerRatio * wrapRect.width));
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+    tooltip.classList.toggle('is-below', !actuallyAbove);
+    const crosshair = byId('proxy-rate-crosshair');
+    if (crosshair) { crosshair.setAttribute('x1', sampleX.toFixed(1)); crosshair.setAttribute('x2', sampleX.toFixed(1)); crosshair.style.display = 'block'; }
+    const upDot = byId('proxy-rate-hover-up');
+    if (upDot) { upDot.setAttribute('cx', upPoint.x.toFixed(1)); upDot.setAttribute('cy', upPoint.y.toFixed(1)); upDot.style.display = 'block'; }
+    const downDot = byId('proxy-rate-hover-down');
+    if (downDot) { downDot.setAttribute('cx', downPoint.x.toFixed(1)); downDot.setAttribute('cy', downPoint.y.toFixed(1)); downDot.style.display = 'block'; }
+  }
+
+  function bindRateChart() {
+    const chart = byId('proxy-rate-chart');
+    const target = byId('proxy-rate-hover-target');
+    if (!chart || !target || target.dataset.bound === 'true') return;
+    target.dataset.bound = 'true';
+    const update = event => {
+      const samples = rateSamples();
+      if (!samples.length) return hideRateTooltip();
+      const rect = chart.getBoundingClientRect();
+      const ratio = rect.width ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) : 1;
+      const now = Date.now();
+      const time = now - RATE_WINDOW_MS + ratio * RATE_WINDOW_MS;
+      const sample = samples.reduce((best, item) => !best || Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best, null);
+      const max = Math.max(1, ...rateHistory.up.map(item => item.value), ...rateHistory.down.map(item => item.value));
+      showRateTooltip(sample, 360 * ratio, max);
+    };
+    target.addEventListener('mousemove', update);
+    target.addEventListener('focus', () => {
+      const samples = rateSamples();
+      const sample = samples[samples.length - 1];
+      if (!sample) return;
+      const max = Math.max(1, ...rateHistory.up.map(item => item.value), ...rateHistory.down.map(item => item.value));
+      showRateTooltip(sample, 360, max);
+    });
+    target.addEventListener('blur', hideRateTooltip);
+    chart.addEventListener('mouseleave', hideRateTooltip);
+  }
+
   function renderRateChart() {
     const upload = byId('proxy-upload-chart');
     const download = byId('proxy-download-chart');
@@ -184,6 +299,7 @@
     download.setAttribute('d', ratePath(rateHistory.down, max, false, now));
     uploadFill.setAttribute('d', ratePath(rateHistory.up, max, true, now));
     downloadFill.setAttribute('d', ratePath(rateHistory.down, max, true, now));
+    hideRateTooltip();
     const chart = byId('proxy-rate-chart');
     if (chart) chart.setAttribute('aria-label', `实时上行 ${window.RoutingTelemetryTools?.formatRate?.(telemetryData.up) || '0 B/s'}，下行 ${window.RoutingTelemetryTools?.formatRate?.(telemetryData.down) || '0 B/s'}，过去 60 秒趋势图`);
   }
@@ -235,8 +351,9 @@
     telemetryData = { ...telemetryData, ...(data || {}) };
     const now = Date.now();
     const cutoff = now - RATE_WINDOW_MS;
-    rateHistory.up.push({ time: now, value: Math.max(0, Number(telemetryData.up) || 0) });
-    rateHistory.down.push({ time: now, value: Math.max(0, Number(telemetryData.down) || 0) });
+    const node = byId('proxy-node-name')?.textContent?.trim() || '当前节点';
+    rateHistory.up.push({ time: now, value: Math.max(0, Number(telemetryData.up) || 0), node });
+    rateHistory.down.push({ time: now, value: Math.max(0, Number(telemetryData.down) || 0), node });
     rateHistory.up = rateHistory.up.filter(item => item.time >= cutoff);
     rateHistory.down = rateHistory.down.filter(item => item.time >= cutoff);
     renderTelemetry();
@@ -354,8 +471,8 @@
     const node = currentNode(group);
     const persistedNodes = provider ? providerNodes(setup, provider.id) : [];
     const targetNode = provider?.selection_mode === 'manual'
-      ? persistedNodes.find(item => nodeMatchesPreference(item, provider, provider.selected_node, true))
-        || group?.nodes?.find(item => nodeMatchesPreference(item, provider, provider.selected_node))
+      ? group?.nodes?.find(item => nodeMatchesPreference(item, provider, provider.selected_node))
+        || persistedNodes.find(item => nodeMatchesPreference(item, provider, provider.selected_node, true))
       : null;
     const manualCurrent = running && provider?.selection_mode === 'manual' &&
       runtimeUsesPreference(group, provider);
@@ -647,6 +764,7 @@
   }
 
   function bind() {
+    bindRateChart();
     byId('btn-proxy-toggle').onclick = () => changeProxyState(false);
     byId('btn-proxy-disable').onclick = () => changeProxyState(true);
     byId('btn-proxy-refresh').onclick = async () => {

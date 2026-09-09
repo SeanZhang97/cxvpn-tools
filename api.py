@@ -294,7 +294,7 @@ class Api(RoutingTaskApi):
             self._start_routing_standby_reconcile()
 
     def _start_routing_standby_reconcile(self, source='启动'):
-        """升级后在后台恢复待机核心，不阻塞窗口首屏。"""
+        """启动时对账系统代理并在后台恢复待机核心，不阻塞窗口首屏。"""
         thread = getattr(self, '_routing_standby_thread', None)
         if thread is not None and thread.is_alive():
             self.log(f'[routing] {source}待机核心复核已在后台排队，无需重复提交')
@@ -307,12 +307,65 @@ class Api(RoutingTaskApi):
                 self.log(f'[routing] {source}待机核心复核开始执行')
                 current = routing.normalize_config(
                     (self._cfg_get().get('routing') or {}))
-                if current['enabled'] or not any(
-                        item.get('enabled')
-                        for item in current['proxy_providers']):
+                state = self.routing._service_state()
+
+                # 异常重启可能留下仍指向 CXVPN mixed-port 的 Windows 手动代理，
+                # 但持久化配置已经是关闭状态；反过来，配置仍是开启状态时也要
+                # 在服务已运行但系统代理未恢复的情况下补做一次接管。只处理精确
+                # 匹配当前 mixed-port 的端点，不触碰第三方代理配置。
+                expected_proxy = (
+                    f'http://127.0.0.1:{current["mixed_port"]}'
+                    if current['capture_mode'] == 'system-proxy' else '')
+                actual_proxy = routing.windows_system_proxy()
+                if expected_proxy and current['enabled']:
+                    runtime_ok = bool(
+                        state.get('installed') and
+                        state.get('backend') == 'native' and
+                        state.get('runtime_running') and
+                        state.get('runtime_mode') == 'active')
+                    if actual_proxy != expected_proxy or not runtime_ok:
+                        self.log(
+                            f'[routing] {source}发现代理接管未完整恢复，'
+                            f'系统代理={actual_proxy or "关闭"}，'
+                            f'核心运行={runtime_ok}，开始恢复代理接管')
+                        if (state.get('installed') and
+                                state.get('backend') == 'native' and
+                                self.routing._can_fast_toggle_system_proxy(
+                                    current, state)):
+                            result = self.routing._fast_toggle_system_proxy(
+                                current, True)
+                        else:
+                            result = self.routing.apply(current)
+                        if not result.get('ok', True):
+                            raise routing.RoutingError(
+                                result.get('msg') or '启动时恢复系统代理失败')
+                        self.log('[routing] 启动时系统代理恢复成功')
+                    else:
+                        self.log('[routing] 启动时系统代理已与配置一致')
+                    return
+
+                if expected_proxy and not current['enabled'] \
+                        and actual_proxy == expected_proxy:
+                    self.log(
+                        '[routing] 启动时发现已关闭配置仍残留 CXVPN 系统代理，'
+                        '开始关闭残留接管')
+                    if (state.get('installed') and
+                            state.get('backend') == 'native' and
+                            self.routing._can_fast_toggle_system_proxy(
+                                current, state)):
+                        result = self.routing._fast_toggle_system_proxy(
+                            current, False)
+                        if not result.get('ok', True):
+                            raise routing.RoutingError(
+                                result.get('msg') or '启动时关闭系统代理失败')
+                    else:
+                        proxy_guard.set_proxy_enabled(False)
+                    self.log('[routing] 启动时残留系统代理已关闭')
+
+                if not any(item.get('enabled')
+                           for item in current['proxy_providers']):
                     self.log('[routing] 待机核心复核跳过：当前无需待机节点核心')
                     return
-                state = self.routing._service_state()
                 if (not state.get('installed') or
                         state.get('backend') != 'native'):
                     self.log('[routing] 待机核心复核跳过：原生服务尚未安装')

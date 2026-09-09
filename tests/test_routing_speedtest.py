@@ -27,6 +27,14 @@ class RoutingSpeedTestTests(unittest.TestCase):
         self.assertIn('/healthcheck?', path)
         self.assertNotIn('/delay?', path)
 
+    def test_clash_verge_style_provider_field_uses_healthcheck_endpoint(self):
+        path = node_healthcheck_path({
+            'name': 'Hong Kong 01', 'provider': 'provider-alpha',
+        }, 'https://example.test/204')
+
+        self.assertIn('/providers/proxies/provider-alpha/', path)
+        self.assertIn('/healthcheck?', path)
+
     def test_plain_proxy_keeps_legacy_delay_endpoint(self):
         path = node_healthcheck_path(
             {'name': 'DIRECT'}, 'https://example.test/204')
@@ -58,6 +66,21 @@ class RoutingSpeedTestTests(unittest.TestCase):
             [{'name': '流量优化专线'}], 'https://example.test/204')
 
         self.assertIn('流量优化专线', results)
+
+    def test_delay_value_normalizes_numeric_provider_responses(self):
+        values = iter(['86.4', True, 'not-a-delay'])
+
+        def request(_config, _path, **_kwargs):
+            return {'delay': next(values)}
+
+        results = test_nodes(request, {}, [
+            {'name': 'A'}, {'name': 'B'}, {'name': 'C'},
+        ], 'https://example.test/204', workers=1)
+
+        self.assertEqual(results['A']['delay'], 86)
+        self.assertFalse(results['B']['alive'])
+        self.assertEqual(results['C']['delay'], 0)
+        self.assertGreaterEqual(results['A']['elapsed_ms'], 0)
 
     def test_cancelled_group_test_persists_complete_node_list(self):
         nodes = [

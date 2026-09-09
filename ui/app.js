@@ -33,6 +33,15 @@ let lastIpRouteSignature = null;
 const $ = (id) => document.getElementById(id);
 const api = () => window.pywebview.api;
 
+// 让纯浏览器预览也能切换页面；真实 WebView 就绪后由 bind() 接管完整交互。
+function bindPreviewNavigation() {
+  document.querySelectorAll('#nav [data-page]').forEach(item => {
+    item.onclick = () => { void goToPage(item.dataset.page); };
+  });
+}
+
+window.addEventListener('DOMContentLoaded', bindPreviewNavigation);
+
 window.addEventListener('pywebviewready', async () => {
   try {
     CFG = await api().get_config();
@@ -1897,7 +1906,9 @@ function updateRepairState(state) {
 async function syncBrowserVisibility() {
   const browserPage = curPage === 'browser';
   $('main-content').classList.toggle('browser-mode', browserPage);
-  await api().browser_set_visible(browserPage && !hasBlockingBrowserModal());
+  const bridge = window.pywebview?.api;
+  if (!bridge?.browser_set_visible) return;
+  await bridge.browser_set_visible(browserPage && !hasBlockingBrowserModal());
 }
 
 function hasBlockingBrowserModal() {

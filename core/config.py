@@ -55,7 +55,7 @@ DEFAULT = {
         'proxy_strategy': 'url-test',
         'proxy_providers': [],
         'default_outbound': 'physical',
-        'builtin_rule_pack': 'local-direct-v1',
+        'builtin_rule_pack': 'cn-direct-v1',
         'system_proxy_bypass': {
             'lan': True,
             'include_cn_direct': False,

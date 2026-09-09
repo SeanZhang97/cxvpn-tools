@@ -172,6 +172,12 @@ class Worker(threading.Thread):
         self.state['last_renew'] = last_success
         return state
 
+    @staticmethod
+    def _in_renew_quiet_hours(now=None):
+        """自动续期避开本地时间 02:00（含）至 08:00（不含）的低活跃时段。"""
+        current = datetime.fromtimestamp(time.time() if now is None else float(now))
+        return 2 <= current.hour < 8
+
     def _save_authorization_result(self, expiries, source):
         """持久化授权成功时间和服务端到期时间；无返回时按业务上限兜底。"""
         now = time.time()
@@ -216,7 +222,8 @@ class Worker(threading.Thread):
             next_renew = authorization.get('next_renew_at', 0.0)
             auto_due = bool(cfg.get('auto_renew', True) and next_renew and
                             now >= next_renew and
-                            now >= self._renew_retry_after)
+                            now >= self._renew_retry_after and
+                            not self._in_renew_quiet_hours(now))
             if not (manual_due or auto_due):
                 return None
             source = self._renew_request_source if manual_due else 'automatic'

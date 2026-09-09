@@ -360,23 +360,23 @@
           <section class="proxy-summary-card">
             <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-subscription" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3.8h9l3 3V20H6z"/><path d="M15 3.8V7h3M9 11h6M9 14.5h6M9 18h3"/></svg></span><span>订阅概览</span></h3><button id="btn-proxy-manage" type="button">管理订阅</button></header>
             <dl class="proxy-summary-list">
-              <div><dt>已启用订阅</dt><dd id="proxy-provider-count">0 个</dd></div>
-              <div><dt>可选节点</dt><dd id="proxy-node-count">0 个</dd></div>
-              <div><dt>缓存状态</dt><dd id="proxy-cache-state">尚无缓存</dd></div>
+              <div><dt><span class="proxy-summary-icon proxy-summary-icon-subscription" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4.5h12v15H6z"/><path d="M9 8h6M9 12h6M9 16h3"/><path d="m15.5 3 2 2"/></svg></span>已启用订阅</dt><dd id="proxy-provider-count">0 个</dd></div>
+              <div><dt><span class="proxy-summary-icon proxy-summary-icon-node" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span>可选节点</dt><dd id="proxy-node-count">0 个</dd></div>
+              <div><dt><span class="proxy-summary-icon proxy-summary-icon-cache" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg></span>缓存状态</dt><dd id="proxy-cache-state">尚无缓存</dd></div>
             </dl>
             <div id="proxy-subscription-health" class="proxy-subscription-health hidden" role="status" aria-live="polite"></div>
           </section>
           <section class="proxy-mode-card">
-            <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="18" cy="18" r="2.2"/><path d="M8.2 6h3.1a4 4 0 0 1 4 4v.1a4 4 0 0 0 4 4H18"/><path d="m13 10 2.3-2.3L17.6 10"/></svg></span><span>流量策略</span></h3><span id="proxy-mode-status">规则模式</span></header>
+            <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5.5" cy="5.5" r="2"/><circle cx="18.5" cy="7.5" r="2"/><circle cx="18.5" cy="17.5" r="2"/><path d="M7.5 5.5h3a5 5 0 0 1 5 5v5a2 2 0 0 0 2 2"/><path d="m13 9 2.5 1.5L13 12"/></svg></span><span>流量策略</span></h3><span id="proxy-mode-status">规则模式</span></header>
             <div class="proxy-mode-switch" role="radiogroup" aria-label="代理连接模式">
               <button type="button" class="active" data-proxy-mode="rule" role="radio" aria-checked="true">规则模式</button>
               <button type="button" data-proxy-mode="global" role="radio" aria-checked="false">全局模式</button>
             </div>
             <p id="proxy-mode-detail">按域名分流规则匹配，未命中流量走当前代理。</p>
             <dl class="proxy-summary-list proxy-routing-dimensions">
-              <div><dt>系统接管</dt><dd id="proxy-capture-status">系统代理</dd></div>
-              <div><dt>默认出口</dt><dd id="proxy-default-outbound">物理网络</dd></div>
-              <div><dt>规则构成</dt><dd id="proxy-rule-composition">0 / 0 / 1</dd></div>
+              <div><dt><span class="proxy-dimension-icon proxy-dimension-icon-capture" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="13" rx="2"/><path d="M8 20h8M12 17v3M8 8h8M8 12h4"/></svg></span>系统接管</dt><dd id="proxy-capture-status">系统代理</dd></div>
+              <div><dt><span class="proxy-dimension-icon proxy-dimension-icon-outbound" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><path d="M7.5 12H19M14 7l5 5-5 5"/></svg></span>默认出口</dt><dd id="proxy-default-outbound">物理网络</dd></div>
+              <div><dt><span class="proxy-dimension-icon proxy-dimension-icon-rules" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="11" cy="18" r="2"/></svg></span>规则构成</dt><dd id="proxy-rule-composition">0 / 0 / 1</dd></div>
             </dl>
           </section>
           <section class="proxy-traffic-card">
@@ -386,21 +386,35 @@
                 <div class="proxy-rate-heading"><span class="proxy-rate-pulse" aria-hidden="true"></span><div><strong>实时速率</strong><small>过去 60 秒</small></div></div>
                 <div class="proxy-rate-legend" aria-hidden="true"><span class="proxy-rate-legend-up">上行</span><span class="proxy-rate-legend-down">下行</span></div>
               </div>
+              <div class="proxy-rate-chart-wrap">
               <svg id="proxy-rate-chart" class="proxy-rate-chart" viewBox="0 0 360 104" preserveAspectRatio="none" role="img" aria-label="实时上行与下行速率趋势图">
                 <path class="proxy-rate-grid" d="M0 13.5H360M0 39.5H360M0 65.5H360M0 91.5H360"/>
                 <path id="proxy-upload-chart-fill" class="proxy-rate-area proxy-rate-area-up" d="M0 92L360 92Z"/>
                 <path id="proxy-download-chart-fill" class="proxy-rate-area proxy-rate-area-down" d="M0 92L360 92Z"/>
                 <path id="proxy-upload-chart" class="proxy-rate-line proxy-rate-line-up" d="M0 92L360 92"/>
                 <path id="proxy-download-chart" class="proxy-rate-line proxy-rate-line-down" d="M0 92L360 92"/>
+                <g id="proxy-rate-hover-layer" class="proxy-rate-hover-layer" aria-hidden="true">
+                  <line id="proxy-rate-crosshair" class="proxy-rate-crosshair" x1="0" y1="8" x2="0" y2="94"/>
+                  <circle id="proxy-rate-hover-up" class="proxy-rate-hover-dot proxy-rate-hover-dot-up" cx="0" cy="92" r="3.5"/>
+                  <circle id="proxy-rate-hover-down" class="proxy-rate-hover-dot proxy-rate-hover-dot-down" cx="0" cy="92" r="3.5"/>
+                  <rect id="proxy-rate-hover-target" class="proxy-rate-hover-target" x="0" y="0" width="360" height="104" tabindex="0" role="application" aria-label="悬停查看当前节点的历史速率"/>
+                </g>
               </svg>
+              <div id="proxy-rate-tooltip" class="proxy-rate-tooltip hidden" role="tooltip" aria-hidden="true">
+                <time id="proxy-rate-tooltip-time"></time>
+                <strong id="proxy-rate-tooltip-node">当前节点</strong>
+                <span class="proxy-rate-tooltip-up"><i aria-hidden="true"></i><span id="proxy-rate-tooltip-up-value">上行 0 B/s</span></span>
+                <span class="proxy-rate-tooltip-down"><i aria-hidden="true"></i><span id="proxy-rate-tooltip-down-value">下行 0 B/s</span></span>
+              </div>
+              </div>
             </div>
             <div class="proxy-traffic-values">
-              <div><small>配置状态</small><strong id="proxy-config-state">未启用</strong></div>
-              <div><small>服务进程</small><strong id="proxy-runtime-state">未运行</strong></div>
-              <div><small>节点检测</small><strong id="proxy-health-state">尚未测速</strong></div>
-              <div><small>活动连接</small><strong id="proxy-active-connections">0</strong></div>
-              <div><small>实时上行</small><strong id="proxy-upload-rate">0 B/s</strong></div>
-              <div><small>实时下行</small><strong id="proxy-download-rate">0 B/s</strong></div>
+              <div><small><span class="proxy-traffic-icon proxy-traffic-icon-status" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h4l2-6 3 12 2-6h3"/></svg></span>配置状态</small><strong id="proxy-config-state">未启用</strong></div>
+              <div><small><span class="proxy-traffic-icon proxy-traffic-icon-process" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 13h5"/></svg></span>服务进程</small><strong id="proxy-runtime-state">未运行</strong></div>
+              <div><small><span class="proxy-traffic-icon proxy-traffic-icon-node" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="m10.7 7.6-3.4 8.8M13.3 7.6l3.4 8.8"/></svg></span>节点检测</small><strong id="proxy-health-state">尚未测速</strong></div>
+              <div><small><span class="proxy-traffic-icon proxy-traffic-icon-connections" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="7" cy="8" r="2.5"/><circle cx="17" cy="8" r="2.5"/><path d="M3.5 18c.7-2.5 2-3.8 3.5-3.8s2.8 1.3 3.5 3.8M13.5 18c.7-2.5 2-3.8 3.5-3.8s2.8 1.3 3.5 3.8"/></svg></span>活动连接</small><strong id="proxy-active-connections">0</strong></div>
+              <div><small><span class="proxy-traffic-icon proxy-traffic-icon-up" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></span>实时上行</small><strong id="proxy-upload-rate">0 B/s</strong></div>
+              <div><small><span class="proxy-traffic-icon proxy-traffic-icon-down" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/></svg></span>实时下行</small><strong id="proxy-download-rate">0 B/s</strong></div>
             </div>
             <p class="proxy-traffic-foot"><span>主要规则命中</span><strong id="proxy-rule-hits">暂无</strong></p>
           </section>
@@ -843,7 +857,26 @@
           <div class="quick-step"><span>4</span><strong>处理授权</strong><p>在总览中立即处理授权，或开启自动续期。</p></div>
         </div>
       </div>
-      <div class="help-sections">
+      <div class="help-module-grid">
+        <section class="help-module help-module-automation">
+          <div class="help-module-head"><span class="help-module-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M3 12h4M17 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/><circle cx="12" cy="12" r="4"/></svg></span><div><span class="label">AUTOMATION</span><h3>自动化配置</h3><p>验证码接收、授权处理、自动续期和后台运行。</p></div><span class="help-module-entry">入口：自动化配置</span></div>
+          <div class="help-module-body">
+            <details class="help-section" open><summary><span><b>01</b>验证码接收</span><em>三种方式</em></summary><div class="help-body"><p class="help-callout">在“自动化配置 → 短信验证码接收”选择来源。浏览器和弹窗仍支持手动输入，先获取到的验证码生效。</p><ol><li>Windows 手机连接：完成手机配对并开启通知同步，保持蓝牙和通知权限。</li><li>邮箱转发（IMAP）：开启邮箱 IMAP，使用授权码或应用专用密码，不要填写网页登录密码。</li><li>Android SmsForwarder：允许读取短信、后台运行、自启动和忽略电池优化，测试“短信 → 邮件 → 工具捕获”链路。</li></ol><p class="help-callout help-note">邮件主题需与配置完全一致，推荐先点击“测试邮箱连接”。</p></div></details>
+            <details class="help-section"><summary><span><b>02</b>授权与内置浏览器</span><em>处理流程</em></summary><div class="help-body"><ol><li>“立即处理授权”会根据远端状态执行首次授权或续期。</li><li>模型配置完整时优先自动识别图形验证码，失败后转人工验证。</li><li>浏览器进度卡展示当前阶段；授权成功后远端列表会即时更新，无需刷新。</li></ol></div></details>
+            <details class="help-section"><summary><span><b>03</b>自动续期与后台运行</span><em>可选</em></summary><div class="help-body"><ol><li>开启“自动续期”后按设置周期检查授权，每天 02:00–08:00 不执行自动续期，手动处理不受影响。</li><li>“自动连接”负责 VPN 自动拨号，与自动续期相互独立。</li><li>开启“开机自启”后，Windows 登录时程序可静默进入托盘；关闭窗口默认只隐藏到托盘。</li></ol></div></details>
+          </div>
+        </section>
+        <section class="help-module help-module-network">
+          <div class="help-module-head"><span class="help-module-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M7.5 12h4a4 4 0 0 0 4-4V6M7.5 12h4a4 4 0 0 1 4 4v2"/></svg></span><div><span class="label">NETWORK</span><h3>网络代理配置</h3><p>VPN 连接、订阅节点、本地规则和流量分流。</p></div><span class="help-module-entry">入口：网络代理</span></div>
+          <div class="help-module-body">
+            <details class="help-section" open><summary><span><b>01</b>VPN 配置与凭据</span><em>连接必需</em></summary><div class="help-body"><ol><li>在“VPN 配置”新增、编辑或删除 PPTP、L2TP、IKEv2 连接。</li><li>新增时可填写账号密码；L2TP 预共享密钥也可在同一弹窗配置。</li><li>没有工具凭据时点击“连接”，会先打开凭据弹框，不会提交空密码。</li><li>错误 691 通常表示凭据错误或授权到期，请在“凭据”中更新后重试。</li></ol></div></details>
+            <details class="help-section"><summary><span><b>02</b>订阅、节点与智能优选</span><em>代理来源</em></summary><div class="help-body"><ol><li>在“订阅”添加 URL，选择下载出口、节点策略和自动更新间隔；间隔可在关闭自动更新时预先设置。</li><li>在“节点”筛选、测速并选择实际节点；智能优选按地区顺序故障转移。</li><li>新增智能优选地区时，优先线路关键词默认为空，应按当前订阅的命名特征手动填写。</li></ol></div></details>
+            <details class="help-section"><summary><span><b>03</b>规则与流量模式</span><em>分流控制</em></summary><div class="help-body"><ol><li>规则模式按域名规则匹配，未命中时使用默认出口；全局模式仅使用 MATCH。</li><li>本地规则默认包为 <b>cn-direct-v1</b>，也可在“规则”中切换为其他规则包。</li><li>系统代理模式始终保护 localhost、回环、私有网段和本地域名；规则顺序为 bypass → user → builtin → MATCH。</li></ol></div></details>
+            <details class="help-section"><summary><span><b>04</b>故障处理</span><em>连接异常</em></summary><div class="help-body"><ol><li>网络波动会退避重试，配置、证书或系统服务错误会暂停自动重试并提示处理建议。</li><li>连接长时间卡住时，在总览使用“修复 VPN 服务”，并按 Windows UAC 提示操作。</li><li>同时连接多条 VPN 时，留意默认路由和网段重叠风险。</li></ol></div></details>
+          </div>
+        </section>
+      </div>
+      <div class="help-sections legacy-help-sections">
         <details class="help-section" open>
           <summary><span><b>01</b>选择短信验证码接收方式</span><em>二选一</em></summary>
           <div class="help-body">

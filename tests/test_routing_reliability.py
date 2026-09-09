@@ -33,6 +33,20 @@ def snapshot_nodes():
 
 
 class RoutingReliabilityTests(unittest.TestCase):
+    def test_cache_status_treats_file_race_as_unavailable(self):
+        item = provider()
+        with tempfile.TemporaryDirectory() as root:
+            path = subscription_store.cache_path(item, root)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as stream:
+                stream.write(b'proxies: []\n')
+            with mock.patch.object(
+                    subscription_store.os.path, 'getsize',
+                    side_effect=OSError('cache removed during status check')):
+                status = subscription_store.cache_status(item, root)
+        self.assertFalse(status['available'])
+        self.assertEqual(status['node_count'], 0)
+
     def test_temporary_process_is_killed_when_graceful_stop_times_out(self):
         process = mock.Mock()
         process.poll.return_value = None

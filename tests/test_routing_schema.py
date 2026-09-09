@@ -11,11 +11,31 @@ from core import routing_rules
 
 
 class RoutingSchemaTests(unittest.TestCase):
+    def test_subscription_url_moves_path_appended_query_into_query(self):
+        config = routing.normalize_config({
+            'proxy_providers': [{
+                'id': 'dirty', 'name': '脏 URL',
+                'url': 'https://example.test/subscription&token=a%2Bb&client=clash',
+            }],
+        })
+        self.assertEqual(
+            config['proxy_providers'][0]['url'],
+            'https://example.test/subscription?token=a%2Bb&client=clash')
+
+    def test_subscription_url_with_real_query_is_not_rewritten(self):
+        value = 'https://example.test/subscription?a=1&b=2'
+        config = routing.normalize_config({
+            'proxy_providers': [{
+                'id': 'clean', 'name': '正常 URL', 'url': value,
+            }],
+        })
+        self.assertEqual(config['proxy_providers'][0]['url'], value)
+
     def test_new_install_defaults_to_system_proxy(self):
         value = routing.default_config()
         self.assertEqual(value['schema_version'], 7)
         self.assertEqual(value['capture_mode'], 'system-proxy')
-        self.assertEqual(value['builtin_rule_pack'], 'local-direct-v1')
+        self.assertEqual(value['builtin_rule_pack'], 'cn-direct-v1')
         self.assertEqual(value['dns_mode'], 'simple')
 
     def test_legacy_object_keeps_tun_and_user_only_rules(self):

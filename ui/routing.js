@@ -376,8 +376,8 @@
     return {
       enabled: true,
       stages: [
-        { region: 'JP', region_keywords: [], preferred_keywords: ['高速专线', 'IPLC', 'IEPL'], selection_mode: 'latency', preferred_node: '' },
-        { region: 'US', region_keywords: [], preferred_keywords: ['高速专线', 'IPLC', 'IEPL'], selection_mode: 'latency', preferred_node: '' },
+        { region: 'JP', region_keywords: [], preferred_keywords: [], selection_mode: 'latency', preferred_node: '' },
+        { region: 'US', region_keywords: [], preferred_keywords: [], selection_mode: 'latency', preferred_node: '' },
       ],
       fallback: 'reject',
       latency_tolerance: 20,
@@ -398,7 +398,9 @@
     const persisted = providerNodesRecord(provider.id)?.nodes;
     const preview = providerPreview(provider)?.nodes;
     const runtime = proxyGroupState(provider.id)?.nodes;
-    const source = [persisted, preview, runtime].find(
+    // 运行态测速结果是当前页面的权威来源；服务未运行时再回退到持久化快照。
+    // 这样首选节点下拉框与节点卡片不会分别读取两套延迟状态。
+    const source = [runtime, persisted, preview].find(
       nodes => Array.isArray(nodes) && nodes.length) || [];
     return partitionNodes(source).selectable;
   }
@@ -1457,6 +1459,9 @@
         nodes: mergeTestNodes(current.nodes, job.nodes),
         alive_count: Number(job.alive || 0),
       });
+      if (job.status === 'completed' && context.groupId !== 'all') {
+        syncProviderNodesFromGroups(context.groupId, setup.proxy_groups, Date.now());
+      }
     }
     return true;
   }
@@ -1523,6 +1528,7 @@
     if (job.status === 'error') restoreTestResult(context);
     context.job = clone(job);
     renderNodeWorkspace(true);
+    if (autoPolicyDraft) renderAutoPolicy();
     const message = job.status === 'completed'
       ? `测速完成：${job.alive || 0}/${job.total || 0} 个节点可用。`
       : job.status === 'cancelled' ? `测速已停止，已完成 ${job.completed || 0}/${job.total || 0}。`
@@ -2191,7 +2197,8 @@
       const intervalField = document.createElement('div'); intervalField.className = 'field routing-provider-interval';
       const intervalLabel = document.createElement('label'); intervalLabel.textContent = '自动更新间隔（分钟）';
       const interval = document.createElement('input'); interval.type = 'number'; interval.min = '5'; interval.max = '1440'; interval.value = String(Math.round((provider.interval || 3600) / 60));
-      interval.disabled = busy || !provider.auto_update;
+      // 保留配置入口：关闭自动更新时仍可先设置间隔，之后开启即可直接使用。
+      interval.disabled = busy;
       interval.oninput = () => { provider.interval = Math.max(300, Number(interval.value || 60) * 60); syncDirty(); };
       intervalField.append(intervalLabel, interval); fields.append(nameField, strategyField, intervalField);
 
@@ -3005,7 +3012,7 @@
       if (!region) return;
       autoPolicyDraft.stages.push({
         region, region_keywords: [],
-        preferred_keywords: ['高速专线', 'IPLC', 'IEPL'],
+        preferred_keywords: [],
         selection_mode: 'latency', preferred_node: '',
       });
       renderAutoPolicy();

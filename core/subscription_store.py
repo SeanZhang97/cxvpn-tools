@@ -196,7 +196,17 @@ def cache_status(provider, root=None):
             'updated_at': 0,
             'source': '',
         }
-    size = os.path.getsize(path)
+    # 文件可能在 isfile() 与 getsize() 之间被自动清理或替换；缓存状态
+    # 查询用于回退决策，不能把这种正常竞态升级为订阅更新异常。
+    try:
+        size = os.path.getsize(path)
+    except (OSError, ValueError):
+        return {
+            'available': False,
+            'node_count': 0,
+            'updated_at': 0,
+            'source': '',
+        }
     if size <= 0 or size > DEFAULT_SIZE_LIMIT:
         return {
             'available': False,

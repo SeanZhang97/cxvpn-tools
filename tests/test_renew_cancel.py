@@ -2,6 +2,7 @@
 import threading
 import time
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from core import config
@@ -12,6 +13,17 @@ from core.worker import Worker
 class RenewCancelTest(unittest.TestCase):
     def test_default_renew_interval_is_seven_hours(self):
         self.assertEqual(config.DEFAULT['renew_hours'], 7)
+
+    def test_automatic_renewal_quiet_hours_are_two_to_eight(self):
+        base = datetime.now().replace(minute=0, second=0, microsecond=0)
+        self.assertTrue(Worker._in_renew_quiet_hours(
+            base.replace(hour=2).timestamp()))
+        self.assertTrue(Worker._in_renew_quiet_hours(
+            base.replace(hour=7, minute=59).timestamp()))
+        self.assertFalse(Worker._in_renew_quiet_hours(
+            base.replace(hour=8).timestamp()))
+        self.assertFalse(Worker._in_renew_quiet_hours(
+            base.replace(hour=1, minute=59).timestamp()))
 
     @patch('core.worker.time.time', return_value=10_800)
     def test_persisted_authorization_does_not_renew_three_hours_after_start(

@@ -54,6 +54,7 @@ assert.match(proxy, /function targetNodeTestSummary/);
 assert.match(proxy, /function runtimeUsesPreference/);
 assert.match(proxy, /group\.selected === `\[\$\{provider\.name\}\] \$\{selectedNode\}`/);
 assert.match(proxy, /nodeMatchesPreference\(item, provider, provider\.selected_node/);
+assert.match(proxy, /group\?\.nodes\?\.find\(item => nodeMatchesPreference\(item, provider, provider\.selected_node\)\)\s*\|\|\s*persistedNodes\.find/);
 assert.match(proxy, /function selectionGuard/);
 assert.match(proxy, /function renderSubscriptionHealth/);
 assert.match(proxy, /subscriptionMetadata/);

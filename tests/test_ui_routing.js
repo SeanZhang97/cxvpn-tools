@@ -166,6 +166,8 @@ assert.match(source, /save_proxy_preference\(\s*providerId, mode, nodeName, \{ \
 assert.match(source, /TEST_POLL_MAX_MS/);
 assert.match(source, /cancel_routing_test_job\(context\.jobId\)/);
 assert.match(source, /provider_nodes/);
+assert.match(source, /const source = \[runtime, persisted, preview\]/);
+assert.match(source, /job\.status === 'completed' && context\.groupId !== 'all'/);
 assert.match(source, /尚未生成节点快照/);
 assert.match(source, /function hydrateProviderNodes/);
 assert.match(source, /重新获取订阅/);

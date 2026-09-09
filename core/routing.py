@@ -20,6 +20,7 @@ import urllib.request
 from datetime import datetime
 
 from core import config as cfgmod
+from core import proxy_guard
 from core import subscription_store
 from core import vpn_os
 from core.routing_support import attach_kill_on_close_job as _attach_kill_on_close_job
@@ -99,6 +100,39 @@ class ProviderFetchError(RoutingError):
     """订阅下载或解析未产出节点，可尝试安全的备用下载出口。"""
 
 
+def _fix_dirty_subscription_url(value):
+    """修正部分面板把 query 参数拼进 path 的订阅 URL。
+
+    Clash Verge Rev 在发起远端 profile 请求前会兼容
+    ``https://host/path&token=...`` 这种常见复制错误。Mihomo 会把它当成
+    路径请求，导致订阅服务返回 404 或 HTML 页面。这里只在 URL 没有正式
+    query 且 path 含 ``&`` 时迁移参数，其他 URL 原样保留；空值或解析失败
+    不在归一化阶段报错，由现有的环境校验继续给出统一提示。
+    """
+    text = str(value or '').strip()
+    if not text:
+        return text
+    try:
+        parsed = urllib.parse.urlsplit(text)
+    except ValueError:
+        return text
+    if parsed.query or '&' not in parsed.path:
+        return text
+    clean_path, dirty_params = parsed.path.split('&', 1)
+    if not dirty_params:
+        return text
+    try:
+        pairs = urllib.parse.parse_qsl(
+            dirty_params, keep_blank_values=True, strict_parsing=False)
+    except ValueError:
+        return text
+    if not pairs:
+        return text
+    query = urllib.parse.urlencode(pairs, doseq=True)
+    return urllib.parse.urlunsplit((
+        parsed.scheme, parsed.netloc, clean_path, query, parsed.fragment))
+
+
 def default_config():
     return {
         'schema_version': _routing_rules.SCHEMA_VERSION,
@@ -109,7 +143,7 @@ def default_config():
         'proxy_strategy': 'url-test',
         'proxy_providers': [],
         'default_outbound': 'physical',
-        'builtin_rule_pack': 'local-direct-v1',
+        'builtin_rule_pack': 'cn-direct-v1',
         'system_proxy_bypass': {
             'lan': True,
             'include_cn_direct': False,
@@ -353,7 +387,7 @@ def normalize_config(value):
             raise RoutingError(f'第 {index + 1} 个代理订阅名称不能包含换行或控制字符')
         if name.casefold() in provider_names:
             raise RoutingError(f'代理订阅名称重复：{name}')
-        url = str(provider.get('url') or '').strip()
+        url = _fix_dirty_subscription_url(provider.get('url'))
         if len(url) > 4096:
             raise RoutingError(f'代理订阅“{name}”的 URL 过长')
         strategy = str(provider.get('strategy') or 'url-test').strip().lower()
@@ -428,7 +462,7 @@ def normalize_config(value):
     if default_outbound.startswith('vpn:') and not default_outbound[4:].strip():
         raise RoutingError('未命中规则的默认出口未选择 VPN')
     builtin_rule_pack = str(source.get('builtin_rule_pack') or (
-        'off' if schema_version < 2 else 'local-direct-v1')).strip().lower()
+        'off' if schema_version < 2 else 'cn-direct-v1')).strip().lower()
     if builtin_rule_pack not in _routing_rules.BUILTIN_PACKS:
         raise RoutingError('内置规则包无效')
     result['builtin_rule_pack'] = builtin_rule_pack
@@ -3240,13 +3274,59 @@ if ($service) {{
             # 链路；配置未变化时不重复扫描 VPN/网卡或执行 Mihomo -t。
             self._verify_runtime_egress(config)
         try:
-            self._native_service.set_system_proxy_enabled(enabled)
+            # The native service performs the registry write transactionally and
+            # returns its resulting mode.  Do not treat a successful IPC reply
+            # as sufficient by itself: an old service can acknowledge the
+            # request while still running an incompatible protocol/version.
+            service_result = self._native_service.set_system_proxy_enabled(
+                enabled)
+            if isinstance(service_result, dict):
+                expected_mode = 'active' if enabled else 'standby'
+                if (service_result.get('runtime_mode') not in (None, expected_mode)
+                        or service_result.get('system_proxy_active') not in (None, bool(enabled))):
+                    # The IPC reply may come from a stale/partially upgraded
+                    # host.  Best-effort force standby before surfacing the
+                    # mismatch so a false success cannot leave system traffic
+                    # captured by an unverified core.
+                    try:
+                        self._native_service.set_system_proxy_enabled(False)
+                    except _routing_service.ServiceError as rollback_error:
+                        self._log_best_effort(
+                            f'[routing] 系统代理状态回退失败: '
+                            f'{type(rollback_error).__name__}')
+                    raise RoutingError(
+                        f'系统代理{action}后常驻核心状态回读不一致')
         except _routing_service.ServiceError as exc:
             raise RoutingError(
                 f'系统代理{action}失败：{_sanitize_mihomo_error(exc)}') from exc
         if enabled:
             expected = f'http://127.0.0.1:{config["mixed_port"]}'
-            if windows_system_proxy() != expected:
+            # 某些 Windows 环境中，LocalSystem 原生服务可以写入
+            # ProxyServer/ProxyOverride，但 ProxyEnable 的 WinINET 回写会被
+            # 当前交互会话立即覆盖为 0。服务回包已确认启用时，由当前 GUI
+            # 进程补写启用位；目标端点仍必须是本次服务事务写入的 mixed-port。
+            if (isinstance(service_result, dict) and
+                    service_result.get('system_proxy_active') is True and
+                    windows_system_proxy() != expected):
+                self._log_best_effort(
+                    '[routing] 原生服务已确认系统代理开启，但当前会话回读仍为关闭，'
+                    '补写 WinINET ProxyEnable')
+                try:
+                    proxy_guard.set_proxy_enabled(True)
+                except (OSError, ValueError) as exc:
+                    self._log_best_effort(
+                        f'[routing] 当前会话补写 ProxyEnable 失败：{type(exc).__name__}')
+            # Registry notifications are asynchronous on Windows.  Poll for a
+            # short bounded window before declaring a false-negative write;
+            # this mirrors Clash Verge's serialized sysproxy update/read path.
+            confirmed = False
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                if windows_system_proxy() == expected:
+                    confirmed = True
+                    break
+                time.sleep(0.05)
+            if not confirmed:
                 try:
                     self._native_service.set_system_proxy_enabled(False)
                 except _routing_service.ServiceError:
