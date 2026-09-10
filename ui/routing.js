@@ -1157,7 +1157,8 @@
         if (!preview.persisted) groups[index] = preview;
       } else groups.push(preview);
     });
-    return groups;
+    const aggregate = nodeTools.aggregateGroup(routingConfig, groups);
+    return aggregate ? [aggregate, ...groups.filter(item => item.id !== 'all')] : groups.filter(item => item.id !== 'all');
   }
 
   function openProviderNodes(provider) {
@@ -1346,7 +1347,16 @@
     const hasProviders = (routingConfig.proxy_providers || []).some(item => item.enabled);
     root.classList.toggle('hidden', !hasProviders);
     if (!hasProviders) return;
-    root.append(runtimeChoice('all', routingConfig.proxy_strategy || 'url-test', '全部订阅'));
+    const target = routingConfig.aggregate_selection;
+    const provider = providerForGroup(target?.provider_id);
+    const text = document.createElement('span');
+    text.textContent = target?.mode === 'manual'
+      ? `手动固定：${provider?.name || '订阅不可用'} · ${target.node_name}`
+      : `订阅间选择：${strategyLabel(routingConfig.proxy_strategy || 'url-test')}`;
+    const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'btn mini ghost';
+    edit.textContent = '选择节点'; edit.disabled = busy;
+    edit.onclick = () => { pendingNodeGroup = 'all'; setRoutingTab('nodes'); };
+    root.append(text, edit);
   }
 
   async function switchProxyNode(groupId, nodeName) {
@@ -1616,6 +1626,27 @@
     }
   }
 
+  function nodeSelectionState(node, group, provider) {
+    const preferenceName = preferenceNodeName(node, !!group?.preview);
+    const target = routingConfig?.aggregate_selection;
+    const owner = provider || nodeTools.nodeOwner(node, routingConfig?.proxy_providers);
+    const manualSelected = group?.id === 'all'
+      ? target?.mode === 'manual' && target.provider_id === owner?.id && target.node_name === preferenceName
+      : provider?.selection_mode === 'manual' && provider.selected_node === preferenceName;
+    const runtimeName = group?.preview && provider
+      ? `[${provider.name}] ${preferenceName}` : node.name;
+    const runtimeGroup = proxyGroupState(group?.id);
+    const runtimeSelected = !!runtimeStatus?.running && !!runtimeName && runtimeGroup?.selected === runtimeName;
+    // 默认出口取已保存配置，不能把规则页尚未应用的草稿当作运行出口。
+    const outbound = String(appliedConfig?.default_outbound || '');
+    const defaultGroupId = outbound === 'proxy' ? 'all'
+      : outbound.startsWith('proxy:') ? outbound.slice(6) : '';
+    const defaultSelected = !!runtimeStatus?.running && !!runtimeName && !!defaultGroupId
+      && proxyGroupState(defaultGroupId)?.selected === runtimeName;
+    return { preferenceName, manualSelected, runtimeSelected, defaultSelected,
+      selected: manualSelected || runtimeSelected || defaultSelected };
+  }
+
   function renderNodes() {
     const groupSelect = byId('routing-node-group');
     if (!groupSelect || !routingConfig) return;
@@ -1646,6 +1677,7 @@
     }
     const provider = providerForGroup(group?.id);
     const context = testContext(group?.id);
+    const aggregate = group?.id === 'all';
     const activeTest = testIsActive(context?.job) || testStartBusy.has(group?.id);
     byId('routing-node-toolbar')?.classList.toggle('hidden', !group);
     const term = (byId('routing-node-search')?.value || '').trim().toLowerCase();
@@ -1671,13 +1703,7 @@
       button.onclick = () => { nodeRegionFilter = region.code; renderNodes(); };
       return button;
     }));
-    const nodeSelection = node => {
-      const preferenceName = preferenceNodeName(node, !!group?.preview);
-      const manualSelected = provider?.selection_mode === 'manual' && provider.selected_node === preferenceName;
-      const runtimeSelected = !!runtimeStatus?.running && (group?.selected === node.name
-        || proxyGroupState(provider?.id)?.selected === node.name);
-      return { preferenceName, manualSelected, runtimeSelected, selected: manualSelected || runtimeSelected };
-    };
+    const nodeSelection = node => nodeSelectionState(node, group, provider);
     const selectedNames = parts.selectable.filter(node => nodeSelection(node).selected)
       .flatMap(node => [node.name, node.display_name]);
     const sortMode = byId('routing-node-sort')?.value || 'default';
@@ -1695,13 +1721,14 @@
       const nodeKey = String(node.name || '');
       const card = existingCards.get(nodeKey) || document.createElement('article');
       card.dataset.nodeKey = nodeKey;
-      const { preferenceName, manualSelected, runtimeSelected, selected } = nodeSelection(node);
+      const { preferenceName, manualSelected, runtimeSelected, defaultSelected, selected } = nodeSelection(node);
+      const owner = provider || nodeTools.nodeOwner(node, routingConfig.proxy_providers);
       const nodeState = node.state || (node.tested ? 'completed' : activeTest ? 'pending' : '');
       card.className = `routing-node${selected ? ' selected' : ''}${nodeState ? ` ${nodeState}` : ''}${node.tested && node.alive === false ? ' offline' : ''}`;
       if (selected) card.setAttribute('aria-current', 'true');
       else card.removeAttribute('aria-current');
-      const contentSignature = JSON.stringify([node, selected, manualSelected, runtimeSelected,
-        busy, preferenceBusy, provider?.id, provider?.selection_mode, group.preview]);
+      const contentSignature = JSON.stringify([node, selected, manualSelected, runtimeSelected, defaultSelected,
+        busy, preferenceBusy, provider?.id, provider?.enabled, provider?.selection_mode, owner?.id, owner?.enabled, group.preview]);
       if (card._contentSignature !== contentSignature) {
         card._contentSignature = contentSignature;
         const head = document.createElement('div');
@@ -1722,21 +1749,27 @@
         head.append(identity, delay);
         const meta = document.createElement('div'); meta.className = 'routing-node-meta';
         const type = document.createElement('small');
-        type.textContent = `${node.type || '代理节点'}${group.preview ? ' · 已持久化节点' : ''}`;
+        type.textContent = `${aggregate ? `${owner?.name || '未知订阅'} · ` : ''}${node.type || '代理节点'}${group.preview ? ' · 已持久化节点' : ''}`;
         const checkedAt = document.createElement('small'); checkedAt.className = 'routing-node-checked-at';
         checkedAt.textContent = formatNodeCheckedAt(node.tested_at);
         meta.append(type, checkedAt);
         const action = document.createElement('div'); action.className = 'routing-node-action';
         const badge = document.createElement('span');
-        badge.textContent = runtimeSelected ? '当前使用' : manualSelected ? '待启用' : provider?.selection_mode === 'auto' ? '自动模式候选' : '可设为目标节点';
-        badge.classList.toggle('on', runtimeSelected || manualSelected);
+        badge.textContent = defaultSelected ? '默认出口当前节点'
+          : runtimeSelected ? provider ? '订阅当前节点' : '聚合组当前节点'
+          : manualSelected ? '该出口已选' : owner && !owner.enabled ? '订阅未启用'
+          : provider?.selection_mode === 'auto' ? '自动模式候选' : '可设为订阅节点';
+        badge.classList.toggle('on', selected);
         const choose = document.createElement('button'); choose.type = 'button'; choose.className = 'btn mini ghost';
-        choose.textContent = !provider ? '先选择订阅' : manualSelected ? '已选择' : '使用此节点';
-        choose.disabled = busy || !provider || !preferenceName || preferenceBusy === provider.id || manualSelected;
-        choose.title = !provider ? '请先选择具体订阅，聚合代理组不能保存单一节点偏好'
+        choose.textContent = !owner ? '节点来源未知' : !owner.enabled ? '请先启用订阅'
+          : manualSelected ? '已选择' : '使用此节点';
+        choose.disabled = busy || !owner?.enabled || !preferenceName || !!preferenceBusy || manualSelected;
+        choose.title = !owner ? '无法确认节点所属订阅，请刷新节点列表'
+          : !owner.enabled ? '请先在订阅管理启用并保存该订阅'
           : !preferenceName ? '运行节点缺少 display_name，无法安全保存原始节点名'
-          : group.preview ? '保存为待启用节点，不会立即连接' : '保存为该订阅的手动节点偏好';
-        choose.onclick = () => saveProxyPreference(provider.id, 'manual', preferenceName);
+          : aggregate ? '固定全部代理订阅出口；影响所有引用该出口的规则，不改变各订阅的选点'
+          : '固定当前订阅出口，不改变全部代理订阅的手动选点';
+        choose.onclick = () => saveProxyPreference(group.id, 'manual', preferenceName, null, owner.id);
         action.append(badge, choose); card.replaceChildren(head, meta, action);
       }
       const current = grid.children[index];
@@ -1786,9 +1819,14 @@
       : requestedProvider
         ? `订阅“${requestedProvider.name}”尚未获取节点，可返回订阅管理直接获取，无需启动统一分流。`
         : '尚无节点。可在订阅管理中独立获取节点，无需启动统一分流。';
-    if (group && !provider) {
-      byId('routing-node-summary').textContent += ' · 如需固定节点，请先在上方选择一个具体订阅。';
+    if (aggregate) {
+      byId('routing-node-summary').textContent += ' · 选点影响所有引用“全部代理订阅”的规则，不改变各订阅独立选点。';
     }
+    const aggregateTarget = routingConfig.aggregate_selection;
+    const aggregateInvalid = aggregate && aggregateTarget?.mode === 'manual' && !parts.selectable.some(node =>
+      nodeTools.nodeOwner(node, routingConfig.proxy_providers)?.id === aggregateTarget.provider_id
+      && preferenceNodeName(node, !!group?.preview) === aggregateTarget.node_name);
+    if (aggregateInvalid) byId('routing-node-summary').textContent += ' · 固定节点已失效或尚未加载，请重选节点或切回自动；该出口不会自动改走其他节点。';
     const selectionInvalid = provider?.selection_mode === 'manual' && !!provider.selected_node &&
       parts.selectable.length > 0 && !parts.selectable.some(node =>
         preferenceNodeName(node, !!group?.preview) === provider.selected_node);
@@ -1796,20 +1834,23 @@
       byId('routing-node-summary').textContent += ` · 原节点“${provider.selected_node}”已失效，请重新选择。`;
     }
     const groupTest = byId('btn-routing-group-test');
-    groupTest.disabled = busy || !group || activeTest;
+    groupTest.disabled = busy || !group || activeTest || (aggregate && group.preview);
     groupTest.textContent = activeTest ? '测速中…'
       : context?.job || previewTested ? '重新测速' : group?.preview ? '临时全部测速' : '全部测速';
-    groupTest.title = group?.preview ? '后台启动无 TUN 的 Mihomo，逐节点回显延迟且不接管系统流量' : '后台测试当前运行代理组的全部节点';
+    groupTest.title = aggregate && group.preview ? '核心未运行时，请在具体订阅中执行临时测速'
+      : group?.preview ? '后台启动无 TUN 的 Mihomo，逐节点回显延迟且不接管系统流量' : '后台测试当前运行代理组的全部节点';
     const autoSelect = byId('btn-routing-auto-select');
-    autoSelect.disabled = busy || !provider || preferenceBusy === provider?.id;
+    autoSelect.disabled = busy || (!provider && !aggregate) || !!preferenceBusy;
     const smartPolicy = provider?.selection_mode === 'auto' && provider?.auto_policy?.enabled;
-    autoSelect.textContent = smartPolicy ? '智能优选已启用' : provider?.selection_mode === 'auto' ? '优选策略' : '设置自动优选';
-    autoSelect.title = !provider ? '请选择一个具体订阅后设置自动优选' : '配置地区顺序、线路关键词和最终故障回退';
+    autoSelect.textContent = aggregate ? aggregateTarget?.mode === 'manual' || routingConfig.proxy_strategy === 'select' ? '切回自动选择' : '自动选择已启用'
+      : smartPolicy ? '智能优选已启用' : provider?.selection_mode === 'auto' ? '优选策略' : '设置自动优选';
+    autoSelect.title = aggregate ? '按聚合策略在各订阅选出的节点间选择，保留各订阅的手动或智能策略'
+      : !provider ? '请选择一个具体订阅后设置自动优选' : '配置地区顺序、线路关键词和最终故障回退';
     byId('routing-node-alive').disabled = busy || (!!group?.preview && !previewTested && !context?.job);
     const locateCurrent = byId('btn-routing-locate-current');
     locateCurrent.disabled = busy || !parts.selectable.some(node => nodeSelection(node).selected);
     locateCurrent.title = locateCurrent.disabled ? '当前代理组没有已选择或正在使用的节点' : '清除节点筛选并滚动到当前节点';
-    byId('btn-routing-nodes-refresh').textContent = group?.preview ? '重新获取订阅' : '刷新列表';
+    byId('btn-routing-nodes-refresh').textContent = !aggregate && group?.preview ? '重新获取订阅' : '刷新列表';
     renderTestProgress(group?.id || '');
   }
 
@@ -1817,6 +1858,7 @@
     const providers = (routingConfig?.proxy_providers || []).filter(item => item.enabled);
     if (!providers.length) return '';
     const outbound = String(routingConfig?.default_outbound || '');
+    if (outbound === 'proxy') return 'all';
     const requested = outbound.startsWith('proxy:') ? outbound.slice(6) : '';
     return providers.find(item => item.id === requested)?.id
       || providers.find(item => item.selection_mode === 'manual' && String(item.selected_node || '').trim())?.id
@@ -1826,13 +1868,8 @@
   function locateCurrentNode() {
     const group = nodeGroups().find(item => item.id === byId('routing-node-group')?.value);
     const provider = providerForGroup(group?.id);
-    const selected = partitionNodes(group?.nodes || []).selectable.find(node => {
-      const preferenceName = preferenceNodeName(node, !!group?.preview);
-      const manualSelected = provider?.selection_mode === 'manual' && provider.selected_node === preferenceName;
-      const runtimeSelected = !!runtimeStatus?.running && (group?.selected === node.name
-        || proxyGroupState(provider?.id)?.selected === node.name);
-      return manualSelected || runtimeSelected;
-    });
+    const selected = partitionNodes(group?.nodes || []).selectable.find(node =>
+      nodeSelectionState(node, group, provider).selected);
     if (!selected) {
       nodeFeedback('当前代理组没有可定位的已选择节点。', 'warning');
       return;
@@ -1930,6 +1967,11 @@
 
   function mergePreferenceIntoConfig(config, authoritative, providerId, mode, nodeName) {
     if (!config) return;
+    if (providerId === 'all') {
+      config.aggregate_selection = clone(authoritative.aggregate_selection);
+      config.proxy_strategy = authoritative.proxy_strategy;
+      return;
+    }
     config.proxy_providers = config.proxy_providers || [];
     let target = config.proxy_providers.find(item => item.id === providerId);
     const source = authoritative?.proxy_providers?.find(item => item.id === providerId);
@@ -1947,16 +1989,23 @@
     if (authoritative?.default_outbound) config.default_outbound = authoritative.default_outbound;
   }
 
-  async function saveProxyPreference(providerId, mode, nodeName = '', policy = null) {
+  async function saveProxyPreference(providerId, mode, nodeName = '', policy = null, ownerId = '') {
+    const aggregate = providerId === 'all';
     const provider = providerForGroup(providerId);
-    if (!provider || preferenceBusy) return false;
+    const owner = aggregate ? providerForGroup(ownerId) : provider;
+    if ((!provider && !aggregate) || preferenceBusy) return false;
+    if (mode === 'manual' && !owner?.enabled) {
+      nodeFeedback('请先在订阅管理启用并保存该订阅。', 'warning');
+      return false;
+    }
     beginMutation();
     preferenceBusy = providerId; renderNodes(); renderProviders();
     const action = mode === 'manual' ? `正在保存目标节点“${nodeName}”…` : '正在启用自动优选…';
     nodeFeedback(action); feedback(action);
     try {
-      const result = await backend().save_proxy_preference(
-        providerId, mode, nodeName, { ...provider }, policy);
+      const result = aggregate
+        ? await backend().save_aggregate_proxy_preference(mode, ownerId, nodeName)
+        : await backend().save_proxy_preference(providerId, mode, nodeName, { ...provider }, policy);
       if (result?.ok === false || !result?.config) throw new Error(result?.msg || '代理偏好保存失败');
       if (Number(result.routing_revision || 0) < latestRoutingRevision) {
         void loadSetup(true, true, true);
@@ -1967,6 +2016,10 @@
       mergePreferenceIntoConfig(routingConfig, result.config, providerId, mode, nodeName);
       mergePreferenceIntoConfig(appliedConfig, result.config, providerId, mode, nodeName);
       mergePreferenceIntoConfig(savedConfig, result.config, providerId, mode, nodeName);
+      if (aggregate && byId('routing-proxy-strategy')) {
+        byId('routing-proxy-strategy').value = result.config.proxy_strategy;
+        byId('routing-proxy-strategy')._routingWidget?.refresh();
+      }
       setup.config = clone(result.config);
       const defaultSelect = byId('routing-default');
       if (result.config.default_outbound && defaultSelect &&
@@ -1980,7 +2033,7 @@
         runtimeStatus = clone(result.status);
         setStatus(runtimeStatus);
       }
-      const preview = providerPreview(provider);
+      const preview = provider ? providerPreview(provider) : null;
       if (preview) {
         providerPreviews.set(providerId, {
           ...preview,
@@ -2011,6 +2064,10 @@
   async function refreshNodes() {
     if (busy) return;
     const current = nodeGroups().find(item => item.id === byId('routing-node-group').value);
+    if (current?.id === 'all' && current.preview) {
+      await loadSetup(true, true, true);
+      return;
+    }
     if (current?.preview) {
       const provider = routingConfig.proxy_providers?.find(item => item.id === current.id);
       if (provider) await previewProvider(provider);
@@ -2031,6 +2088,13 @@
       feedback(`刷新失败：${friendlyError(error)}`, 'error');
       nodeFeedback(`刷新失败：${friendlyError(error)}`, 'error');
     } finally { setBusy(false); renderNodes(); }
+  }
+
+  function aggregateProviderIsPinned(providerId) {
+    const target = routingConfig.aggregate_selection;
+    if (target?.mode !== 'manual' || target.provider_id !== providerId) return false;
+    feedback('该订阅包含“全部代理订阅”的固定节点，请先到节点页重选节点或切回自动，再停用或删除订阅。', 'warning');
+    return true;
   }
 
   function providerReferencePlan(providerId, includeDisabledRules = false) {
@@ -2169,18 +2233,37 @@
       enabledInput.disabled = busy;
       enabledInput.setAttribute('aria-label', `${provider.name || `订阅 ${index + 1}`}启用状态`);
       enabledInput.onchange = async () => {
+        if (!enabledInput.checked && aggregateProviderIsPinned(provider.id)) {
+          enabledInput.checked = true; return;
+        }
         const plan = providerReferencePlan(provider.id);
         if (!enabledInput.checked && plan.count) {
           const confirmed = await confirmAction({ title: '停用被引用的订阅', message: `有 ${plan.count} 个生效出口正在引用“${provider.name}”。停用后将自动改为${plan.replacementLabel}，是否继续？`, confirmText: '停用并调整' });
           if (!confirmed) { enabledInput.checked = true; return; }
           replaceProviderReferences(plan);
         }
-        provider.enabled = enabledInput.checked; setDirty(); renderProviders(); refreshOutboundEditors();
+        provider.enabled = enabledInput.checked;
+        setDirty(); renderProviders(); refreshOutboundEditors();
+        // 订阅开关属于低风险配置，修改后自动持久化；代理运行时仍由后端按安全边界决定是否应用。
+        try {
+          const saved = await backend().save_config(collectConfig());
+          if (saved === false) throw new Error('配置保存失败');
+          savedConfig = clone(collectConfig());
+          savedSnapshot = snapshot(savedConfig);
+          setDirty(false);
+          feedback(provider.enabled ? '订阅已启用并保存' : '订阅已停用并保存', 'success');
+        } catch (error) {
+          provider.enabled = !enabledInput.checked;
+          enabledInput.checked = provider.enabled;
+          setDirty(); renderProviders(); refreshOutboundEditors();
+          feedback(`订阅开关保存失败：${friendlyError(error)}`, 'error');
+        }
       };
       enabled.append(enabledInput, document.createElement('i'));
       const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn mini danger'; remove.textContent = '删除';
       remove.disabled = busy;
       remove.onclick = async () => {
+        if (aggregateProviderIsPinned(provider.id)) return;
         const plan = providerReferencePlan(provider.id, true);
         const confirmed = await confirmAction({ title: '删除代理订阅', message: plan.count ? `有 ${plan.count} 个出口正在引用“${provider.name}”。删除后将自动改为${plan.replacementLabel}，是否继续？` : `确定删除“${provider.name}”吗？`, confirmText: plan.count ? '删除并调整' : '删除' });
         if (!confirmed) return;
@@ -2498,7 +2581,7 @@
   function collectConfig() {
     return {
       ...routingConfig,
-      schema_version: 7,
+      schema_version: 8,
       enabled: byId('routing-enabled').checked,
       capture_mode: byId('routing-capture-mode').value,
       traffic_mode: byId('routing-traffic-mode').value,
@@ -3009,7 +3092,9 @@
     byId('btn-routing-group-test').onclick = testProxyGroup;
     byId('btn-routing-test-cancel').onclick = cancelProxyTest;
     byId('btn-routing-auto-select').onclick = () => {
-      const provider = providerForGroup(byId('routing-node-group')?.value || '');
+      const groupId = byId('routing-node-group')?.value || '';
+      if (groupId === 'all') { void saveProxyPreference('all', 'auto'); return; }
+      const provider = providerForGroup(groupId);
       if (provider) openAutoPolicy(provider);
     };
     byId('btn-routing-auto-policy-close').onclick = closeAutoPolicy;

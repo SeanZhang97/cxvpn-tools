@@ -51,7 +51,7 @@ for (const page of ['subscriptions', 'nodes', 'rules', 'connections', 'logs']) {
 }
 assert.match(source, /preview_routing/);
 assert.match(source, /apply_routing/);
-assert.match(source, /schema_version: 7/);
+assert.match(source, /schema_version: 8/);
 assert.match(html, /id="routing-dns-mode"/);
 assert.match(html, /id="routing-dns-advanced"/);
 assert.match(html, /阿里 DNS \+ DNSPod DoH/);
@@ -159,9 +159,12 @@ assert.match(source, /function preferenceNodeName/);
 assert.match(source, /function runtimeGroupUsesPreference/);
 assert.match(source, /group\.selected === `\[\$\{provider\.name\}\] \$\{selectedNode\}`/);
 assert.match(source, /preferenceNodeName\(node, !!group\?\.preview\)/);
-assert.match(source, /saveProxyPreference\(provider\.id, 'manual', preferenceName\)/);
+assert.match(source, /saveProxyPreference\(group\.id, 'manual', preferenceName, null, owner\.id\)/);
 assert.doesNotMatch(source, /saveProxyPreference\(provider\.id, 'manual', node\.name\)/);
 assert.match(source, /使用此节点/);
+assert.match(source, /save_aggregate_proxy_preference/);
+assert.match(source, /choose\.disabled = busy \|\| !owner\?\.enabled/);
+assert.match(source, /provider\?\.id, provider\?\.enabled, provider\?\.selection_mode/);
 assert.match(source, /自动优选/);
 assert.match(source, /selection_mode/);
 assert.match(source, /selected_node/);

@@ -45,6 +45,11 @@
   function targetProvider(config) {
     const providers = enabledProviders(config);
     const outbound = String(config?.default_outbound || '');
+    const target = config?.aggregate_selection;
+    if (outbound === 'proxy' && target?.mode === 'manual') {
+      const owner = providers.find(item => item.id === target.provider_id);
+      return owner ? { ...owner, selection_mode: 'manual', selected_node: target.node_name } : null;
+    }
     const requested = outbound.startsWith('proxy:') ? outbound.slice(6) : '';
     return providers.find(item => item.id === requested)
       || providers.find(item => item.selection_mode === 'manual' && item.selected_node)
@@ -465,9 +470,10 @@
     const cache = cacheSummary(setup, providers);
     const phase = servicePhase(config, status);
     const running = phase === 'running';
+    const aggregate = config.default_outbound === 'proxy';
     const provider = targetProvider(config);
-    selectedGroupId = provider?.id || 'all';
-    const group = preferredGroup(groups, provider);
+    selectedGroupId = aggregate ? 'all' : provider?.id || 'all';
+    const group = aggregate ? groups.find(item => item.id === 'all') : preferredGroup(groups, provider);
     const node = currentNode(group);
     const persistedNodes = provider ? providerNodes(setup, provider.id) : [];
     const targetNode = provider?.selection_mode === 'manual'
@@ -478,7 +484,7 @@
       runtimeUsesPreference(group, provider);
     const guard = usesProxy(config) ? selectionGuard(setup, provider, group)
       : { valid: true, reason: '' };
-    const summary = window.RoutingWorkspace?.nodeSummary?.(provider?.id || 'all') || {};
+    const summary = window.RoutingWorkspace?.nodeSummary?.(selectedGroupId) || {};
     renderOperationNotice();
     setModeUi(config.traffic_mode || selectedMode);
     setText('proxy-capture-status', config.capture_mode === 'tun' ? 'TUN（高级）' : 'Windows 系统代理');
@@ -546,6 +552,15 @@
     setText('proxy-node-delay', provider?.selection_mode === 'manual'
       ? manualCurrent ? '当前使用' : targetNodeTestSummary(targetNode)
       : running && node ? `${node.display_name || node.name} · 当前使用` : '启动后自动选择');
+    if (aggregate) {
+      const manual = config.aggregate_selection?.mode === 'manual';
+      setText('proxy-provider-name', '全部代理订阅');
+      setText('proxy-provider-meta', `${manual ? '手动固定' : '订阅间自动选择'} · ${providers.length} 个已启用订阅`);
+      setText('proxy-node-name', manual
+        ? `${provider?.name || '订阅不可用'} · ${config.aggregate_selection.node_name}` : '自动选择');
+      setText('proxy-node-delay', manual ? manualCurrent ? '当前使用' : targetNodeTestSummary(targetNode)
+        : running && node ? `${node.name} · 当前使用` : '启动后按各订阅策略择优');
+    }
     setText('proxy-provider-count', `${providers.length} 个`);
     setText('proxy-node-count', `${summary.visible || cache.total} 个`);
     setText('proxy-cache-state', cache.available ? `已保存 ${cache.total} 条缓存记录` : '尚无可用缓存');
@@ -559,7 +574,8 @@
     renderObservability(latestObservability || setup?.observability);
     setText('proxy-recent-node', running ? node?.display_name || group?.selected || '正在选择代理节点' : '尚未连接代理节点');
     setText('proxy-recent-delay', node?.delay ? `${node.delay} ms` : '未测速');
-    setText('proxy-recent-source', running && group ? `${provider?.name || group.name} · 实际运行节点` : provider ? `${provider.name} · 目标偏好已保存` : '等待配置订阅');
+    setText('proxy-recent-source', running && group ? `${aggregate ? group.name : provider?.name || group.name} · 实际运行节点`
+      : aggregate ? '全部代理订阅 · 出口偏好已保存' : provider ? `${provider.name} · 目标偏好已保存` : '等待配置订阅');
     byId('proxy-recent-delay')?.classList.toggle('on', !!node?.delay);
     byId('proxy-current-provider').disabled = busy;
     byId('proxy-current-node').disabled = busy || !provider;
@@ -606,7 +622,9 @@
     }
     const providers = enabledProviders(config);
     const provider = targetProvider(config);
-    const targetGroup = preferredGroup(cached.groups || cachedSetup.proxy_groups || [], provider);
+    const cachedGroups = cached.groups || cachedSetup.proxy_groups || [];
+    const targetGroup = config.default_outbound === 'proxy'
+      ? cachedGroups.find(item => item.id === 'all') : preferredGroup(cachedGroups, provider);
     const phase = servicePhase(config, cachedStatus);
     if (phase === 'unknown') {
       busy = true;
@@ -634,7 +652,8 @@
       : { valid: true, reason: '' };
     if (nextEnabled && !guard.valid) {
       toast({ ok: false, tone: 'warning', msg: guard.reason });
-      if (provider) openNodes(provider.id); else openSubscriptions();
+      if (config.default_outbound === 'proxy') openNodes('all');
+      else if (provider) openNodes(provider.id); else openSubscriptions();
       return;
     }
     const repairing = phase === 'degraded' && nextEnabled;

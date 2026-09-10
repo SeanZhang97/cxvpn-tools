@@ -5,6 +5,7 @@ from __future__ import annotations
 from core import subscription_store
 from core.routing_tasks import commit_scope
 from core import routing_auto_policy
+from core import routing_aggregate
 
 
 def provider_group_strategy(provider):
@@ -19,16 +20,27 @@ def runtime_node_name(provider, selected_node):
 
 def manual_runtime_targets(config, provider_ids=None):
     targets = set(provider_ids) if provider_ids is not None else None
-    return [(provider['id'], runtime_node_name(
+    result = [(provider['id'], runtime_node_name(
         provider, provider.get('selected_node') or ''))
         for provider in config.get('proxy_providers') or []
         if provider.get('enabled') and
         (targets is None or provider.get('id') in targets) and
         provider.get('selection_mode') == 'manual']
+    if routing_aggregate.is_manual(config) and (targets is None or 'all' in targets):
+        result.append(('all', routing_aggregate.runtime_target(config)))
+    return result
+
+
+def runtime_group_name(group_id):
+    return 'PROXY' if group_id == 'all' else f'PROXY-{group_id}'
 
 
 def manual_selection_error(config, provider_ids=None):
     targets = set(provider_ids) if provider_ids is not None else None
+    if targets is None or 'all' in targets:
+        problem = routing_aggregate.selection_error(config)
+        if problem:
+            return problem
     for provider in config.get('proxy_providers') or []:
         if (not provider.get('enabled') or
                 (targets is not None and provider.get('id') not in targets) or

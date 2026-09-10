@@ -33,7 +33,7 @@ class RoutingSchemaTests(unittest.TestCase):
 
     def test_new_install_defaults_to_system_proxy(self):
         value = routing.default_config()
-        self.assertEqual(value['schema_version'], 7)
+        self.assertEqual(value['schema_version'], 8)
         self.assertEqual(value['capture_mode'], 'system-proxy')
         self.assertEqual(value['builtin_rule_pack'], 'cn-direct-v1')
         self.assertEqual(value['dns_mode'], 'simple')
@@ -46,7 +46,7 @@ class RoutingSchemaTests(unittest.TestCase):
         })
         self.assertEqual(value['capture_mode'], 'tun')
         self.assertEqual(value['builtin_rule_pack'], 'off')
-        self.assertEqual(value['schema_version'], 7)
+        self.assertEqual(value['schema_version'], 8)
         self.assertEqual(value['dns_mode'], 'advanced')
 
     def test_config_load_migrates_legacy_without_changing_path(self):

@@ -3,7 +3,7 @@
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
 界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
 关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置备份, 配置历史, 诊断包, DNS高级模式, nameserver-policy, 托盘快捷操作, 全局快捷键, 轻量模式
-最后验证：2026-09-08 | 分支：main
+最后验证：2026-09-10 | 分支：main
 
 ## 职责边界
 
@@ -42,7 +42,7 @@
 `config.json.routing` 的稳定字段为：
 
 - `enabled`：期望启用状态，默认 `false`。
-- `schema_version`：当前为 `7`。旧配置缺少版本时按首版语义迁移为 `capture_mode=tun`、
+- `schema_version`：当前为 `8`。旧配置缺少版本时按首版语义迁移为 `capture_mode=tun`、
   `builtin_rule_pack=off`，不得套用新安装默认值改变既有流量路径。
 - `capture_mode`：`system-proxy` 或 `tun`，二者互斥。新安装推荐默认是
   `system-proxy`；TUN 是需要透明接管 UDP/不遵循系统代理应用时的高级模式。
@@ -51,6 +51,8 @@
 - `physical_interface`：物理直连绑定的 Windows 接口别名；留空时选择默认路由中优先级
   最高且非 VPN/TUN 的已连接接口。
 - `proxy_strategy`：全部已启用订阅合并后的策略，支持 `url-test`、`fallback`、`select`。
+  `aggregate_selection` 另保存“全部代理订阅”出口的 `auto`/`manual` 模式、所属订阅 ID 和
+  原始节点名；手动模式只在该节点所属的已启用订阅 provider 上生成精确 `select` 组。
 - `proxy_providers[]`：最多 16 个 Clash/Mihomo proxy-provider；字段为 `id`、`name`、
   `url`、`enabled`、`strategy`、`interval`、`filter`、`exclude_filter`、
   `download_route`、`download_proxy`、`user_agent`、`selection_mode`、`selected_node`、
@@ -500,7 +502,14 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   地区筛选由节点国旗和中英文地点名称在前端动态推导，只展示当前组实际存在的常用地区；排序支持
   订阅原始顺序、当前节点优先、延迟、倍率和名称，均不改变后端节点顺序或持久化配置。“定位当前
   节点”会清除展示筛选并聚焦手动目标或运行节点。
-  每个节点卡可“使用此节点”，订阅也可切回自动优选；从网络代理快捷入口进入时可返回
+  已启用订阅的节点卡可“设为本订阅节点”，各订阅独立保存手动偏好，不改写默认出口。
+  未启用订阅的手动选点按钮禁用，前端提交入口与后端 `save_proxy_preference` 同时拦截；
+  后端以已保存订阅的启用状态为准，不能通过传入 enabled 草稿绕过。
+  节点卡区分“本订阅已选”“订阅当前节点”和“默认出口当前节点”：默认出口标记以
+  已保存配置的 `default_outbound` 对应运行组解析出的真实节点为依据，聚合出口读取 `all`
+  组；不把其它订阅组的选中值或未应用出口草稿当作默认出口。代理关闭或运行组缺失时不标记
+  默认出口当前节点。预览节点比对时补回订阅名前缀，避免跨订阅同名节点混淆。
+  订阅也可切回自动优选；从网络代理快捷入口进入时可返回
   “网络代理”，全部入口始终复用同一节点状态，避免两套节点列表并存。
 - 节点工作台的“优选策略”打开内联智能策略面板；默认草稿为“日本 → 美国”，每个地区
   默认优先 `高速专线/IPLC/IEPL`。用户可调整地区顺序、添加补充匹配词、分别设置线路词、
@@ -551,9 +560,9 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   Controller 的通用 `/proxies` 目录；停止后保留已收集结果，不等待或发布迟到请求。
   默认测速目标与 Clash Verge Rev v2.5.2 对齐为
   `http://cp.cloudflare.com/generate_204`，超时 10 秒且要求 HTTP 204，避免 Google HTTPS
-  目标的地理路径和 TLS 握手造成跨客户端延迟不可比。测速后立即终止临时进程并保存安全节点快照。预览态允许把节点
-  保存为待启用目标；若订阅仍是未保存草稿，该操作会保存订阅草稿和节点偏好，但不会隐式
-  启用订阅或修改默认出口。启用服务时后端再次校验并应用。关闭引擎或重启 GUI 后仍可读取
+  目标的地理路径和 TLS 握手造成跨客户端延迟不可比。测速后立即终止临时进程并保存安全节点快照。
+  订阅未启用时仍可预览和测速，但不能手动选点；已启用订阅在代理关闭时可保存节点偏好，
+  不会隐式开启代理或修改默认出口。启用服务时后端再次校验并应用。关闭引擎或重启 GUI 后仍可读取
   签名一致的持久快照。
 - 名称表现为流量、重置、到期、公告等订阅说明的伪节点单独放入“订阅信息”，不参与节点计数、
   可用数、测速、搜索结果选点和代理卡片；国旗字符在 Windows WebView 中转换为 ISO 双字母徽标。

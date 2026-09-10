@@ -265,7 +265,7 @@ class RoutingSelectionTests(unittest.TestCase):
         save.assert_not_called()
 
     @mock.patch('api.cfgmod.save')
-    def test_api_saves_preview_provider_without_changing_route_when_selecting_node(
+    def test_api_rejects_disabled_preview_provider_when_selecting_node(
             self, save):
         current = routing.normalize_config({
             'enabled': False,
@@ -291,13 +291,67 @@ class RoutingSelectionTests(unittest.TestCase):
             result = instance.save_proxy_preference(
                 'alpha', 'manual', 'Tokyo 01', draft)
 
+        self.assertFalse(result['ok'])
+        self.assertIn('启用并保存该订阅', result['msg'])
+        self.assertEqual(instance.cfg['routing'], current)
+        self.assertEqual(instance.cfg['routing']['proxy_providers'], [])
+        save.assert_not_called()
+        instance.routing.status.assert_not_called()
+
+    @mock.patch('api.cfgmod.save')
+    def test_disabled_saved_provider_rejects_manual_selection_before_io(self, save):
+        for previous_mode in ('auto', 'manual'):
+            with self.subTest(previous_mode=previous_mode):
+                draft = provider_config(
+                    enabled=False, selection_mode=previous_mode,
+                    selected_node='原节点')
+                draft['default_outbound'] = 'physical'
+                current = routing.normalize_config(draft)
+                instance = Api.__new__(Api)
+                instance._lock = threading.Lock()
+                instance._routing_lock = threading.Lock()
+                instance.cfg = {'routing': current}
+                instance.routing = mock.Mock()
+                instance.log = mock.Mock()
+                with mock.patch.object(subscription_store, 'load_node_snapshot') as snapshot:
+                    result = instance.save_proxy_preference(
+                        'alpha', 'manual', '中文 e\u0301 \U0001f1ef\U0001f1f5',
+                        {**current['proxy_providers'][0], 'enabled': True})
+                self.assertFalse(result['ok'])
+                self.assertIn('启用并保存该订阅', result['msg'])
+                self.assertEqual(instance.cfg['routing'], current)
+                snapshot.assert_not_called()
+                instance.routing.status.assert_not_called()
+        save.assert_not_called()
+
+    @mock.patch('api.cfgmod.save')
+    def test_two_subscriptions_keep_independent_manual_nodes(self, save):
+        current = routing.normalize_config(provider_config())
+        current['default_outbound'] = 'proxy'
+        current['proxy_providers'].append({
+            **current['proxy_providers'][0], 'id': 'beta', 'name': '订阅二',
+            'selection_mode': 'manual', 'selected_node': '另一节点',
+        })
+        instance = Api.__new__(Api)
+        instance._lock = threading.Lock()
+        instance._routing_lock = threading.Lock()
+        instance.cfg = {'routing': current}
+        instance.routing = mock.Mock()
+        instance.routing.status.return_value = {'running': False, 'core_running': False}
+        instance.log = mock.Mock()
+        node_name = '中文 e\u0301 \U0001f1ef\U0001f1f5'
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.dict(os.environ, {'LOCALAPPDATA': root}):
+            subscription_store.persist_node_snapshot(
+                current['proxy_providers'][0], [{'name': node_name}])
+            result = instance.save_proxy_preference('alpha', 'manual', node_name)
         self.assertTrue(result['ok'])
-        provider = result['config']['proxy_providers'][0]
-        self.assertFalse(provider['enabled'])
-        self.assertEqual(provider['selection_mode'], 'manual')
-        self.assertEqual(provider['selected_node'], 'Tokyo 01')
-        self.assertEqual(result['config']['default_outbound'], 'physical')
-        self.assertIn('启用该订阅', result['msg'])
+        self.assertEqual(result['config']['proxy_providers'][0]['selected_node'], node_name)
+        stored = instance.cfg['routing']
+        self.assertEqual(stored['default_outbound'], 'proxy')
+        self.assertEqual(stored['proxy_providers'][0]['selected_node'], node_name)
+        self.assertEqual(stored['proxy_providers'][1]['selected_node'], '另一节点')
+        self.assertEqual(stored['proxy_providers'][1]['selection_mode'], 'manual')
         save.assert_called_once()
 
     @mock.patch('api.cfgmod.save')

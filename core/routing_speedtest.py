@@ -158,9 +158,28 @@ def test_group(manager, config, group_id, health_url, error_type,
                   if item.get('id') == target), None)
     if not group:
         raise error_type('代理组不存在，或统一分流服务尚未运行')
+    def on_progress(event):
+        if progress:
+            progress(event)
+        if event.get('event') != 'result' or target == 'all':
+            return
+        result = event.get('node')
+        if not isinstance(result, dict):
+            return
+        # 单节点结果完成即落盘，避免强制重启时丢失已经展示的延迟。
+        try:
+            current = manager.proxy_overview(config)
+            group_now = next((item for item in current if item.get('id') == target), None)
+            if group_now:
+                merged = [{**node, **({result.get('name'): result}.get(str(node.get('name') or ''), {}))}
+                          for node in group_now.get('nodes') or []]
+                persist_nodes(config, target, merged)
+        except (OSError, ValueError, error_type):
+            manager.log('[routing] 单节点测速结果保存失败')
+
     results = test_nodes(
         manager._controller_request, config, group.get('nodes') or [],
-        health_url, progress, cancel_event, workers=8)
+        health_url, on_progress, cancel_event, workers=8)
     if target != 'all':
         try:
             merged = [{**node, **results.get(str(node.get('name') or ''), {})}

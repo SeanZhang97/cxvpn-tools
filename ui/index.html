@@ -440,9 +440,9 @@
         </div>
         <p id="routing-node-feedback" class="form-feedback routing-node-feedback" role="status" aria-live="polite"></p>
         <section class="card routing-nodes-card proxy-nodes-card">
-          <div class="routing-rules-head"><div><h3>节点列表</h3><p>自动策略会展示当前选择；手动策略下可点击节点切换。</p></div><button id="btn-routing-nodes-refresh" class="btn ghost">刷新列表</button></div>
+          <div class="routing-rules-head"><div><h3>节点列表</h3><p>点击节点可固定当前选点出口；不同出口的选择独立保存。</p></div><button id="btn-routing-nodes-refresh" class="btn ghost">刷新列表</button></div>
           <div id="routing-node-toolbar" class="routing-node-toolbar">
-            <div class="field grow"><label for="routing-node-group">订阅 / 代理组</label><select id="routing-node-group"></select></div>
+            <div class="field grow"><label for="routing-node-group">选点出口</label><select id="routing-node-group"></select></div>
             <div class="field grow"><label for="routing-node-search">搜索节点</label><input id="routing-node-search" placeholder="输入节点名称或类型"></div>
             <label class="routing-filter-check"><input id="routing-node-alive" type="checkbox"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m7.5 12.5 3 3 6.5-7"/></svg></i><span>仅显示可用</span></label>
             <button id="btn-routing-auto-select" class="btn ghost" type="button">自动优选</button>

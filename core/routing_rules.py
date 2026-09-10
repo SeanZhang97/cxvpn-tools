@@ -11,7 +11,7 @@ from core import app_paths
 from core import config as cfgmod
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 BUILTIN_PACKS = {'off', 'local-direct-v1', 'cn-direct-v1'}
 BUILTIN_PACK_ORDER = ('off', 'local-direct-v1', 'cn-direct-v1')
 RULE_PACK_DIR_NAME = 'rule-packs'

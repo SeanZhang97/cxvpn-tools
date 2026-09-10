@@ -33,6 +33,7 @@ from core.routing_support import stop_temporary_process as _stop_temporary_proce
 from core.routing_support import verify_runtime_files
 from core import routing_selection as _selection
 from core import routing_auto_policy as _auto_policy
+from core import routing_aggregate as _aggregate
 from core import routing_rules as _routing_rules
 from core import routing_service as _routing_service
 from core.routing_tasks import commit_scope
@@ -141,6 +142,7 @@ def default_config():
         'traffic_mode': 'rule',
         'physical_interface': '',
         'proxy_strategy': 'url-test',
+        'aggregate_selection': _aggregate.default_selection(),
         'proxy_providers': [],
         'default_outbound': 'physical',
         'builtin_rule_pack': 'cn-direct-v1',
@@ -452,6 +454,8 @@ def normalize_config(value):
         provider_ids.add(provider_id)
         provider_names.add(name.casefold())
     result['proxy_providers'] = normalized_providers
+    result['aggregate_selection'] = _aggregate.normalize(
+        source.get('aggregate_selection'), normalized_providers, RoutingError)
     result['default_outbound'] = str(source.get('default_outbound') or 'physical').strip()
     if result['default_outbound'].startswith('proxy:'):
         result['default_outbound'] = 'proxy:' + result['default_outbound'][6:].lower()
@@ -801,9 +805,18 @@ def _referenced_provider_ids(config):
     values = [config.get('default_outbound', '')]
     values.extend(rule.get('outbound', '') for rule in _active_rules(config))
     targets = _target_provider_ids(config)
-    if 'proxy' in values:
+    if 'proxy' in values and not _aggregate.is_manual(config):
         targets.update(item['id'] for item in config.get('proxy_providers', [])
                        if item.get('enabled'))
+    return targets
+
+
+def _referenced_group_ids(config):
+    targets = _referenced_provider_ids(config)
+    values = [config.get('default_outbound', '')]
+    values.extend(rule.get('outbound', '') for rule in _active_rules(config))
+    if 'proxy' in values and _aggregate.is_manual(config):
+        targets.add('all')
     return targets
 
 
@@ -861,7 +874,9 @@ def explain_domain(value, domain, vpns=None):
     elif outbound == 'proxy':
         enabled = [item for item in config['proxy_providers'] if item['enabled']]
         outbound_name = '聚合代理池'
-        detail = f'{len(enabled)} 个已启用订阅，策略：{config["proxy_strategy"]}'
+        detail = (f'手动固定：{_aggregate.runtime_target(config)}'
+                  if _aggregate.is_manual(config) else
+                  f'{len(enabled)} 个已启用订阅，策略：{config["proxy_strategy"]}')
         available = bool(enabled)
     elif outbound.startswith('proxy:'):
         provider = providers.get(outbound[6:])
@@ -1182,7 +1197,8 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
                     provider_groups[provider['id']],
                     _selection.provider_group_strategy(provider),
                     provider_keys=[provider_keys[provider['id']]]))
-        generated['proxy-groups'].append(_proxy_group_config(
+        generated['proxy-groups'].append(_aggregate.build_manual_group(config, provider_keys)
+            if _aggregate.is_manual(config) else _proxy_group_config(
             'PROXY', config['proxy_strategy'],
             proxy_names=[provider_groups[item['id']]
                          for item in enabled_providers]))
@@ -1624,7 +1640,8 @@ if ($service) {{
     def _group_identity(config, group_id):
         group_id = str(group_id or '').strip().lower()
         if group_id == 'all':
-            return 'PROXY', '全部代理订阅', config['proxy_strategy']
+            return ('PROXY', '全部代理订阅',
+                    'select' if _aggregate.is_manual(config) else config['proxy_strategy'])
         provider = next((item for item in config['proxy_providers']
                          if item['enabled'] and item['id'] == group_id), None)
         if not provider:
@@ -2673,12 +2690,12 @@ if ($service) {{
         xml = _service_xml()
         controller_url = f'http://127.0.0.1:{config["controller_port"]}/version'
         authorization = f'Bearer {config["controller_secret"]}'
-        referenced_provider_ids = _referenced_provider_ids(config)
+        referenced_provider_ids = _referenced_group_ids(config)
         required_group_rows = []
         manual_targets = dict(_selection.manual_runtime_targets(
             config, referenced_provider_ids))
         for provider_id in sorted(referenced_provider_ids):
-            group_name = f'PROXY-{provider_id}'
+            group_name = _selection.runtime_group_name(provider_id)
             selected_node = manual_targets.get(provider_id, '')
             group_url = (
                 f'http://127.0.0.1:{config["controller_port"]}/proxies/'
@@ -3008,11 +3025,11 @@ if ($service) {{
             self.log('[routing] 待机核心已就绪，不执行系统接管与出口连通性门控')
             return
 
-        referenced = _referenced_provider_ids(config)
+        referenced = _referenced_group_ids(config)
         manual_targets = dict(_selection.manual_runtime_targets(
             config, referenced))
         pending = {
-            provider_id: (f'PROXY-{provider_id}',
+            provider_id: (_selection.runtime_group_name(provider_id),
                           manual_targets.get(provider_id, ''))
             for provider_id in referenced
         }
@@ -3040,7 +3057,7 @@ if ($service) {{
             self.log(f'[routing] 被引用代理组已加载，共 {len(referenced)} 个订阅')
 
         for provider_id, selected_node in manual_targets.items():
-            group_name = f'PROXY-{provider_id}'
+            group_name = _selection.runtime_group_name(provider_id)
             path = f'/proxies/{urllib.parse.quote(group_name, safe="")}'
             try:
                 self._controller_request(
@@ -3296,8 +3313,8 @@ if ($service) {{
             '复用常驻 Mihomo，不重载配置')
         if enabled:
             for provider_id, target in _selection.manual_runtime_targets(
-                    config, _referenced_provider_ids(config)):
-                path = f'/proxies/PROXY-{provider_id}'
+                    config, _referenced_group_ids(config)):
+                path = f'/proxies/{_selection.runtime_group_name(provider_id)}'
                 state = self._controller_request(config, path, timeout=3)
                 if not isinstance(state, dict) or state.get('now') != target:
                     self.select_proxy_node(config, provider_id, target)
@@ -3445,7 +3462,7 @@ if ($service) {{
 
         verify_runtime()
         self.log('[routing] 开始执行启用前校验：运行时、节点偏好、接口、VPN 与 TUN 冲突')
-        referenced_provider_ids = _referenced_provider_ids(config)
+        referenced_provider_ids = _referenced_group_ids(config)
         selection_error = _selection.manual_selection_error(
             config, referenced_provider_ids)
         if selection_error:

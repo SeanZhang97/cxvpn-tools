@@ -162,8 +162,42 @@
     return result;
   }
 
+  function nodeOwner(node, providers) {
+    const matches = (providers || []).filter(provider => node.provider_id
+      ? provider.id === node.provider_id
+      : String(node.name || '').startsWith(`[${provider.name}] `));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function aggregateGroup(config, groups) {
+    const providers = (config?.proxy_providers || []).filter(item => item.enabled);
+    if (!providers.length) return null;
+    const runtime = groups.find(item => item.id === 'all');
+    const runtimeNodes = new Map((runtime?.nodes || []).map(node => [node.name, node]));
+    const nodes = new Map();
+    for (const provider of providers) {
+      const group = groups.find(item => item.id === provider.id);
+      const source = group?.nodes || (runtime?.nodes || []).filter(node => nodeOwner(node, providers)?.id === provider.id);
+      for (const node of source) {
+        const prefix = `[${provider.name}] `;
+        const raw = group?.preview ? String(node.display_name || node.name || '')
+          : String(node.name || '').startsWith(prefix) ? node.name.slice(prefix.length)
+          : String(node.display_name || '');
+        if (!raw) continue;
+        const name = prefix + raw;
+        const latest = runtimeNodes.get(name);
+        const useLatest = latest && (latest.state === 'testing' || latest.state === 'pending'
+          || Number(latest.tested_at || 0) > Number(node.tested_at || 0));
+        nodes.set(name, { ...node, ...(useLatest ? latest : {}), name, display_name: raw, provider_id: provider.id });
+      }
+    }
+    return { ...runtime, id: 'all', name: '全部代理订阅', nodes: [...nodes.values()],
+      strategy: config.aggregate_selection?.mode === 'manual' ? 'select' : config.proxy_strategy || 'url-test',
+      preview: !runtime, aggregate: true };
+  }
+
   window.RoutingNodeTools = Object.freeze({
     REGION_LABELS, nodeText, splitNodeLabel, regionCode, regionOptions, multiplierValue, sortNodes,
-    subscriptionMetadata,
+    subscriptionMetadata, nodeOwner, aggregateGroup,
   });
 })();

@@ -20,6 +20,7 @@ from core.mihomo_activity import MihomoActivityRelay
 from core.mihomo_telemetry import MihomoTelemetryRelay
 from core.routing_speedtest import RoutingTestJobs
 from core.routing_api_tasks import RoutingTaskApi
+from core.routing_aggregate import AggregateSelectionApi
 from core.routing_tasks import operation_scope
 from core.routing_updates import RoutingUpdateWorker
 from core.ui_state_stream import UiStateStream
@@ -128,7 +129,7 @@ def _safe_console_write(line):
         pass
 
 
-class Api(RoutingTaskApi):
+class Api(RoutingTaskApi, AggregateSelectionApi):
     def __init__(self):
         self.cfg = cfgmod.load()
         self._lock = threading.Lock()
@@ -712,6 +713,8 @@ class Api(RoutingTaskApi):
                         raise routing.RoutingError('代理订阅保存失败，请重试')
                 selected = str(node_name or '').strip()
                 if target_mode == 'manual':
+                    if not provider.get('enabled'):
+                        raise routing.RoutingError('请先在订阅管理启用并保存该订阅')
                     snapshot = routing.subscription_store.load_node_snapshot(
                         provider)
                     names = {str(item.get('name') or '')
@@ -745,8 +748,25 @@ class Api(RoutingTaskApi):
                 if status.get('running') and structural_change:
                     self.log(
                         f'[routing] 节点优选策略开始重新应用: provider={target_id}')
-                    applied = self._apply_routing_locked(
-                        normalized, 'proxy-preference')
+                    try:
+                        applied = self._apply_routing_locked(
+                            normalized, 'proxy-preference')
+                    except routing.RoutingError as apply_error:
+                        # 运行中的控制端暂时不可达时，仍先保留用户的下次运行偏好；
+                        # 不能因本次热切换失败而丢弃已明确提交的配置。
+                        with self._lock:
+                            committed = json.loads(json.dumps(self.cfg))
+                            committed['routing'] = normalized
+                            cfgmod.save(committed)
+                            self.cfg = committed
+                        self._routing_changed()
+                        self.log(f'[routing] 运行时切换未确认，偏好已落盘: {type(apply_error).__name__}')
+                        return self._routing_response({
+                            'ok': True, 'config': normalized,
+                            'status': self.routing.status(normalized, quick=True),
+                            'requires_apply': True,
+                            'msg': '节点偏好已保存；当前核心未连接，开启代理时将自动应用',
+                        })
                     if not applied.get('ok'):
                         return applied
                     self.log(
