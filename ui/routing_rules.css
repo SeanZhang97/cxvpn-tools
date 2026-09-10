@@ -65,6 +65,15 @@
 }
 .routing-rules-head h3 { font-size: 15px; }
 .routing-rules-head p { color: #91a3c1; }
+.routing-default-card #routing-rule-composition {
+  margin: 16px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid rgba(148,163,184,.11);
+  color: #91a3c1;
+  font-size: 12px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
 .routing-provider {
   padding: 15px;
   border-color: rgba(129,140,248,.18);

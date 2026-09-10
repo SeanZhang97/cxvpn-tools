@@ -7,6 +7,7 @@ const html = fs.readFileSync(path.join(root, 'ui', 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'ui', 'app.js'), 'utf8');
 const routing = fs.readFileSync(path.join(root, 'ui', 'routing.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'ui', 'style.css'), 'utf8');
+const rulesCss = fs.readFileSync(path.join(root, 'ui', 'routing_rules.css'), 'utf8');
 const desktop = fs.readFileSync(
   path.join(root, 'core', 'windows_desktop.py'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'main.py'), 'utf8');
@@ -19,6 +20,15 @@ const missingIds = [...new Set(referencedIds.filter(id => !ids.includes(id)))];
 assert.deepEqual(duplicateIds, []);
 assert.deepEqual(missingIds, []);
 assert.equal((css.match(/\{/g) || []).length, (css.match(/\}/g) || []).length);
+const ruleCompositionStyle = rulesCss.match(/\.routing-default-card #routing-rule-composition\s*\{([^}]+)\}/)?.[1] || '';
+assert.match(ruleCompositionStyle, /margin: 16px 0 0;/);
+assert.match(ruleCompositionStyle, /padding: 12px 0 0;/);
+assert.match(ruleCompositionStyle, /border-top: 1px solid/);
+assert.match(ruleCompositionStyle, /color: #91a3c1;/);
+assert.match(ruleCompositionStyle, /font-size: 12px;/);
+assert.match(ruleCompositionStyle, /line-height: 1\.75;/);
+assert.match(ruleCompositionStyle, /overflow-wrap: anywhere;/);
+assert.doesNotMatch(ruleCompositionStyle, /(?:^|;)\s*(?:(?:max-)?height:|overflow: hidden|white-space: nowrap)/);
 
 assert.match(html, /立即处理授权/);
 assert.match(html, /id="btn-br-automation" class="btn accent"[^>]*>执行自动化<\/button>/);

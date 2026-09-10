@@ -3180,9 +3180,35 @@ if ($service) {{
                     config['capture_mode'] == 'system-proxy'):
                 self._log_best_effort(
                     '[routing] 显式本地链路已通过，开始在候选事务中启用 Windows 系统代理')
-                self._native_service.activate_system_proxy(transaction_id)
+                activation = self._native_service.activate_system_proxy(transaction_id)
                 active_proxy = windows_system_proxy()
                 expected_proxy = f'http://127.0.0.1:{config["mixed_port"]}'
+                # WinINET registry notifications are asynchronous and the
+                # interactive session may briefly write ProxyEnable=0 back.
+                # Mirror the fast-toggle path: repair only the enable bit,
+                # then poll before treating activation as failed.
+                if active_proxy != expected_proxy:
+                    state = (proxy_guard.read_proxy_state()
+                             if isinstance(activation, dict) and
+                             activation.get('system_proxy_active') is True and
+                             activation.get('mixed_port') == config['mixed_port']
+                             else {})
+                    if (state.get('enable') is False and
+                            state.get('server') == f'127.0.0.1:{config["mixed_port"]}'):
+                        self._log_best_effort(
+                            '[routing] 服务已确认本地端口，当前会话启用位为关闭，'
+                            '开始补写 ProxyEnable 并回读（总期限 2.5 秒）')
+                        try:
+                            proxy_guard.set_proxy_enabled(True)
+                        except (OSError, ValueError) as exc:
+                            self._log_best_effort(
+                                f'[routing] 当前会话补写 ProxyEnable 失败：{type(exc).__name__}')
+                    deadline = time.monotonic() + 2.5
+                    while time.monotonic() < deadline:
+                        if windows_system_proxy() == expected_proxy:
+                            active_proxy = expected_proxy
+                            break
+                        time.sleep(0.05)
                 if active_proxy != expected_proxy:
                     raise RoutingError(
                         'Windows 系统代理写入后回读不一致，已自动恢复原设置')

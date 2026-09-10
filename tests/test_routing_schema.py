@@ -465,6 +465,31 @@ class RoutingSchemaTests(unittest.TestCase):
                 manager._install('candidate.json', config)
         manager._native_service.rollback.assert_called_once_with('tx-readback')
 
+    def test_transaction_repairs_only_confirmed_local_disabled_proxy(self):
+        for server, enabled, confirmed, should_write in (
+                ('127.0.0.1:17890', False, True, True),
+                ('127.0.0.1:7897', False, True, False),
+                ('127.0.0.1:17890', True, True, False),
+                ('127.0.0.1:17890', False, False, False)):
+            with self.subTest(server=server, enabled=enabled, confirmed=confirmed):
+                manager = routing.RoutingManager()
+                manager._native_service = mock.Mock()
+                manager._native_service.apply.return_value = {'transaction_id': 'tx'}
+                manager._native_service.activate_system_proxy.return_value = {
+                    'system_proxy_active': confirmed, 'mixed_port': 17890}
+                manager._native_provider_files = mock.Mock(return_value=[])
+                manager._wait_native_ready = mock.Mock()
+                config = routing.normalize_config(routing.default_config())
+                with mock.patch.object(routing, 'windows_system_proxy',
+                                       side_effect=['', 'http://127.0.0.1:17890']), \
+                        mock.patch.object(routing.proxy_guard, 'read_proxy_state',
+                                          return_value={'enable': enabled, 'server': server}), \
+                        mock.patch.object(routing.proxy_guard, 'set_proxy_enabled') as write:
+                    manager._install('candidate.json', config)
+                self.assertEqual(write.call_count, int(should_write))
+                manager._native_service.commit.assert_called_once_with('tx')
+                manager._native_service.rollback.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

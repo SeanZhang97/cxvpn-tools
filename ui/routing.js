@@ -1813,6 +1813,16 @@
     renderTestProgress(group?.id || '');
   }
 
+  function preferredNodeGroupId() {
+    const providers = (routingConfig?.proxy_providers || []).filter(item => item.enabled);
+    if (!providers.length) return '';
+    const outbound = String(routingConfig?.default_outbound || '');
+    const requested = outbound.startsWith('proxy:') ? outbound.slice(6) : '';
+    return providers.find(item => item.id === requested)?.id
+      || providers.find(item => item.selection_mode === 'manual' && String(item.selected_node || '').trim())?.id
+      || providers[0]?.id || '';
+  }
+
   function locateCurrentNode() {
     const group = nodeGroups().find(item => item.id === byId('routing-node-group')?.value);
     const provider = providerForGroup(group?.id);
@@ -3213,6 +3223,9 @@
       if (page === 'rules') activeTab = 'rules';
       if (page === 'nodes') {
         activeTab = 'nodes';
+        if (!pendingNodeGroup) {
+          pendingNodeGroup = preferredNodeGroupId();
+        }
         renderNodes();
       }
       closeRoutingSelect();

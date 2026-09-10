@@ -9,6 +9,7 @@ from core import app_paths
 
 BASE = app_paths.user_data_root()
 CFG_PATH = os.path.join(BASE, 'config.json')
+CFG_BACKUP_PATH = CFG_PATH + '.bak'
 
 DEFAULT = {
     'phone': '',
@@ -94,10 +95,15 @@ def _merge_dict(target, source):
 
 def load():
     cfg = json.loads(json.dumps(DEFAULT))
-    if os.path.exists(CFG_PATH):
+    candidates = [CFG_PATH, CFG_BACKUP_PATH]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
         try:
-            with open(CFG_PATH, encoding='utf-8') as f:
+            with open(path, encoding='utf-8-sig') as f:
                 user = json.load(f)
+            if not isinstance(user, dict):
+                raise ValueError('配置根节点必须是对象')
             # 旧版“enabled”唯一对应 TUN。迁移时必须显式保留这一流量路径，
             # 不能因新安装默认改为系统代理而静默改变已有用户的接管方式。
             routing = user.get('routing') if isinstance(user, dict) else None
@@ -106,8 +112,9 @@ def load():
                 routing['capture_mode'] = 'tun'
                 routing['builtin_rule_pack'] = 'off'
             _merge_dict(cfg, user)
+            return cfg
         except Exception:
-            pass
+            continue
     return cfg
 
 
@@ -121,10 +128,22 @@ def save(cfg):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
+        if os.path.isfile(CFG_PATH):
+            backup_temp = CFG_BACKUP_PATH + '.tmp'
+            with open(CFG_PATH, 'rb') as source, open(backup_temp, 'wb') as target:
+                target.write(source.read())
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(backup_temp, CFG_BACKUP_PATH)
         os.replace(temporary, CFG_PATH)
     except Exception:
         try:
             os.unlink(temporary)
+        except OSError:
+            pass
+        try:
+            if os.path.exists(CFG_BACKUP_PATH + '.tmp'):
+                os.unlink(CFG_BACKUP_PATH + '.tmp')
         except OSError:
             pass
         raise

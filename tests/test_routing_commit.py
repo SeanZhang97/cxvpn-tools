@@ -35,6 +35,18 @@ class ConfigAtomicSaveTests(unittest.TestCase):
             self.assertEqual(
                 [name for name in os.listdir(root) if name.endswith('.tmp')], [])
 
+    def test_load_recovers_from_valid_backup_when_primary_is_corrupt(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, 'config.json')
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write('{corrupt')
+            with open(path + '.bak', 'w', encoding='utf-8') as stream:
+                json.dump({'routing': {'rules': [{'domain': 'example.com'}]}}, stream)
+            with patch.object(cfgmod, 'CFG_PATH', path), \
+                    patch.object(cfgmod, 'CFG_BACKUP_PATH', path + '.bak'):
+                value = cfgmod.load()
+            self.assertEqual(value['routing']['rules'][0]['domain'], 'example.com')
+
 
 class RoutingCommitTests(unittest.TestCase):
     def make_api(self):
