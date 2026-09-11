@@ -116,6 +116,9 @@ begin
   Started := GetTickCount64;
   Log(Name + ': request submitted; source=bundled offline installer; timeout=600s');
   try
+    WizardForm.StatusLabel.Caption := '正在准备 ' + Name + ' 离线安装包，请稍候...';
+    WizardForm.Refresh;
+    Log(Name + ': extracting bundled offline installer');
     ExtractTemporaryFile(FileName);
     ExtractTemporaryFile('run-prerequisite.ps1');
     InstallerPath := ExpandConstant('{tmp}\') + FileName;
@@ -148,8 +151,12 @@ begin
     Result := '用户已取消升级。';
     Exit;
   end;
+  WizardForm.StatusLabel.Caption := '正在检查本机依赖（不下载文件）...';
+  WizardForm.Refresh;
   Log('Checking bundled prerequisites (machine-wide registry, x64)');
   if not VCRuntimeInstalled() then begin
+    WizardForm.StatusLabel.Caption := '检测到 Visual C++ Runtime 缺失，准备离线安装...';
+    WizardForm.Refresh;
     Result := InstallDependency('Visual C++ Runtime', 'VC_redist.x64.exe',
       'VC', '{#VCSHA256}');
     if Result <> '' then Exit;
@@ -160,6 +167,8 @@ begin
     end;
   end else Log('Visual C++ Runtime: installed version satisfies requirement; skipped');
   if not WebView2Installed() then begin
+    WizardForm.StatusLabel.Caption := '检测到 WebView2 Runtime 缺失，准备离线安装...';
+    WizardForm.Refresh;
     Result := InstallDependency('WebView2 Runtime', 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe',
       'WebView2', '{#WebViewSHA256}');
     if Result <> '' then Exit;

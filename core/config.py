@@ -12,7 +12,6 @@ from core import state_store
 BASE = app_paths.user_data_root()
 CFG_PATH = os.path.join(BASE, 'config.json')
 CFG_BACKUP_PATH = CFG_PATH + '.bak'
-AUTOMATION_DEFAULTS_VERSION = 1
 
 DEFAULT = {
     'app_update': {
@@ -33,7 +32,6 @@ DEFAULT = {
     'auto_renew': False,
     'auto_connect': False,
     'close_to_tray': False,
-    'automation_defaults_version': AUTOMATION_DEFAULTS_VERSION,
     'global_hotkeys_enabled': False,
     'lightweight_mode': False,
     'captcha_max_attempts': 10,
@@ -102,30 +100,13 @@ def _merge_dict(target, source):
             target[key] = value
 
 
-def _apply_automation_defaults_migration(cfg):
-    """首次读取旧配置时关闭历史默认开启的自动化选项。"""
-    try:
-        version = int(cfg.get('automation_defaults_version') or 0)
-    except (TypeError, ValueError):
-        version = 0
-    if version >= AUTOMATION_DEFAULTS_VERSION:
-        return False
-    for key in ('auto_renew', 'auto_connect', 'close_to_tray'):
-        cfg[key] = False
-    cfg['automation_defaults_version'] = AUTOMATION_DEFAULTS_VERSION
-    return True
-
-
 def load():
     # 数据库损坏不能静默回退旧 JSON 再覆盖新数据；JSON 只用于首次迁移。
     root = os.path.dirname(CFG_PATH)
     stored = state_store.load_config(root)
     if isinstance(stored, dict):
         cfg = json.loads(json.dumps(DEFAULT))
-        if 'automation_defaults_version' not in stored:
-            cfg['automation_defaults_version'] = 0
         _merge_dict(cfg, stored)
-        migrated = _apply_automation_defaults_migration(cfg)
         if os.path.normcase(root) == os.path.normcase(app_paths.user_data_root()):
             from core import subscription_store
             with state_store.transaction(root):
@@ -135,8 +116,6 @@ def load():
                 state_store.ensure_config_links([
                     (provider['id'], subscription_store.provider_filename(provider),
                      subscription_store.snapshot_key(provider)) for provider in providers], root)
-        if migrated:
-            save(cfg)
         return cfg
     cfg = json.loads(json.dumps(DEFAULT))
     candidates = [CFG_PATH, CFG_BACKUP_PATH]
@@ -148,8 +127,6 @@ def load():
                 user = json.load(f)
             if not isinstance(user, dict):
                 raise ValueError('配置根节点必须是对象')
-            if 'automation_defaults_version' not in user:
-                cfg['automation_defaults_version'] = 0
             # 旧版“enabled”唯一对应 TUN。迁移时必须显式保留这一流量路径，
             # 不能因新安装默认改为系统代理而静默改变已有用户的接管方式。
             routing = user.get('routing') if isinstance(user, dict) else None
@@ -161,7 +138,6 @@ def load():
         except (OSError, ValueError, TypeError):
             continue
         break
-    _apply_automation_defaults_migration(cfg)
     save(cfg)
     return cfg
 
