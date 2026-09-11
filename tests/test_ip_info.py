@@ -1,5 +1,6 @@
 import unittest
 import threading
+import subprocess
 from unittest import mock
 
 from core import ip_info
@@ -171,6 +172,14 @@ class IpInfoTests(unittest.TestCase):
         self.assertEqual(result['ip'], '192.168.1.113')
         self.assertEqual(result['detail'], '以太网')
         self.assertEqual(powershell.call_args.kwargs['timeout'], 8)
+
+    @mock.patch('core.ip_info.vpn_os._ps', side_effect=subprocess.TimeoutExpired(
+        ['powershell'], 8))
+    def test_query_local_hides_powershell_command_on_timeout(self, powershell):
+        result = ip_info.query_local()
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error'], '读取本机网络信息超时')
+        self.assertNotIn('Command', result['error'])
 
     @mock.patch('core.ip_info.query_overseas')
     @mock.patch('core.ip_info.query_domestic')

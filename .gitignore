@@ -23,6 +23,7 @@ htmlcov/
 /*.spec
 /routing-service/target/
 /runtime/routing/CXVPNRoutingHost.exe
+/installer/prereqs/
 
 # Editor and operating-system files
 .idea/

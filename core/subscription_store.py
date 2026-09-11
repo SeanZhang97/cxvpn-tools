@@ -15,6 +15,7 @@ import tempfile
 import time
 
 from core import app_paths
+from core import state_store
 
 
 CACHE_VERSION = 1
@@ -75,6 +76,64 @@ def metadata_path(provider, root=None):
 def node_snapshot_path(provider, root=None):
     """返回当前订阅 URL 指纹作用域内的安全节点快照路径。"""
     return cache_path(provider, root) + '.nodes.json'
+
+
+def snapshot_key(provider):
+    return str(provider.get('id') or '').lower() + ':' + node_snapshot_fingerprint(provider)
+
+
+def _cache_record(provider):
+    return state_store.load_cache(provider_filename(provider))
+
+
+def _mirror_snapshot(provider, document):
+    payload = json.dumps(document, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    _atomic_write(node_snapshot_path(provider), payload, 'subscription.nodes.')
+
+
+def ensure_cache_file(provider):
+    """服务只读取导出文件；每次交给服务前从数据库生成，不能使用遗留旧文件。"""
+    record = _cache_record(provider)
+    if record is None:
+        migrate_provider(provider)
+        record = _cache_record(provider)
+    if record is not None:
+        path = cache_path(provider)
+        try:
+            with open(path, 'rb') as stream:
+                identical = stream.read(DEFAULT_SIZE_LIMIT + 1) == record['body']
+        except OSError:
+            identical = False
+        if not identical:
+            _atomic_write(path, record['body'], 'subscription.export.')
+    return cache_path(provider)
+
+
+def migrate_provider(provider):
+    """仅导入尚未入库的旧文件；ID + URL/筛选共同界定节点归属。"""
+    key = snapshot_key(provider)
+    if state_store.load_snapshot(key) is not None and _cache_record(provider) is not None:
+        return
+    old = load_node_snapshot(provider, root=cache_root())
+    if not old['nodes']:
+        legacy = state_store.load_snapshot(node_snapshot_fingerprint(provider))
+        if legacy:
+            old = _normalize_node_snapshot(provider, legacy)
+    status = cache_status(provider, root=cache_root())
+    body = None
+    if status['available'] and _cache_record(provider) is None:
+        with open(cache_path(provider), 'rb') as stream:
+            body = stream.read(DEFAULT_SIZE_LIMIT + 1)
+        if not body or len(body) > DEFAULT_SIZE_LIMIT:
+            raise ValueError('迁移订阅缓存大小无效')
+    with state_store.transaction():
+        if state_store.load_snapshot(key) is None and old['nodes']:
+            state_store.save_snapshot(key, old)
+        if body is not None and _cache_record(provider) is None:
+            metadata = {**status, 'version': CACHE_VERSION,
+                        'url_fingerprint': url_fingerprint(provider)}
+            metadata.pop('available', None)
+            state_store.save_cache(provider_filename(provider), provider, body, metadata, key)
 
 
 def _empty_node_snapshot(provider):
@@ -168,6 +227,16 @@ def load_node_snapshot(provider, root=None,
                        size_limit=MAX_NODE_SNAPSHOT_SIZE):
     """加载安全展示快照；任何损坏或越界内容均返回当前指纹的空快照。"""
     empty = _empty_node_snapshot(provider)
+    fingerprint = node_snapshot_fingerprint(provider)
+    if root is None:
+        key = snapshot_key(provider)
+        stored = state_store.load_snapshot(key)
+        if stored is None:
+            migrate_provider(provider)
+            stored = state_store.load_snapshot(key)
+        if stored is not None:
+            return _normalize_node_snapshot(provider, stored)
+        return empty
     path = node_snapshot_path(provider, root)
     try:
         if (isinstance(size_limit, bool) or not isinstance(size_limit, int) or
@@ -182,12 +251,21 @@ def load_node_snapshot(provider, root=None,
         if len(payload) != size or len(payload) > size_limit:
             return empty
         value = json.loads(payload.decode('utf-8'))
-        return _normalize_node_snapshot(provider, value)
+        normalized = _normalize_node_snapshot(provider, value)
+        return normalized
     except (OSError, UnicodeError, ValueError, TypeError, OverflowError):
         return empty
 
 
 def cache_status(provider, root=None):
+    if root is None:
+        record = _cache_record(provider)
+        if record is None:
+            migrate_provider(provider)
+            record = _cache_record(provider)
+        if record is not None:
+            return {'available': True, **{key: record['metadata'].get(key)
+                    for key in ('node_count', 'updated_at', 'source')}}
     path = cache_path(provider, root)
     if not os.path.isfile(path):
         return {
@@ -238,10 +316,14 @@ def cache_status(provider, root=None):
 
 
 def stage_cache(provider, target_path, root=None):
-    source = cache_path(provider, root)
     status = cache_status(provider, root)
     if not status['available']:
         return False
+    if root is None:
+        record = _cache_record(provider)
+        _atomic_write(target_path, record['body'], 'subscription.stage.')
+        return True
+    source = cache_path(provider, root)
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     shutil.copy2(source, target_path)
     return True
@@ -410,6 +492,13 @@ def persist_bytes(provider, payload, node_count, source,
         'updated_at': int(time.time()),
         'source': str(source or '内置引擎'),
     }
+    if root is None:
+        with state_store.transaction():
+            state_store.save_cache(provider_filename(provider), provider, payload, metadata, snapshot_key(provider))
+            state_store.after_commit(lambda: _atomic_write_pair(
+                path, bytes(payload), metadata_path(provider),
+                json.dumps(metadata, ensure_ascii=False).encode('utf-8')))
+        return {'available': True, **{key: metadata[key] for key in ('node_count', 'updated_at', 'source')}}
     _atomic_write_pair(
         path, bytes(payload), metadata_path(provider, root),
         json.dumps(metadata, ensure_ascii=False, indent=2).encode('utf-8'))
@@ -434,6 +523,16 @@ def persist_bytes_and_nodes(provider, payload, node_count, source, nodes,
     }
     snapshot, snapshot_payload = _serialize_node_snapshot(
         provider, nodes, timestamp, snapshot_size_limit)
+    if root is None:
+        with state_store.transaction():
+            state_store.save_cache(provider_filename(provider), provider, payload, metadata, snapshot_key(provider))
+            state_store.save_snapshot(snapshot_key(provider), snapshot)
+            snapshot = state_store.load_snapshot(snapshot_key(provider))
+            state_store.after_commit(lambda: _atomic_write_pair(
+                cache_path(provider), bytes(payload), metadata_path(provider),
+                json.dumps(metadata, ensure_ascii=False).encode('utf-8')))
+            state_store.after_commit(lambda: _mirror_snapshot(provider, snapshot))
+        return {'available': True, **{key: metadata[key] for key in ('node_count', 'updated_at', 'source')}}, snapshot
     _atomic_write_many([
         (cache_path(provider, root), bytes(payload), 'subscription.body.'),
         (metadata_path(provider, root), json.dumps(
@@ -500,6 +599,16 @@ def persist_node_snapshot(provider, nodes, root=None, updated_at=None,
     """原子保存节点展示与测速状态，不持久化节点连接参数或订阅 URL。"""
     document, payload = _serialize_node_snapshot(
         provider, nodes, updated_at, size_limit)
+    if root is None:
+        if not nodes:
+            previous = load_node_snapshot(provider)
+            if previous['nodes']:
+                return previous
+        with state_store.transaction():
+            state_store.save_snapshot(snapshot_key(provider), document)
+            document = state_store.load_snapshot(snapshot_key(provider))
+            state_store.after_commit(lambda: _mirror_snapshot(provider, document))
+        return document
     _atomic_write(
         node_snapshot_path(provider, root), payload, 'subscription.nodes.')
     return document

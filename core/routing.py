@@ -49,7 +49,7 @@ SERVICE_ID = 'CXVPNRoutingService'
 # 服务数据目录本轮不迁移，保留旧内部路径以维持已安装服务兼容性。
 LEGACY_SERVICE_DIR_NAME = 'CXVPNManager\\RoutingService'
 MIHOMO_VERSION = 'v1.19.30'
-MIHOMO_SHA256 = 'F55B3028D9160BEB9044F21B05DD7405B46524614A19642D6291492F5F985761'
+MIHOMO_SHA256 = '6AC25FCB26AFE8E1BEA24B6E6E80805BF884A33232D12E2D78DFA0B6C529AC14'
 GEOIP_DATABASE = 'Country.mmdb'
 GEOIP_DATABASE_SHA256 = '4BF15C30737F7CC2807BCBE1ACE44149B18579BEA3B13BF7BEA935A3F2834052'
 WINSW_VERSION = 'v2.12.0'
@@ -1744,7 +1744,8 @@ if ($service) {{
                 'alive_count': len([
                     item for item in nodes if item['alive'] is True]),
             })
-        return result
+        return _selection.restore_runtime_test_results(
+            normalized, result, self._log_best_effort)
 
     def connection_observability(self, config):
         """返回去标识化连接与规则命中摘要，不暴露目标 IP、域名或凭据。"""
@@ -2228,9 +2229,21 @@ if ($service) {{
                         } for item in provider_payload.get('proxies') or []
                             if isinstance(item, dict) and
                             str(item.get('name') or '').strip()]
+                        completed_nodes = {}
+
+                        def persist_preview_progress(event):
+                            if event.get('event') == 'result' and _persist_snapshot:
+                                tested_node = event['node']
+                                completed_nodes[tested_node['name']] = tested_node
+                                merged = [{**node, **completed_nodes.get(node['name'], {})}
+                                          for node in preview_nodes]
+                                _selection.persist_provider_nodes(normalized, provider['id'], merged)
+                            if _progress:
+                                _progress(event)
+
                         preview_delays = _test_nodes(
                             self._controller_request, controller_config,
-                            preview_nodes, HEALTH_CHECK_URL, _progress,
+                            preview_nodes, HEALTH_CHECK_URL, persist_preview_progress,
                             _cancel_event, workers=8)
                 finally:
                     _stop_temporary_process(process, close_job)
@@ -2302,11 +2315,13 @@ if ($service) {{
             snapshot_warning = ''
             if _persist_snapshot:
                 try:
-                    _selection.persist_provider_nodes(
+                    persisted = _selection.persist_provider_nodes(
                         normalized, provider['id'], nodes)
-                except (OSError, ValueError):
-                    snapshot_warning = '节点快照保存失败，下次打开需重新获取节点'
-                    self.log('[routing] 订阅解析成功，但节点快照保存失败')
+                    if persisted:
+                        nodes = persisted['nodes']
+                except (OSError, ValueError) as exc:
+                    self.log(f'[routing] 订阅快照提交失败，整批缓存回滚: type={type(exc).__name__}')
+                    raise RoutingError('节点快照保存失败，本次订阅更新未提交，已保留原缓存') from exc
         route_label = (
             '本地节点缓存' if _cache_only
             else f'自定义代理 {_proxy_display(download["proxy_url"])}'
@@ -2655,6 +2670,7 @@ if ($service) {{
         }
 
     def _test_config(self, path, data_dir):
+        started_at = time.monotonic()
         os.makedirs(data_dir, exist_ok=True)
         source_geoip = _binary_path(GEOIP_DATABASE)
         target_geoip = os.path.join(data_dir, GEOIP_DATABASE)
@@ -2664,19 +2680,32 @@ if ($service) {{
         if _sha256(target_geoip).upper() != GEOIP_DATABASE_SHA256:
             raise RoutingError('GeoIP 数据库完整性校验失败')
         try:
+            self._log_best_effort(
+                f'[routing] Mihomo 配置预检开始：目标={path}，数据目录={data_dir}，超时=45秒')
             result = subprocess.run(
                 [_binary_path('mihomo.exe'), '-t', '-d', data_dir, '-f', path],
                 capture_output=True, text=True, encoding='utf-8',
                 errors='replace', timeout=45,
                 creationflags=subprocess.CREATE_NO_WINDOW)
         except subprocess.TimeoutExpired as exc:
+            self._log_best_effort(
+                f'[routing] Mihomo 配置预检超时：目标={path}，'
+                f'耗时={time.monotonic() - started_at:.1f}秒')
             raise RoutingError('Mihomo 配置预检超时，请检查配置后重试') from exc
         except OSError as exc:
+            self._log_best_effort(
+                f'[routing] Mihomo 配置预检启动失败：异常={type(exc).__name__}，'
+                f'耗时={time.monotonic() - started_at:.1f}秒')
             raise RoutingError('无法启动 Mihomo 配置预检') from exc
+        self._log_best_effort(
+            f'[routing] Mihomo 配置预检完成：退出码={result.returncode}，'
+            f'stdout_bytes={len(result.stdout or "")}，stderr_bytes={len(result.stderr or "")}，'
+            f'耗时={time.monotonic() - started_at:.1f}秒')
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or '').strip().splitlines()
             safe_detail = _sanitize_mihomo_error(
-                detail[-1] if detail else '未知错误')
+                detail[-1] if detail else
+                f'进程退出码 {result.returncode}，未返回诊断信息；请查看运行日志')
             raise RoutingError(f'Mihomo 配置预检失败：{safe_detail}')
 
     def _install_legacy(self, config_path, config):
@@ -2714,7 +2743,7 @@ if ($service) {{
                 continue
             service_cache_names.append(
                 subscription_store.provider_filename(provider))
-            source = subscription_store.cache_path(provider)
+            source = subscription_store.ensure_cache_file(provider)
             if not subscription_store.cache_status(provider)['available']:
                 continue
             destination = os.path.join(
@@ -2996,7 +3025,7 @@ if ($service) {{
         for provider in config.get('proxy_providers', []):
             if not provider.get('enabled'):
                 continue
-            path = subscription_store.cache_path(provider)
+            path = subscription_store.ensure_cache_file(provider)
             if not subscription_store.cache_status(provider).get('available'):
                 continue
             if not os.path.isfile(path):

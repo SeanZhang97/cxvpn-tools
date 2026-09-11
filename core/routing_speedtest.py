@@ -103,8 +103,6 @@ def test_nodes(controller_request, controller_config, nodes, health_url,
             'tested_at': int(time.time()),
             'elapsed_ms': elapsed_ms,
         }
-        if progress and not cancel.is_set():
-            progress({'event': 'result', 'node': result})
         return result
 
     results = {}
@@ -134,6 +132,9 @@ def test_nodes(controller_request, controller_config, nodes, health_url,
                     continue
                 if result:
                     results[result['name']] = result
+                    if progress and not cancel.is_set():
+                        # 在领取任务的线程中提交，保留配置版本 guard；worker 仅做网络请求。
+                        progress({'event': 'result', 'node': result})
                 submit_one()
     finally:
         for future in pending:
@@ -158,35 +159,26 @@ def test_group(manager, config, group_id, health_url, error_type,
                   if item.get('id') == target), None)
     if not group:
         raise error_type('代理组不存在，或统一分流服务尚未运行')
+    collected = {}
+
     def on_progress(event):
+        if event.get('event') == 'result':
+            result = event['node']
+            collected[result['name']] = result
+            if target != 'all':
+                merged = [{**node, **collected.get(node['name'], {})}
+                          for node in group.get('nodes') or []]
+                persist_nodes(config, target, merged)
         if progress:
             progress(event)
-        if event.get('event') != 'result' or target == 'all':
-            return
-        result = event.get('node')
-        if not isinstance(result, dict):
-            return
-        # 单节点结果完成即落盘，避免强制重启时丢失已经展示的延迟。
-        try:
-            current = manager.proxy_overview(config)
-            group_now = next((item for item in current if item.get('id') == target), None)
-            if group_now:
-                merged = [{**node, **({result.get('name'): result}.get(str(node.get('name') or ''), {}))}
-                          for node in group_now.get('nodes') or []]
-                persist_nodes(config, target, merged)
-        except (OSError, ValueError, error_type):
-            manager.log('[routing] 单节点测速结果保存失败')
 
     results = test_nodes(
         manager._controller_request, config, group.get('nodes') or [],
         health_url, on_progress, cancel_event, workers=8)
     if target != 'all':
-        try:
-            merged = [{**node, **results.get(str(node.get('name') or ''), {})}
-                      for node in group.get('nodes') or []]
-            persist_nodes(config, target, merged)
-        except (OSError, ValueError):
-            manager.log('[routing] 节点测速完成，但节点快照保存失败')
+        merged = [{**node, **results.get(str(node.get('name') or ''), {})}
+                  for node in group.get('nodes') or []]
+        persist_nodes(config, target, merged)
     return {
         'ok': True,
         'msg': f'代理组“{display_name}”测速完成',

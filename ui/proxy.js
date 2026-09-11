@@ -721,6 +721,8 @@
 
   async function openNodes(groupId = '', origin = null) {
     if (groupId) selectedGroupId = groupId;
+    // 页面切换和加载会触发 sync，必须保留本次点击指定的订阅。
+    const requestedGroupId = selectedGroupId;
     returnTarget = ['routing', 'subscriptions', 'rules'].includes(origin?.page)
       ? { page: origin.page, tab: origin.tab || 'overview' }
       : { page: 'proxy', tab: 'home' };
@@ -729,10 +731,10 @@
         ? '返回订阅' : returnTarget.page === 'rules' ? '返回规则' : '返回网络代理');
     await goToPage('nodes');
     await window.RoutingWorkspace?.load?.();
-    window.RoutingWorkspace?.openNodes?.(selectedGroupId);
+    window.RoutingWorkspace?.openNodes?.(requestedGroupId);
     const select = byId('routing-node-group');
-    if (selectedGroupId && select && [...select.options].some(item => item.value === selectedGroupId)) {
-      select.value = selectedGroupId;
+    if (requestedGroupId && select && [...select.options].some(item => item.value === requestedGroupId)) {
+      select.value = requestedGroupId;
       select.dispatchEvent(new Event('change', { bubbles: true }));
     }
     syncNodeStats();

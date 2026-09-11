@@ -5,7 +5,7 @@ GitHub Release 获取，并在引入时校验 SHA-256。
 
 | 文件 | 版本 | SHA-256 | 来源 |
 | --- | --- | --- | --- |
-| `mihomo.exe` | v1.19.30 | `F55B3028D9160BEB9044F21B05DD7405B46524614A19642D6291492F5F985761` | MetaCubeX/mihomo |
+| `mihomo.exe` | v1.19.30 compatible (GOAMD64=v1) | `6AC25FCB26AFE8E1BEA24B6E6E80805BF884A33232D12E2D78DFA0B6C529AC14` | MetaCubeX/mihomo |
 | `Country.mmdb` | country-lite 快照（2026-09-02） | `4BF15C30737F7CC2807BCBE1ACE44149B18579BEA3B13BF7BEA935A3F2834052` | MetaCubeX/meta-rules-dat |
 | `WinSW-x64.exe` | v2.12.0 | `05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA` | winsw/winsw |
 
@@ -15,7 +15,7 @@ GitHub Release 获取，并在引入时校验 SHA-256。
 
 上游地址：
 
-- https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.30
+- https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-windows-amd64-compatible-v1.19.30.zip
 - https://github.com/MetaCubeX/meta-rules-dat/releases/tag/latest
 - https://github.com/winsw/winsw/releases/tag/v2.12.0
 

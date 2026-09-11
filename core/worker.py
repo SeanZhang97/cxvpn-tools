@@ -220,7 +220,7 @@ class Worker(threading.Thread):
             authorization = self._authorization_schedule(cfg, now=now)
             manual_due = self.renew_requested.is_set()
             next_renew = authorization.get('next_renew_at', 0.0)
-            auto_due = bool(cfg.get('auto_renew', True) and next_renew and
+            auto_due = bool(cfg.get('auto_renew', False) and next_renew and
                             now >= next_renew and
                             now >= self._renew_retry_after and
                             not self._in_renew_quiet_hours(now))

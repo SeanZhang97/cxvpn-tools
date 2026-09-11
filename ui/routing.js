@@ -684,6 +684,7 @@
       if (existing && !existing.persisted) return;
       const record = providerNodesRecord(provider.id);
       if (!record) return;
+      if (!record.nodes.length && existing?.nodes?.length) return;
       providerPreviews.set(provider.id, {
         id: provider.id,
         name: provider.name,
@@ -1098,7 +1099,7 @@
 
   function syncProviderNodesFromGroups(providerId, groups, updatedAt = Date.now()) {
     const group = (groups || []).find(item => item.id === providerId);
-    if (!group || !Array.isArray(group.nodes)) return;
+    if (!group || !Array.isArray(group.nodes) || !group.nodes.length) return;
     const nodes = group.nodes.map(node => {
       const rawName = preferenceNodeName(node, true);
       return rawName ? { ...node, name: rawName, display_name: node.display_name || rawName } : { ...node };
@@ -1154,7 +1155,7 @@
       if (!preview) return;
       const index = groups.findIndex(item => item.id === provider.id);
       if (index >= 0) {
-        if (!preview.persisted) groups[index] = preview;
+        if (!preview.persisted || (!groups[index].nodes?.length && preview.nodes?.length)) groups[index] = preview;
       } else groups.push(preview);
     });
     const aggregate = nodeTools.aggregateGroup(routingConfig, groups);
@@ -1223,7 +1224,8 @@
       const message = friendlyError(error);
       providerPreviewErrors.set(provider.id, { signature, message });
       feedback(`订阅获取失败：${message}`, 'error');
-      nodeFeedback(`订阅获取失败：${message}；已保留上次节点列表。`, 'error');
+      const retained = providerPreview(provider)?.nodes?.length || providerNodesRecord(provider.id)?.nodes?.length;
+      nodeFeedback(`订阅获取失败：${message}${retained ? '；已保留上次节点列表。' : '；尚无可恢复的节点列表。'}`, 'error');
       toast({ ok: false, msg: message });
     } finally {
       setBusy(false);
@@ -1798,7 +1800,7 @@
         : term ? '没有匹配当前搜索条件的节点。'
           : nodeRegionFilter !== 'all' ? '当前地区筛选没有匹配节点，可切换到“全部”。'
           : aliveOnly ? '当前代理组没有可用节点，可取消“仅显示可用”或重新测速。'
-            : group.preview ? '订阅可以访问，但当前筛选条件下没有解析出节点。'
+            : group.preview ? '尚无本地节点快照，请获取订阅或检查订阅配置。'
               : '运行中的代理组尚未加载节点，可刷新列表或更新订阅。';
       empty.replaceChildren();
       const copy = document.createElement('p'); copy.textContent = message;
@@ -2233,6 +2235,7 @@
       enabledInput.disabled = busy;
       enabledInput.setAttribute('aria-label', `${provider.name || `订阅 ${index + 1}`}启用状态`);
       enabledInput.onchange = async () => {
+        const previousConfig = clone(collectConfig());
         if (!enabledInput.checked && aggregateProviderIsPinned(provider.id)) {
           enabledInput.checked = true; return;
         }
@@ -2244,19 +2247,25 @@
         }
         provider.enabled = enabledInput.checked;
         setDirty(); renderProviders(); refreshOutboundEditors();
-        // 订阅开关属于低风险配置，修改后自动持久化；代理运行时仍由后端按安全边界决定是否应用。
+        // 路由配置必须走专用提交入口，不能作为整份应用配置交给 save_config。
         try {
-          const saved = await backend().save_config(collectConfig());
-          if (saved === false) throw new Error('配置保存失败');
-          savedConfig = clone(collectConfig());
-          savedSnapshot = snapshot(savedConfig);
+          beginMutation();
+          setBusy(true, 'apply');
+          const result = normalizeResult(await backend().apply_routing(collectConfig()));
+          if (!result.ok) throw new Error(result.msg || '配置保存失败');
+          acceptApplyResult(result);
+          routingConfig = clone(result.config);
+          fillForm();
+          savedSnapshot = snapshot(collectConfig());
           setDirty(false);
-          feedback(provider.enabled ? '订阅已启用并保存' : '订阅已停用并保存', 'success');
+          feedback(result.msg, 'success');
         } catch (error) {
-          provider.enabled = !enabledInput.checked;
-          enabledInput.checked = provider.enabled;
+          routingConfig = previousConfig;
+          fillForm();
           setDirty(); renderProviders(); refreshOutboundEditors();
           feedback(`订阅开关保存失败：${friendlyError(error)}`, 'error');
+        } finally {
+          setBusy(false);
         }
       };
       enabled.append(enabledInput, document.createElement('i'));
@@ -2891,6 +2900,18 @@
     if (revision < latestRoutingRevision) return setup;
     latestRoutingRevision = revision;
     const keepDraft = loaded && dirty && preserveDraft;
+    // 后台核心尚未加载节点时可能回空目录；同一订阅签名下保留本地已确认清单。
+    const restoredNodes = { ...(result.provider_nodes || {}) };
+    (result.config?.proxy_providers || []).forEach(provider => {
+      if (restoredNodes[provider.id]?.nodes?.length) return;
+      const previous = savedConfig?.proxy_providers?.find(item => item.id === provider.id);
+      if (!previous || providerPreviewSignature(previous) !== providerPreviewSignature(provider)) return;
+      const record = providerNodesRecord(provider.id);
+      const preview = providerPreview(previous);
+      if (record?.nodes?.length) restoredNodes[provider.id] = clone(record);
+      else if (preview?.nodes?.length) restoredNodes[provider.id] = { nodes: clone(preview.nodes), updated_at: preview.updated_at || '' };
+    });
+    result = { ...result, provider_nodes: restoredNodes };
     setup = result;
     appliedConfig = clone(result.config);
     (appliedConfig.proxy_providers || []).forEach(normalizeProviderDefaults);

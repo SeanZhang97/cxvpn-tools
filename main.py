@@ -8,6 +8,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+if __name__ == '__main__' and '--storage-recovery-probe' in sys.argv:
+    from core.storage_probe import run as run_storage_probe
+    position = sys.argv.index('--storage-recovery-probe')
+    run_storage_probe(sys.argv[position + 1], sys.argv[position + 2])
+    raise SystemExit(0)
+
 from core import app_paths
 
 _DATA_MIGRATION = app_paths.migrate_legacy_user_data()

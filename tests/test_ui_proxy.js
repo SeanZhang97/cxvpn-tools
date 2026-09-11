@@ -100,7 +100,7 @@ assert.match(css, /\.proxy-connect-card/);
 assert.match(css, /@keyframes proxy-emblem-rise/);
 assert.match(css, /@keyframes proxy-emblem-ignite/);
 assert.match(css, /\.proxy-orbit\.is-active \.proxy-emblem-mark/);
-assert.match(css, /\.proxy-orbit\.is-active \.proxy-emblem-star-energy \{ animation: none/);
+assert.match(css, /\.proxy-orbit\.is-active \.proxy-emblem-star-energy \{ animation-duration: 11\.2s/);
 assert.match(css, /\.proxy-dashboard-grid/);
 assert.match(css, /\.proxy-subpage-heading/);
 assert.match(css, /\.proxy-selection-warning/);
@@ -112,3 +112,46 @@ assert.match(css, /\.proxy-traffic-foot/);
 assert.match(css, /prefers-reduced-motion: reduce/);
 
 console.log('network proxy home and node page: ok');
+
+// 页面切换和异步加载会按默认出口刷新首页，不能覆盖明确点击的订阅。
+const vm = require('node:vm');
+const nodeNavigation = proxy.slice(proxy.indexOf('  async function openNodes('), proxy.indexOf('  function openHome('));
+async function checkNodeNavigation(requested, fallback) {
+  const opened = [];
+  const changes = [];
+  const select = {
+    options: ['alpha', 'beta', 'all'].map(value => ({ value })),
+    value: 'all',
+    dispatchEvent(event) { changes.push([event.type, this.value]); },
+  };
+  const context = vm.createContext({
+    selectedGroupId: fallback, returnTarget: null,
+    byId: () => select, setText() {}, syncNodeStats() {},
+    Event: class { constructor(type) { this.type = type; } },
+    async goToPage(page) {
+      assert.equal(page, 'nodes');
+      context.selectedGroupId = 'beta';
+    },
+    window: { RoutingWorkspace: {
+      async load() {
+        await Promise.resolve();
+        context.selectedGroupId = 'all';
+      },
+      openNodes(id) { opened.push(id); },
+    } },
+  });
+  vm.runInContext(nodeNavigation, context);
+  await context.openNodes(requested, { page: 'subscriptions' });
+  const expected = requested || fallback;
+  assert.deepEqual(opened, [expected]);
+  assert.equal(select.value, expected);
+  assert.deepEqual(changes, [['change', expected]]);
+  assert.equal(context.returnTarget.page, 'subscriptions');
+}
+(async () => {
+  await checkNodeNavigation('alpha', 'beta');
+  await checkNodeNavigation('beta', 'alpha');
+  await checkNodeNavigation('all', 'alpha');
+  await checkNodeNavigation('', 'alpha');
+  console.log('subscription node navigation survives page and loading refresh: ok');
+})().catch(error => { console.error(error); process.exitCode = 1; });

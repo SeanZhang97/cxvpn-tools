@@ -233,12 +233,27 @@ h3 { font-size: 14px; margin-bottom: 6px; }
   94% { opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .proxy-orbit.is-active .proxy-emblem-orbit,
+  /* Keep the connection indicator alive on systems that request reduced motion;
+     use a slower cycle instead of removing the running state altogether. */
+  .proxy-orbit.is-active .proxy-emblem-orbit { animation-duration: 36s; }
   .proxy-orbit.is-active .proxy-emblem-source,
   .proxy-orbit.is-active .proxy-emblem-feed-line,
   .proxy-orbit.is-active .proxy-emblem-stream,
-  .proxy-orbit.is-active .proxy-emblem-star-energy { animation: none; }
-  .proxy-emblem-mark, .proxy-emblem-rings { transition: none; }
+  .proxy-orbit.is-active .proxy-emblem-star-energy { animation-duration: 11.2s; }
+  .proxy-emblem-mark, .proxy-emblem-rings { transition-duration: .8s; }
+}
+/* 代理状态图形是运行状态指示器，轻量模式也保留最低限度的动态反馈。 */
+body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-orbit {
+  animation: proxy-emblem-orbit 18s linear infinite !important;
+  animation-duration: 18s !important;
+  animation-iteration-count: infinite !important;
+}
+body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-source,
+body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-feed-line,
+body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-stream,
+body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-star-energy {
+  animation-duration: 5.6s !important;
+  animation-iteration-count: infinite !important;
 }
 .proxy-connect-copy { min-width: 0; }
 .proxy-state-kicker { color: #7182a7; font-size: 9.5px; font-weight: 750; letter-spacing: 1.7px; }

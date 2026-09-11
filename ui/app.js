@@ -55,6 +55,7 @@ window.addEventListener('pywebviewready', async () => {
     await loadDesktopSettings();
     await syncBrowserVisibility();
     await startUiStateSubscription();
+    await initializeAppUpdate();
     // 后端缓存窗口为 5 分钟；仅总览页需要网络出口数据，隐藏页面不重复触发探测。
     setInterval(() => {
       if (curPage === 'overview') void refreshIpInfo();
@@ -276,9 +277,68 @@ function bindSettingsAndBrowser() {
   $('btn-test-sms-email').onclick = testSmsEmailSettings;
   $('btn-save-vlm').onclick = saveVlmSettings;
   $('btn-test-vlm').onclick = testVlmSettings;
+  $('app-auto-update').onchange = saveAppUpdateToggle;
+  $('btn-app-update').onclick = () => checkAppUpdate(true);
   $('btn-copy-logs').onclick = copyLogs;
   $('btn-confirm-cancel').onclick = () => finishConfirm(false);
   $('btn-confirm-ok').onclick = () => finishConfirm(true);
+}
+
+async function saveAppUpdateToggle() {
+  const input = $('app-auto-update');
+  const previous = CFG.app_update || { auto_check: true, last_check: 0 };
+  CFG.app_update = { ...previous, auto_check: input.checked };
+  input.disabled = true;
+  try {
+    if (await api().save_config(CFG) === false) throw new Error('后端未保存配置');
+    toast({ ok: true, msg: input.checked ? '自动更新检查已开启' : '自动更新检查已关闭' });
+  } catch (error) {
+    CFG.app_update = previous;
+    input.checked = previous.auto_check !== false;
+    toast({ ok: false, msg: `保存失败：${friendlyError(error)}` });
+  } finally {
+    input.disabled = false;
+  }
+}
+
+async function initializeAppUpdate() {
+  try {
+    const version = await api().get_app_version();
+    $('app-version-text').textContent = `当前版本：${version.version}`;
+    const settings = CFG.app_update || {};
+    $('app-auto-update').checked = settings.auto_check !== false;
+    if (settings.auto_check !== false &&
+        (!settings.last_check || Date.now() / 1000 - settings.last_check > 86400)) {
+      void checkAppUpdate(false);
+    }
+  } catch (error) {
+    $('app-version-text').textContent = '当前版本：未知';
+  }
+}
+
+async function checkAppUpdate(manual) {
+  const button = $('btn-app-update');
+  await runBusy(button, '检查中…', async () => {
+    setFeedback($('app-update-result'), '正在连接 GitHub Releases…', 'loading');
+    try {
+      const result = await api().check_app_update(!!manual);
+      if (!result.ok) {
+        setFeedback($('app-update-result'), result.msg || '检查更新失败', 'bad');
+        return;
+      }
+      if (result.newer) {
+        setFeedback($('app-update-result'),
+          `发现新版本 ${result.latest_version}，请打开 Release 页面下载安装包。`, 'ok');
+        if (result.release_url) toast({ ok: true, msg: `发现新版本 ${result.latest_version}` });
+        if (manual && result.release_url) await api().open_app_release(result.release_url);
+      } else {
+        setFeedback($('app-update-result'),
+          result.msg || `当前已是最新版本（${result.current_version}）`, 'ok');
+      }
+    } catch (error) {
+      setFeedback($('app-update-result'), `检查更新失败：${friendlyError(error)}`, 'bad');
+    }
+  });
 }
 
 const EMAIL_PROVIDER_HOSTS = {
@@ -989,9 +1049,9 @@ function fillForms() {
   syncSmartSelect('sms-email-provider');
   applyEmailProviderPreset(false);
   updateSmsMethodUi();
-  $('ov-auto').checked = CFG.auto_renew !== false;
+  $('ov-auto').checked = CFG.auto_renew === true;
   $('ov-autoconn').checked = CFG.auto_connect === true;
-  $('ov-tray').checked = CFG.close_to_tray !== false;
+  $('ov-tray').checked = CFG.close_to_tray === true;
   $('ov-hotkeys').checked = CFG.global_hotkeys_enabled === true;
   $('ov-lightweight').checked = CFG.lightweight_mode === true;
   applyLightweightMode();

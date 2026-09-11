@@ -16,6 +16,8 @@ from core import config as cfgmod
 from core import (config_maintenance, ip_info, proxy_guard, ras_cred, routing,
                   sms_receiver, vpn_connect, vpn_os, windows_desktop)
 from core import vpn_service
+from core import app_update
+from core.version import APP_NAME, APP_VERSION
 from core.mihomo_activity import MihomoActivityRelay
 from core.mihomo_telemetry import MihomoTelemetryRelay
 from core.routing_speedtest import RoutingTestJobs
@@ -201,6 +203,9 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         self._ui_state_stream._serializable = False
         self._log_writer = _LogWriter(
             os.path.join(cfgmod.BASE, 'run.log'), LOG_FILE_MAX)
+        # 存储可能在 _lock 内调用，不能重入 log() 再获取同一个非重入锁。
+        cfgmod.state_store.configure_logger(lambda message: self._log_writer.submit(
+            _log_single_line(f'{datetime.datetime.now():%H:%M:%S} {message}')))
 
     # ---------- 基础设施 ----------
     def _cfg_get(self):
@@ -567,17 +572,39 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
     def get_config(self):
         return self._config_for_ui(self._cfg_get())
 
+    def get_app_version(self):
+        return {'name': APP_NAME, 'version': APP_VERSION}
+
+    def check_app_update(self, manual=False):
+        result = app_update.check_latest()
+        if result.get('ok'):
+            with self._lock:
+                self.cfg.setdefault('app_update', {})['last_check'] = time.time()
+                cfgmod.save(self.cfg)
+        self.log('[app-update] %s check completed: ok=%s newer=%s manual=%s' %
+                 (APP_VERSION, result.get('ok'), result.get('newer'), manual))
+        return result
+
+    def open_app_release(self, url):
+        result = app_update.open_release(url)
+        self.log('[app-update] release page open: ok=%s' % result.get('ok'))
+        return result
+
     def save_config(self, cfg):
+        if not isinstance(cfg, dict) or ('proxy_providers' in cfg and 'routing' not in cfg):
+            raise ValueError('分流配置必须通过专用配置入口提交')
         with self._lock:
             old_default = self.cfg.get('vpn_name', '')
             old_auto_connect = bool(self.cfg.get('auto_connect', False))
             authorization = self.cfg.get('authorization') or {}
             routing_config = self.cfg.get('routing') or routing.default_config()
-            self.cfg = json.loads(json.dumps(cfg))
-            self.cfg['authorization'] = authorization
+            committed = json.loads(json.dumps(self.cfg))
+            committed.update(json.loads(json.dumps(cfg)))
+            committed['authorization'] = authorization
             # 分流状态只能通过 apply_routing 原子变更，避免普通设置保存绕过预检。
-            self.cfg['routing'] = routing_config
-            cfgmod.save(self.cfg)
+            committed['routing'] = routing_config
+            cfgmod.save(committed)
+            self.cfg = committed
             new_default = self.cfg.get('vpn_name', '')
             new_auto_connect = bool(self.cfg.get('auto_connect', False))
         self.log('[config] 已保存')
@@ -1151,7 +1178,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         desktop = getattr(self, '_desktop', None)
         return {
             'startup_enabled': windows_desktop.is_startup_enabled(),
-            'close_to_tray': self._cfg_get().get('close_to_tray', True),
+            'close_to_tray': self._cfg_get().get('close_to_tray', False),
             'global_hotkeys_enabled': self._cfg_get().get(
                 'global_hotkeys_enabled', False),
             'global_hotkeys_active': bool(

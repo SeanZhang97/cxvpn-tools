@@ -1,17 +1,24 @@
 # -*- coding: utf-8 -*-
 """core/config.py - 配置读写（config.json 位于当前用户 LocalAppData）。"""
+import copy
 import json
 import os
 import tempfile
 
 from core import app_paths
+from core import state_store
 
 
 BASE = app_paths.user_data_root()
 CFG_PATH = os.path.join(BASE, 'config.json')
 CFG_BACKUP_PATH = CFG_PATH + '.bak'
+AUTOMATION_DEFAULTS_VERSION = 1
 
 DEFAULT = {
+    'app_update': {
+        'auto_check': True,
+        'last_check': 0,
+    },
     'phone': '',
     'vpn_name': '',
     'creds': {},
@@ -23,9 +30,10 @@ DEFAULT = {
         'source': '',
         'vpn_expiries': {},
     },
-    'auto_renew': True,
+    'auto_renew': False,
     'auto_connect': False,
-    'close_to_tray': True,
+    'close_to_tray': False,
+    'automation_defaults_version': AUTOMATION_DEFAULTS_VERSION,
     'global_hotkeys_enabled': False,
     'lightweight_mode': False,
     'captcha_max_attempts': 10,
@@ -94,7 +102,42 @@ def _merge_dict(target, source):
             target[key] = value
 
 
+def _apply_automation_defaults_migration(cfg):
+    """首次读取旧配置时关闭历史默认开启的自动化选项。"""
+    try:
+        version = int(cfg.get('automation_defaults_version') or 0)
+    except (TypeError, ValueError):
+        version = 0
+    if version >= AUTOMATION_DEFAULTS_VERSION:
+        return False
+    for key in ('auto_renew', 'auto_connect', 'close_to_tray'):
+        cfg[key] = False
+    cfg['automation_defaults_version'] = AUTOMATION_DEFAULTS_VERSION
+    return True
+
+
 def load():
+    # 数据库损坏不能静默回退旧 JSON 再覆盖新数据；JSON 只用于首次迁移。
+    root = os.path.dirname(CFG_PATH)
+    stored = state_store.load_config(root)
+    if isinstance(stored, dict):
+        cfg = json.loads(json.dumps(DEFAULT))
+        if 'automation_defaults_version' not in stored:
+            cfg['automation_defaults_version'] = 0
+        _merge_dict(cfg, stored)
+        migrated = _apply_automation_defaults_migration(cfg)
+        if os.path.normcase(root) == os.path.normcase(app_paths.user_data_root()):
+            from core import subscription_store
+            with state_store.transaction(root):
+                providers = cfg.get('routing', {}).get('proxy_providers', [])
+                for provider in providers:
+                    subscription_store.migrate_provider(provider)
+                state_store.ensure_config_links([
+                    (provider['id'], subscription_store.provider_filename(provider),
+                     subscription_store.snapshot_key(provider)) for provider in providers], root)
+        if migrated:
+            save(cfg)
+        return cfg
     cfg = json.loads(json.dumps(DEFAULT))
     candidates = [CFG_PATH, CFG_BACKUP_PATH]
     for path in candidates:
@@ -105,6 +148,8 @@ def load():
                 user = json.load(f)
             if not isinstance(user, dict):
                 raise ValueError('配置根节点必须是对象')
+            if 'automation_defaults_version' not in user:
+                cfg['automation_defaults_version'] = 0
             # 旧版“enabled”唯一对应 TUN。迁移时必须显式保留这一流量路径，
             # 不能因新安装默认改为系统代理而静默改变已有用户的接管方式。
             routing = user.get('routing') if isinstance(user, dict) else None
@@ -113,13 +158,33 @@ def load():
                 routing['capture_mode'] = 'tun'
                 routing['builtin_rule_pack'] = 'off'
             _merge_dict(cfg, user)
-            return cfg
-        except Exception:
+        except (OSError, ValueError, TypeError):
             continue
+        break
+    _apply_automation_defaults_migration(cfg)
+    save(cfg)
     return cfg
 
 
 def save(cfg):
+    from core import subscription_store
+    value = copy.deepcopy(cfg)
+    root = os.path.dirname(CFG_PATH)
+    providers = (value.get('routing') or {}).get('proxy_providers') or []
+    links = [(provider['id'], subscription_store.provider_filename(provider),
+              subscription_store.snapshot_key(provider)) for provider in providers]
+    with state_store.transaction(root):
+        state_store.save_config(value, root, links=links)
+        if os.path.normcase(root) == os.path.normcase(app_paths.user_data_root()):
+            for provider in providers:
+                subscription_store.migrate_provider(provider)
+        state_store.bind_config_data(links, root)
+        state_store.after_commit(lambda: _export_json(value))
+    return True
+
+
+def _export_json(cfg):
+    """兼容导出不是主提交点；失败不能触发运行时回滚到已过期配置。"""
     directory = os.path.dirname(CFG_PATH)
     os.makedirs(directory, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
@@ -130,12 +195,13 @@ def save(cfg):
             f.flush()
             os.fsync(f.fileno())
         if os.path.isfile(CFG_PATH):
-            backup_temp = CFG_BACKUP_PATH + '.tmp'
+            backup_path = CFG_PATH + '.bak'
+            backup_temp = backup_path + '.tmp'
             with open(CFG_PATH, 'rb') as source, open(backup_temp, 'wb') as target:
                 target.write(source.read())
                 target.flush()
                 os.fsync(target.fileno())
-            os.replace(backup_temp, CFG_BACKUP_PATH)
+            os.replace(backup_temp, backup_path)
         os.replace(temporary, CFG_PATH)
     except Exception:
         try:
@@ -143,8 +209,8 @@ def save(cfg):
         except OSError:
             pass
         try:
-            if os.path.exists(CFG_BACKUP_PATH + '.tmp'):
-                os.unlink(CFG_BACKUP_PATH + '.tmp')
+            if os.path.exists(CFG_PATH + '.bak.tmp'):
+                os.unlink(CFG_PATH + '.bak.tmp')
         except OSError:
             pass
         raise

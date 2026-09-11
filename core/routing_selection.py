@@ -2,10 +2,13 @@
 """代理节点选择与安全展示快照的纯业务辅助函数。"""
 from __future__ import annotations
 
+import traceback
+
 from core import subscription_store
 from core.routing_tasks import commit_scope
 from core import routing_auto_policy
 from core import routing_aggregate
+from core import state_store
 
 
 def provider_group_strategy(provider):
@@ -96,6 +99,52 @@ def load_provider_nodes(config):
     }
 
 
+def restore_runtime_test_results(config, groups, log):
+    """核心重载会丢失 history；展示同订阅最近检测，不改运行清单或当前选点。"""
+    histories = {}
+    aggregate = {}
+    group_ids = {group.get('id') for group in groups}
+    for provider in config.get('proxy_providers') or []:
+        if not provider.get('enabled') or (
+                provider['id'] not in group_ids and 'all' not in group_ids):
+            continue
+        try:
+            snapshot = subscription_store.load_node_snapshot(provider)
+        except (OSError, ValueError) as exc:
+            log(f'[routing] 运行目录测速历史读取失败: '
+                f'provider={provider["id"]}, type={type(exc).__name__}\n'
+                + ''.join(traceback.format_tb(exc.__traceback__)))
+            continue
+        prefix = f'[{provider["name"]}] '
+        scoped = {}
+        for node in snapshot.get('nodes') or []:
+            name = runtime_node_name(provider, node['name'])
+            scoped[name] = node
+            # 运行名不能唯一确定订阅归属时，不跨订阅借用测速记录。
+            aggregate[name] = None if name in aggregate else node
+        histories[provider['id']] = (prefix, scoped)
+    restored = []
+    for group in groups:
+        prefix, history = histories.get(group.get('id'), ('', {}))
+        if group.get('id') == 'all':
+            history = aggregate
+        nodes = []
+        for node in group.get('nodes') or []:
+            name = str(node.get('name') or '')
+            if prefix and not name.startswith(prefix):
+                name = prefix + name
+            previous = history.get(name) or {}
+            merged = dict(node)
+            if previous.get('tested') and (not node.get('tested') or
+                    previous.get('tested_at', 0) > node.get('tested_at', 0)):
+                for key in ('tested', 'tested_at', 'delay', 'alive'):
+                    merged[key] = previous[key]
+            nodes.append(merged)
+        restored.append({**group, 'nodes': nodes,
+                         'alive_count': sum(node.get('alive') is True for node in nodes)})
+    return restored
+
+
 def reconcile_provider_nodes(config, provider_caches, proxy_groups):
     snapshots = load_provider_nodes(config)
     for group in proxy_groups:
@@ -110,6 +159,6 @@ def reconcile_provider_nodes(config, provider_caches, proxy_groups):
         try:
             snapshots[provider_id] = persist_provider_nodes(
                 config, provider_id, nodes)
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as exc:
+            state_store._report(f'[storage] 节点对账写入失败，保留原快照: provider={provider_id}, type={type(exc).__name__}')
     return snapshots

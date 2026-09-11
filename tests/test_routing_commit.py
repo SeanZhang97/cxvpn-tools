@@ -21,15 +21,15 @@ class ConfigAtomicSaveTests(unittest.TestCase):
             self.assertEqual(
                 [name for name in os.listdir(root) if name.endswith('.tmp')], [])
 
-    def test_replace_failure_preserves_previous_config(self):
+    def test_export_failure_keeps_committed_database_and_previous_json(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, 'config.json')
             with open(path, 'w', encoding='utf-8') as stream:
                 json.dump({'version': 'old'}, stream)
             with patch.object(cfgmod, 'CFG_PATH', path), \
                     patch('core.config.os.replace', side_effect=OSError('locked')):
-                with self.assertRaises(OSError):
-                    cfgmod.save({'version': 'new'})
+                self.assertTrue(cfgmod.save({'version': 'new'}))
+                self.assertEqual(cfgmod.load()['version'], 'new')
             with open(path, encoding='utf-8') as stream:
                 self.assertEqual(json.load(stream), {'version': 'old'})
             self.assertEqual(

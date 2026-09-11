@@ -2,6 +2,7 @@
 """采集本机、国内探测点和海外探测点看到的 IPv4 出口信息。"""
 import json
 import ipaddress
+import subprocess
 import threading
 import time
 import urllib.request
@@ -194,7 +195,12 @@ if (-not $result) {
 }
 if ($result) { $result | ConvertTo-Json -Compress }
 """
-    ok, stdout, stderr = vpn_os._ps(script, timeout=8)
+    try:
+        ok, stdout, stderr = vpn_os._ps(script, timeout=8)
+    except subprocess.TimeoutExpired:
+        return _empty_entry('读取本机网络信息超时')
+    except OSError as error:
+        return _empty_entry(f'读取本机网络信息失败：{type(error).__name__}')
     if not ok or not stdout:
         return _empty_entry(stderr or '未找到可用的本机 IPv4 地址')
     try:

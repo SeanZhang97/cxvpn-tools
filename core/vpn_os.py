@@ -4,6 +4,7 @@ core/vpn_os.py - 通过 PowerShell 管理 Windows 系统 VPN 配置
 (Get/Add/Set/Remove-VpnConnection, 用户级无需管理员)
 """
 import json
+import base64
 import ipaddress
 import os
 import subprocess
@@ -24,9 +25,20 @@ def _ps(script, timeout=30, env=None):
     if env:
         process_env = os.environ.copy()
         process_env.update(env)
+    # EncodedCommand avoids the system code page on Windows PowerShell; set both
+    # streams explicitly so Chinese adapter and VPN names stay UTF-8 end to end.
+    utf8_setup = (
+        "$utf8 = New-Object System.Text.UTF8Encoding($false); "
+        "[Console]::InputEncoding = $utf8; "
+        "[Console]::OutputEncoding = $utf8; "
+        "$OutputEncoding = $utf8; "
+    )
+    encoded = base64.b64encode(
+        (utf8_setup + str(script or '')).encode('utf-16le')).decode('ascii')
     r = subprocess.run(
-        ['powershell', '-NoProfile', '-Command', script],
-        capture_output=True, text=True, timeout=timeout,
+        ['powershell', '-NoProfile', '-EncodedCommand', encoded],
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
+        timeout=timeout,
         creationflags=subprocess.CREATE_NO_WINDOW, env=process_env)
     return r.returncode == 0, (r.stdout or '').strip(), (r.stderr or '').strip()
 

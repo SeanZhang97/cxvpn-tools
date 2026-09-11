@@ -845,6 +845,18 @@
 
     <section id="page-help" class="page content-page">
       <header><h2>帮助说明</h2><p>完整使用指南</p></header>
+      <div class="card settings-card" id="app-update-card">
+        <div class="settings-card-head">
+          <span class="settings-symbol">APP</span>
+          <div><h3>软件更新</h3><p id="app-version-text">当前版本：读取中</p></div>
+        </div>
+        <div class="row align-center">
+          <span class="muted grow">自动检查 GitHub Releases，发现新版本后提示你决定是否更新。</span>
+          <label class="switch compact-switch" title="自动检查更新"><input id="app-auto-update" type="checkbox"><i></i></label>
+          <button id="btn-app-update" class="btn ghost" type="button">立即检查更新</button>
+        </div>
+        <p id="app-update-result" class="form-feedback" aria-live="polite"></p>
+      </div>
       <div class="card quickstart-card">
         <div class="help-card-head">
           <div><span class="label">QUICK START</span><h3>四步完成基础配置</h3></div>
@@ -854,7 +866,7 @@
           <div class="quick-step"><span>1</span><strong>填写账号</strong><p>在“超星账号”中填写接收短信的手机号。</p></div>
           <div class="quick-step"><span>2</span><strong>新增 VPN</strong><p>直接填写服务器与可选凭据，第一条配置自动成为默认 VPN。</p></div>
           <div class="quick-step"><span>3</span><strong>配置自动化</strong><p>选择短信接收来源，并按需配置 AI 图形验证码识别。</p></div>
-          <div class="quick-step"><span>4</span><strong>处理授权</strong><p>在总览中立即处理授权，或开启自动续期。</p></div>
+          <div class="quick-step"><span>4</span><strong>处理授权</strong><p>在总览中立即处理授权；自动化选项默认关闭。</p></div>
         </div>
       </div>
       <div class="help-module-grid">
@@ -863,7 +875,7 @@
           <div class="help-module-body">
             <details class="help-section" open><summary><span><b>01</b>验证码接收</span><em>三种方式</em></summary><div class="help-body"><p class="help-callout">在“自动化配置 → 短信验证码接收”选择来源。浏览器和弹窗仍支持手动输入，先获取到的验证码生效。</p><ol><li>Windows 手机连接：完成手机配对并开启通知同步，保持蓝牙和通知权限。</li><li>邮箱转发（IMAP）：开启邮箱 IMAP，使用授权码或应用专用密码，不要填写网页登录密码。</li><li>Android SmsForwarder：允许读取短信、后台运行、自启动和忽略电池优化，测试“短信 → 邮件 → 工具捕获”链路。</li></ol><p class="help-callout help-note">邮件主题需与配置完全一致，推荐先点击“测试邮箱连接”。</p></div></details>
             <details class="help-section"><summary><span><b>02</b>授权与内置浏览器</span><em>处理流程</em></summary><div class="help-body"><ol><li>“立即处理授权”会根据远端状态执行首次授权或续期。</li><li>模型配置完整时优先自动识别图形验证码，失败后转人工验证。</li><li>浏览器进度卡展示当前阶段；授权成功后远端列表会即时更新，无需刷新。</li></ol></div></details>
-            <details class="help-section"><summary><span><b>03</b>自动续期与后台运行</span><em>可选</em></summary><div class="help-body"><ol><li>开启“自动续期”后按设置周期检查授权，每天 02:00–08:00 不执行自动续期，手动处理不受影响。</li><li>“自动连接”负责 VPN 自动拨号，与自动续期相互独立。</li><li>开启“开机自启”后，Windows 登录时程序可静默进入托盘；关闭窗口默认只隐藏到托盘。</li></ol></div></details>
+            <details class="help-section"><summary><span><b>03</b>自动续期与后台运行</span><em>可选</em></summary><div class="help-body"><ol><li>自动化选项默认关闭；开启“自动续期”后按设置周期检查授权，每天 02:00–08:00 不执行自动续期，手动处理不受影响。</li><li>“自动连接”负责 VPN 自动拨号，与自动续期相互独立。</li><li>开启“开机自启”后，Windows 登录时程序可静默进入托盘；“关闭时托盘”开启后，关闭窗口才会隐藏到托盘。</li></ol></div></details>
           </div>
         </section>
         <section class="help-module help-module-network">
@@ -948,7 +960,7 @@
           <summary><span><b>05</b>开机自启与分发</span><em>高级</em></summary>
           <div class="help-body"><ol>
             <li>在总览的“自动化策略”中开启“开机自启”；下次登录 Windows 后程序会静默进入托盘。</li>
-            <li>点击主窗口关闭按钮默认只隐藏到托盘；单击托盘图标恢复，使用托盘菜单“退出”才会彻底结束。</li>
+            <li>自动化选项默认关闭；开启“关闭时托盘”后，点击主窗口关闭按钮才会隐藏到托盘。</li>
             <li>分发时压缩整个工具文件夹；对方需使用 Win10/11、Edge WebView2，并自行填写本机配置。</li>
             <li>分发前请清空手机号、VPN 凭据、邮箱授权码和模型 API Key，避免泄露敏感信息。</li>
           </ol></div>
