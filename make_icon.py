@@ -6,7 +6,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-SYM = r'C:\Users\29511\.qoder\vibe_images\star_symbol_1787726082.png'
+SYM = os.environ.get(
+    'CXVPN_ICON_SOURCE', os.path.join(BASE, 'ui', 'assets', 'chaoxing-original.png'))
 S = 1024
 
 # 1) 抠出白色流星符号

@@ -1,7 +1,6 @@
 # Windows 安装包
 
-使用 Inno Setup 6.7.3。当前开发机编译器位于：
-C:\Users\29511\AppData\Local\Programs\Inno Setup 6\ISCC.exe
+使用 Inno Setup 6.7.3。编译器路径由构建脚本自动探测，也可以通过 `-Compiler` 指定。
 
 ## 构建
 
@@ -15,7 +14,7 @@ C:\Users\29511\AppData\Local\Programs\Inno Setup 6\ISCC.exe
     powershell -NoProfile -ExecutionPolicy Bypass -File installer/fetch_prerequisites.ps1
     powershell -NoProfile -ExecutionPolicy Bypass -File installer/build_installer.ps1
 
-编译器不在默认位置时，为 build_installer.ps1 指定 -Compiler 完整路径。
+编译器不在默认位置时，为 build_installer.ps1 指定 `-Compiler` 完整路径。
 安装器版本从主 EXE 的 ProductVersion 读取，并与 core/version.py 核对。
 不再单独维护安装脚本中的版本常量。
 
