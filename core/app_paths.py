@@ -19,6 +19,7 @@ USER_DATA_FILES = (
     'netlog.jsonl',
     'proxy_guard.json',
     'proxy_guard_snapshot.json',
+    'codex_proxy_snapshot.json',
 )
 USER_DATA_DIRS = (
     'webview_data',

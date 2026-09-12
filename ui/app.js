@@ -81,9 +81,33 @@ function bind() {
   bindInputModality();
   bindSecretToggles();
   bindNavigationAndOverview();
+  bindCodexPage();
   bindVpnManagement();
   bindSettingsAndBrowser();
   bindVerificationFlows();
+}
+
+async function refreshCodexPage() {
+  const summary = $('codex-sync-summary');
+  const port = $('codex-mixed-port');
+  if (!summary || !port || !api()?.get_codex_status) return;
+  try {
+    const state = await api().get_codex_status();
+    port.value = state.mixed_port || '';
+    summary.textContent = state.config_exists
+      ? (state.system_proxy_mode && state.routing_enabled
+        ? '代理运行时会自动同步 Codex 配置。已运行的 Codex 需要重启。'
+        : 'Codex 配置文件已找到；启用 Windows 系统代理后会同步。')
+      : '尚未发现 Codex 配置文件；启用 Windows 系统代理后会创建。';
+  } catch (error) {
+    summary.textContent = `无法读取 Codex 配置状态：${friendlyError(error)}`;
+  }
+}
+
+function bindCodexPage() {
+  window.addEventListener('cxvpn:pagechange', event => {
+    if (event.detail?.page === 'codex') void refreshCodexPage();
+  });
 }
 
 function bindSecretToggles() {

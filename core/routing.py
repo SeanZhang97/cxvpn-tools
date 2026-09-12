@@ -36,6 +36,7 @@ from core import routing_auto_policy as _auto_policy
 from core import routing_aggregate as _aggregate
 from core import routing_rules as _routing_rules
 from core import routing_service as _routing_service
+from core import codex_proxy
 from core.routing_tasks import commit_scope
 from core.routing_environment import EnvironmentCache, bounded_calls
 from core.routing_speedtest import (
@@ -1550,6 +1551,29 @@ class RoutingManager:
         except Exception:
             pass
 
+    def _sync_codex_proxy(self, config, reason):
+        if config.get('capture_mode') != 'system-proxy':
+            self._log_best_effort(
+                f'[codex] {reason}开始：当前为 TUN 接管，Codex 配置不代表所有请求')
+        else:
+            self._log_best_effort(f'[codex] {reason}开始执行')
+        result = codex_proxy.sync(
+            config['mixed_port'], logger=self._log_best_effort)
+        if not result.get('ok'):
+            self._log_best_effort(
+                f'[codex] {reason}同步未完成：保留已成功的代理事务')
+        else:
+            self._log_best_effort(f'[codex] {reason}执行完成')
+
+    def _restore_codex_proxy(self, reason):
+        self._log_best_effort(f'[codex] {reason}开始执行')
+        result = codex_proxy.restore(logger=self._log_best_effort)
+        if not result.get('ok'):
+            self._log_best_effort(
+                f'[codex] {reason}恢复未完成：保留用户配置并等待下次处理')
+        else:
+            self._log_best_effort(f'[codex] {reason}执行完成')
+
     def _service_state(self, allow_powershell=True):
         try:
             native = self._native_service.status()
@@ -2697,9 +2721,11 @@ if ($service) {{
                 f'[routing] Mihomo 配置预检启动失败：异常={type(exc).__name__}，'
                 f'耗时={time.monotonic() - started_at:.1f}秒')
             raise RoutingError('无法启动 Mihomo 配置预检') from exc
+        stdout = result.stdout if isinstance(result.stdout, (str, bytes)) else ''
+        stderr = result.stderr if isinstance(result.stderr, (str, bytes)) else ''
         self._log_best_effort(
             f'[routing] Mihomo 配置预检完成：退出码={result.returncode}，'
-            f'stdout_bytes={len(result.stdout or "")}，stderr_bytes={len(result.stderr or "")}，'
+            f'stdout_bytes={len(stdout)}，stderr_bytes={len(stderr)}，'
             f'耗时={time.monotonic() - started_at:.1f}秒')
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or '').strip().splitlines()
@@ -3263,6 +3289,8 @@ if ($service) {{
             self._native_service.commit(transaction_id)
             self._runtime_signature = signature
             self._runtime_sha256 = str(transaction.get('config_sha256') or '').upper()
+            if runtime_mode == 'active':
+                self._sync_codex_proxy(config, '代理服务启动后')
             self._log_best_effort(
                 f'[routing] {mode_label}配置事务提交成功，总耗时 '
                 f'{time.monotonic() - started_at:.1f} 秒')
@@ -3413,6 +3441,10 @@ if ($service) {{
         self.log(
             f'[routing] Windows 系统代理快切完成：target={action}，耗时 '
             f'{time.monotonic() - started_at:.2f} 秒')
+        if enabled:
+            self._sync_codex_proxy(config, '系统代理激活后')
+        else:
+            self._restore_codex_proxy('代理关闭后')
         return {
             'ok': True,
             'msg': '代理已开启' if enabled else '代理已关闭，节点核心保持待机',
@@ -3472,6 +3504,7 @@ if ($service) {{
                     self.log('[routing] 旧版统一分流服务已停止并注销')
             else:
                 self.log('[routing] 分流配置已保存，统一分流保持关闭')
+            self._restore_codex_proxy('代理关闭后')
             standby_started = bool(
                 installed and not warnings and
                 self._service_state(allow_powershell=False).get(

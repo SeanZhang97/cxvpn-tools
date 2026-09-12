@@ -9,6 +9,7 @@ htmlcov/
 # Local user configuration and runtime state
 /config.json
 /config.*.tmp
+/codex_proxy_snapshot.json
 /webview_data/
 /browser_data*/
 /captcha_cache/

@@ -15,6 +15,7 @@ from contextlib import nullcontext
 from core import config as cfgmod
 from core import (config_maintenance, ip_info, proxy_guard, ras_cred, routing,
                   sms_receiver, vpn_connect, vpn_os, windows_desktop)
+from core import codex_proxy
 from core import vpn_service
 from core import app_update
 from core.version import APP_NAME, APP_VERSION
@@ -251,6 +252,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         try:
             repaired = proxy_guard.startup_check(log=self.log)
             if repaired:
+                codex_proxy.restore(logger=self.log)
                 self._pending_notice = {
                     'title': '系统代理已修复',
                     'message': (f'检测到上次异常退出残留的本地代理 '
@@ -348,6 +350,13 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                         self.log('[routing] 启动时系统代理恢复成功')
                     else:
                         self.log('[routing] 启动时系统代理已与配置一致')
+                        self.routing._sync_codex_proxy(current, f'{source}代理有效校正')
+                    return
+
+                if current['enabled'] and state.get('runtime_running') \
+                        and state.get('runtime_mode') == 'active':
+                    self.log(f'[routing] {source}确认 TUN 核心已运行，校正 Codex 配置')
+                    self.routing._sync_codex_proxy(current, f'{source}代理有效校正')
                     return
 
                 if expected_proxy and not current['enabled'] \
@@ -682,6 +691,20 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                 f'[routing-stream] 脱敏连接摘要读取失败，耗时 '
                 f'{time.monotonic() - started_at:.3f} 秒: {type(exc).__name__}')
             return {'ok': False, 'msg': str(exc)}
+
+    def get_codex_status(self):
+        """返回 Codex 配置同步状态摘要，不读取或返回配置正文。"""
+        current = routing.normalize_config(
+            self._cfg_get().get('routing') or routing.default_config())
+        path = codex_proxy.config_path()
+        return {
+            'ok': True,
+            'config_exists': os.path.isfile(path),
+            'mixed_port': current['mixed_port'],
+            'system_proxy_mode': current['capture_mode'] == 'system-proxy',
+            'routing_enabled': bool(current['enabled']),
+            'restart_required_after_change': True,
+        }
 
     def report_routing_stream_state(self, state, retry_seconds=0):
         """记录实时流量连接状态；不接收 URL、secret 或消息正文。"""
