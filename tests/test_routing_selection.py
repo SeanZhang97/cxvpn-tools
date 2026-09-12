@@ -49,6 +49,9 @@ class RoutingSelectionTests(unittest.TestCase):
             manager._service_state = mock.Mock(return_value={'installed': False})
             with mock.patch.object(routing, 'verify_runtime'), \
                     mock.patch.object(
+                        routing, 'windows_manual_proxy_state',
+                        return_value={'enabled': False, 'server': ''}), \
+                    mock.patch.object(
                         routing.vpn_os, 'list_vpns', return_value=[]), \
                     mock.patch.object(routing, 'list_physical_interfaces',
                                       return_value=[{'name': '以太网'}]), \

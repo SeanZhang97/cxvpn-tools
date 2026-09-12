@@ -1885,8 +1885,7 @@
     requestAnimationFrame(() => {
       const card = byId('routing-node-grid')?.querySelector('.routing-node.selected');
       if (!card) return;
-      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-      card.scrollIntoView({ block: 'center', behavior: reduceMotion ? 'auto' : 'smooth' });
+      card.scrollIntoView({ block: 'center', behavior: 'smooth' });
       card.tabIndex = -1;
       card.focus({ preventScroll: true });
       card.classList.add('located');
@@ -2689,8 +2688,8 @@
   function historySourceLabel(source) {
     return ({
       baseline: '应用前基线', manual: '手动应用', backup_restore: '备份恢复',
-      history_restore: '历史回退', desktop_toggle: '托盘/快捷键启停',
-      desktop_mode: '托盘/快捷键切换模式', desktop_node: '托盘切换节点',
+      history_restore: '历史回退', desktop_toggle: '托盘启停',
+      desktop_mode: '托盘切换模式', desktop_node: '托盘切换节点',
     })[source] || source || '配置应用';
   }
 

@@ -14,12 +14,11 @@ class ApiDesktopActionTests(unittest.TestCase):
         target._routing_lock = threading.Lock()
         target._cfg_get = mock.Mock(return_value={
             'routing': config or routing.default_config(),
-            'global_hotkeys_enabled': True,
-            'lightweight_mode': True,
+            'close_to_tray': True,
         })
         target._apply_routing_locked = mock.Mock(
             return_value={'ok': True, 'msg': '已应用'})
-        target._desktop = SimpleNamespace(hotkeys_active=True)
+        target._desktop = SimpleNamespace()
         return target
 
     def test_tray_snapshot_uses_only_persisted_safe_nodes(self):
@@ -87,9 +86,7 @@ class ApiDesktopActionTests(unittest.TestCase):
         result = target.get_desktop_settings()
 
         self.assertTrue(result['startup_enabled'])
-        self.assertTrue(result['global_hotkeys_enabled'])
-        self.assertTrue(result['global_hotkeys_active'])
-        self.assertTrue(result['lightweight_mode'])
+        self.assertTrue(result['close_to_tray'])
 
 
 if __name__ == '__main__':

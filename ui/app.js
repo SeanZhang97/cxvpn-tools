@@ -45,7 +45,6 @@ window.addEventListener('DOMContentLoaded', bindPreviewNavigation);
 window.addEventListener('pywebviewready', async () => {
   try {
     CFG = await api().get_config();
-    applyLightweightMode();
     bind();
     fillForms();
     showConfiguredVpnPreview();
@@ -70,7 +69,6 @@ window.addEventListener('cxvpn:desktop-action', async () => {
   try {
     CFG = await api().get_config();
     fillForms();
-    applyLightweightMode();
     await window.RoutingWorkspace?.refresh?.(true);
   } catch (error) {
     toast({ ok: false, msg: `桌面快捷操作已执行，但界面同步失败：${friendlyError(error)}` });
@@ -87,20 +85,125 @@ function bind() {
   bindVerificationFlows();
 }
 
+let codexViewText = '';
+let codexProxyOn = false;
+
+function renderCodexToggle(state) {
+  const toggle = $('btn-codex-toggle');
+  if (!toggle) return;
+  const residual = Array.isArray(state.residual_fields) && state.residual_fields.length > 0;
+  codexProxyOn = state.synced_fields > 0 || residual;
+  toggle.textContent = codexProxyOn ? '关闭 Codex 代理' : '开启 Codex 代理';
+  toggle.className = `btn ${codexProxyOn ? 'accent' : 'primary'}`;
+}
+
 async function refreshCodexPage() {
   const summary = $('codex-sync-summary');
   const port = $('codex-mixed-port');
+  const pathInput = $('codex-config-path');
+  const detail = $('codex-sync-detail');
   if (!summary || !port || !api()?.get_codex_status) return;
   try {
     const state = await api().get_codex_status();
-    port.value = state.mixed_port || '';
-    summary.textContent = state.config_exists
-      ? (state.system_proxy_mode && state.routing_enabled
-        ? '代理运行时会自动同步 Codex 配置。已运行的 Codex 需要重启。'
-        : 'Codex 配置文件已找到；启用 Windows 系统代理后会同步。')
-      : '尚未发现 Codex 配置文件；启用 Windows 系统代理后会创建。';
+    if (!state || typeof state !== 'object') {
+      summary.textContent = 'Codex 状态接口返回异常。';
+      return;
+    }
+    renderCodexToggle(state);
+    port.value = state.mixed_port == null ? '' : String(state.mixed_port);
+    if (pathInput) pathInput.value = state.config_path || '';
+    let text;
+    if (state.parse_error) {
+      text = `Codex 配置文件存在但无法解析（${state.parse_error}），开启代理前请先修复。`;
+    } else if (!state.config_exists) {
+      text = '尚未发现 Codex 配置文件；点击「开启 Codex 代理」会创建。';
+    } else if (!state.synced_fields) {
+      if (Array.isArray(state.residual_fields) && state.residual_fields.length) {
+        text = `Codex 配置中检测到 ${state.residual_fields.length} 个代理字段残留（快照缺失）。可点击「开启 Codex 代理」重建快照，或「关闭 Codex 代理」直接移除。`;
+      } else {
+        text = 'Codex 配置文件已找到；点击「开启 Codex 代理」写入代理配置。';
+      }
+    } else if (Array.isArray(state.deviated_fields) && state.deviated_fields.length) {
+      text = `Codex 代理已开启（${state.synced_fields} 个托管字段）；其中 ${state.deviated_fields.length} 个字段被手动修改，关闭代理时将跳过。`;
+    } else if (state.last_mixed_port && state.mixed_port !== state.last_mixed_port) {
+      text = `Codex 代理上次开启端口为 ${state.last_mixed_port}，当前端口已变为 ${state.mixed_port}；可重新开启。`;
+    } else {
+      text = `Codex 代理已开启（端口 ${state.last_mixed_port}）。已运行的 Codex 需要重启才会加载。`;
+    }
+    if (state.system_proxy_mode && state.routing_enabled) {
+      text += ' 代理有效运行时本工具也会自动校正。';
+    }
+    summary.textContent = text;
+    if (detail) {
+      detail.textContent = state.snapshot_exists
+        ? `用户数据目录保留了 ${state.snapshot_fields} 个托管字段的快照；关闭 Codex 代理时会删除这些字段。`
+        : 'Codex 代理尚未开启；开启后会在用户数据目录保留快照，用于关闭时代理字段移除。';
+    }
   } catch (error) {
     summary.textContent = `无法读取 Codex 配置状态：${friendlyError(error)}`;
+  }
+}
+
+function setCodexActionFeedback(payload) {
+  if (!payload) return;
+  const feedback = (text, tone) => {
+    const target = $('codex-action-result');
+    if (!target) return;
+    target.className = `form-feedback ${tone}`;
+    target.textContent = text;
+  };
+  const warnings = payload.warnings || [];
+  if (!payload.ok) {
+    toast({ ok: false, msg: payload.warning || '操作失败' });
+    feedback(payload.warning || '操作失败', 'error');
+  } else if (warnings.length) {
+    toast({ ok: false, msg: `已跳过 ${warnings.length} 个被手动修改的字段` });
+    feedback(`完成：已跳过 ${warnings.length} 个被手动修改的字段（保留您的修改）。`, 'warning');
+  } else {
+    toast({ ok: true, msg: '操作完成' });
+    feedback(
+      payload.restart_required_after_change
+        ? '完成。已运行的 Codex 需要重启才会重新加载配置。'
+        : '完成。', 'ok');
+  }
+}
+
+async function runCodexAction(action, confirmOptions) {
+  const resultElement = $('codex-action-result');
+  if (resultElement) resultElement.textContent = '';
+  if (confirmOptions) {
+    const confirmed = await confirmAction(confirmOptions);
+    if (!confirmed) return;
+  }
+  try {
+    const result = await action();
+    setCodexActionFeedback(result);
+  } catch (error) {
+    toast({ ok: false, msg: `操作失败：${friendlyError(error)}` });
+  } finally {
+    void refreshCodexPage();
+  }
+}
+
+async function openCodexViewer() {
+  const modal = $('codemodal');
+  if (!modal) return;
+  try {
+    const result = await api().read_codex_config();
+    const pathLine = $('codex-view-path');
+    const content = $('codex-view-content');
+    if (!result.ok) {
+      if (content) content.textContent = result.warning || '无法读取配置文件';
+    } else if (!result.exists) {
+      if (content) content.textContent = 'Codex 配置文件尚未创建；点击「开启 Codex 代理」后会自动创建。';
+    } else {
+      codexViewText = result.text || '';
+      if (content) content.textContent = codexViewText;
+    }
+    if (pathLine) pathLine.textContent = result.path || '';
+    modal.classList.remove('hidden');
+  } catch (error) {
+    toast({ ok: false, msg: `读取配置文件失败：${friendlyError(error)}` });
   }
 }
 
@@ -108,6 +211,24 @@ function bindCodexPage() {
   window.addEventListener('cxvpn:pagechange', event => {
     if (event.detail?.page === 'codex') void refreshCodexPage();
   });
+  const toggle = $('btn-codex-toggle');
+  if (toggle) toggle.onclick = () => {
+    if (codexProxyOn) {
+      void runCodexAction(
+        () => api().restore_codex_proxy(),
+        {
+          title: '关闭 Codex 代理',
+          message: '将删除 Codex 配置中由本工具写入且未被手动修改的代理字段（用户手动改过的字段会保留）。需要重启 Codex 才会生效。',
+          confirmText: '关闭',
+          tone: 'notice',
+          kicker: 'CODEX CONFIG',
+        });
+    } else {
+      void runCodexAction(() => api().sync_codex_proxy());
+    }
+  };
+  const view = $('btn-codex-view');
+  if (view) view.onclick = () => void openCodexViewer();
 }
 
 function bindSecretToggles() {
@@ -132,6 +253,11 @@ function bindNavigationAndOverview() {
   document.querySelectorAll('#nav [data-page]').forEach(item => {
     item.onclick = () => goToPage(item.dataset.page);
   });
+  const routingEntry = document.querySelector('#nav [data-page="routing"]');
+  if (routingEntry) routingEntry.onclick = () => {
+    void goToPage('routing');
+    setTimeout(() => window.RoutingWorkspace?.openTab?.('overview'), 0);
+  };
 
   $('btn-connect').onclick = async () => {
     if (!CFG.vpn_name) {
@@ -180,12 +306,6 @@ function bindNavigationAndOverview() {
   $('ov-startup').onchange = () => saveStartupToggle($('ov-startup'));
   $('ov-tray').onchange = () => saveToggle(
     $('ov-tray'), 'close_to_tray', '关闭窗口后将驻留系统托盘', '关闭窗口时将直接退出程序');
-  $('ov-hotkeys').onchange = () => saveToggle(
-    $('ov-hotkeys'), 'global_hotkeys_enabled',
-    '全局快捷键已启用：Ctrl+Alt+P/M/C', '全局快捷键已关闭');
-  $('ov-lightweight').onchange = () => saveToggle(
-    $('ov-lightweight'), 'lightweight_mode',
-    '已开启轻量模式', '已恢复完整视觉效果');
 
   $('btn-refresh-ip').onclick = () => void refreshIpInfo(true);
   document.querySelectorAll('.ip-copy').forEach(button => {
@@ -636,12 +756,9 @@ async function saveToggle(input, key, enabledMessage, disabledMessage) {
     const result = await api().save_config(CFG);
     if (result === false) throw new Error('后端未保存配置');
     toast({ ok: true, msg: next ? enabledMessage : disabledMessage });
-    if (key === 'lightweight_mode') applyLightweightMode();
-    if (key === 'global_hotkeys_enabled') await loadDesktopSettings();
   } catch (e) {
     CFG[key] = previous;
     input.checked = previous;
-    if (key === 'lightweight_mode') applyLightweightMode();
     toast({ ok: false, msg: `保存失败，已恢复原设置：${friendlyError(e)}` });
   } finally {
     input.disabled = false;
@@ -657,24 +774,12 @@ async function loadDesktopSettings() {
       CFG.close_to_tray = state.close_to_tray;
       $('ov-tray').checked = state.close_to_tray;
     }
-    CFG.global_hotkeys_enabled = !!state.global_hotkeys_enabled;
-    CFG.lightweight_mode = !!state.lightweight_mode;
-    $('ov-hotkeys').checked = CFG.global_hotkeys_enabled;
-    $('ov-hotkeys').title = (CFG.global_hotkeys_enabled && !state.global_hotkeys_active)
-      ? '快捷键可能被其它程序占用；关闭冲突程序后重新关闭并开启此项'
-      : '';
-    $('ov-lightweight').checked = CFG.lightweight_mode;
-    applyLightweightMode();
     input.disabled = false;
   } catch (e) {
     input.checked = false;
     input.disabled = true;
     input.title = `无法读取开机自启状态：${friendlyError(e)}`;
   }
-}
-
-function applyLightweightMode() {
-  document.body.classList.toggle('lightweight-mode', !!CFG?.lightweight_mode);
 }
 
 async function saveStartupToggle(input) {
@@ -1076,9 +1181,6 @@ function fillForms() {
   $('ov-auto').checked = CFG.auto_renew === true;
   $('ov-autoconn').checked = CFG.auto_connect === true;
   $('ov-tray').checked = CFG.close_to_tray === true;
-  $('ov-hotkeys').checked = CFG.global_hotkeys_enabled === true;
-  $('ov-lightweight').checked = CFG.lightweight_mode === true;
-  applyLightweightMode();
   $('ov-hours').textContent = '待同步';
   $('ov-renew-hours').textContent = '待同步';
 }

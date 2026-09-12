@@ -119,6 +119,8 @@ def _patch(text, desired, remove=None):
         sections = {}
         current = None
         for index, line in enumerate(lines):
+            if line is None:
+                continue
             header = _section_header(line)
             if header is not None:
                 current = header
@@ -140,18 +142,18 @@ def _patch(text, desired, remove=None):
             continue
         start, end = sections[section]
         present = set()
-        nested = False
         for index in range(start, end):
             line = lines[index]
-            if _section_header(line) is not None:
+            if line is None or _section_header(line) is not None:
                 continue
             for key, value in values.items():
-                match = re.match(rf'^\s*{re.escape(key)}\s*=', line)
-                if not match or key in present:
+                if key in present:
+                    continue
+                if not re.match(rf'^\s*{re.escape(key)}\s*=', line):
                     continue
                 present.add(key)
                 if (section, key) in remove:
-                    lines[index] = ''
+                    lines[index] = None
                 else:
                     lines[index] = _replace_line(line, key, value)
         additions = [f'{key} = {_literal(value)}\n' for key, value in values.items()
@@ -159,11 +161,25 @@ def _patch(text, desired, remove=None):
         if additions:
             insert_at = end
             lines[insert_at:insert_at] = additions
-    return ''.join(lines)
+    return ''.join(line for line in lines if line is not None)
 
 
 def _field_key(section, key):
     return f'{section}.{key}'
+
+
+_LOOPBACK_PROXY_RE = re.compile(r'^http://127\.0\.0\.1:\d{1,5}$')
+
+
+def _looks_managed(section, key, value):
+    """无快照记录时，判断托管字段的值是否为可识别的本工具写入模式。"""
+    if value is None:
+        return False
+    if section == 'features' and key == 'respect_system_proxy':
+        return value is True
+    if key in ('NO_PROXY', 'no_proxy'):
+        return value == _NO_PROXY
+    return isinstance(value, str) and bool(_LOOPBACK_PROXY_RE.match(value))
 
 
 def _current_values(parsed):
@@ -305,27 +321,25 @@ def sync(mixed_port, *, environ=None, data_root=None, logger=None):
 
 
 def restore(*, environ=None, data_root=None, logger=None):
+    """关闭代理：删除仍等于本工具最后写入值的托管字段；用户改过的保留。"""
     started = time.monotonic()
     path = config_path(environ)
     snap_path = snapshot_path(data_root)
-    _log(logger, '[codex] 代理关闭恢复请求已提交')
+    _log(logger, '[codex] 关闭代理请求已提交（删除托管字段）')
     with _LOCK:
         snapshot = _load_snapshot(snap_path, logger)
         if snapshot is None:
-            return {'ok': False, 'warning': '代理快照不可恢复，已跳过配置恢复', 'path': path}
+            return {'ok': False, 'warning': '代理快照不可恢复，已跳过配置删除', 'path': path}
         fields = snapshot.get('fields') or {}
-        if not fields:
-            return {'ok': True, 'changed': False, 'path': path}
         try:
             saved_path = str(snapshot.get('config_path') or '')
             if saved_path and os.path.normcase(os.path.abspath(saved_path)) != os.path.normcase(os.path.abspath(path)):
-                _log(logger, '[codex] CODEX_HOME 已变化，跳过旧快照恢复')
+                _log(logger, '[codex] CODEX_HOME 已变化，跳过旧快照删除')
                 return {'ok': False, 'warning': 'CODEX_HOME 已变化', 'path': path}
             text, parsed = _read_existing(path)
             current = _current_values(parsed)
-            desired = {section: dict(values) for section, values in _TARGETS.items()}
-            remove = set()
             managed = {}
+            remove = set()
             warnings = []
             for field, record in fields.items():
                 section = str(record.get('section') or '')
@@ -335,32 +349,121 @@ def restore(*, environ=None, data_root=None, logger=None):
                 value, exists = current.get(field, (None, False))
                 last = record.get('last_written')
                 if exists and value == last:
-                    if record.get('exists'):
-                        managed.setdefault(section, {})[key] = record.get('value')
-                    else:
-                        managed.setdefault(section, {})[key] = None
-                        remove.add((section, key))
+                    managed.setdefault(section, {})[key] = None
+                    remove.add((section, key))
                 else:
                     warnings.append(field)
-            if managed:
-                candidate = _patch(text, managed, remove=remove)
-                _parse(candidate)
-                _atomic_write(path, candidate.encode('utf-8'))
+            residual = 0
+            for section, values in _TARGETS.items():
+                for key in values:
+                    field = _field_key(section, key)
+                    if field in fields:
+                        continue
+                    value, exists = current.get(field, (None, False))
+                    if exists and _looks_managed(section, key, value):
+                        managed.setdefault(section, {})[key] = None
+                        remove.add((section, key))
+                        residual += 1
+            if not managed:
+                return {'ok': True, 'changed': False, 'warnings': warnings, 'path': path}
+            candidate = _patch(text, managed, remove=remove)
+            _parse(candidate)
+            _atomic_write(path, candidate.encode('utf-8'))
             remaining = {field: record for field, record in fields.items() if field in warnings}
             if remaining:
                 snapshot['fields'] = remaining
                 _atomic_write(snap_path, _json_bytes(snapshot))
-                _log(logger, f'[codex] 用户已修改字段，保留未恢复内容：{len(warnings)} 个')
+                _log(logger, f'[codex] 用户已修改字段，保留未删除内容：{len(warnings)} 个')
             else:
                 try:
                     os.unlink(snap_path)
                 except FileNotFoundError:
                     pass
-            _log(logger, f'[codex] 代理关闭恢复完成：已恢复={len(managed)}，警告={len(warnings)}，耗时={time.monotonic() - started:.2f}秒')
+            _log(logger, f'[codex] 关闭代理完成：已删除托管字段={len(remove)}（含无快照兜底={residual}），警告={len(warnings)}，耗时={time.monotonic() - started:.2f}秒；已运行 Codex 需重启后加载')
             return {'ok': True, 'changed': bool(managed), 'warnings': warnings, 'path': path}
         except (OSError, UnicodeError, tomllib.TOMLDecodeError, ValueError, TypeError) as exc:
-            _log(logger, f'[codex] 代理关闭恢复失败：{type(exc).__name__}，原文件未覆盖')
+            _log(logger, f'[codex] 关闭代理删除失败：{type(exc).__name__}，原文件未覆盖')
             return {'ok': False, 'warning': str(exc), 'path': path}
+
+
+MAX_VIEW_BYTES = 512 * 1024
+
+
+def read_config(*, environ=None, logger=None):
+    """只读返回配置原文供 UI 查看；日志只记录存在性与大小，不记录正文。"""
+    started = time.monotonic()
+    path = config_path(environ)
+    try:
+        if not os.path.isfile(path):
+            _log(logger, f'[codex] 读取配置文件：不存在，路径已返回，耗时={time.monotonic() - started:.2f}秒')
+            return {'ok': True, 'exists': False, 'path': path, 'text': '', 'bytes': 0}
+        size = os.path.getsize(path)
+        if size > MAX_VIEW_BYTES:
+            _log(logger, f'[codex] 读取配置文件：超出 {MAX_VIEW_BYTES} 字节查看上限，未传输内容')
+            return {'ok': False, 'exists': True, 'path': path, 'text': '',
+                    'warning': f'配置文件超过 {MAX_VIEW_BYTES} 字节查看上限，请用编辑器查看'}
+        text = _read_text(path)
+        _log(logger, f'[codex] 读取配置文件：成功，大小={len(text.encode("utf-8"))} 字节，耗时={time.monotonic() - started:.2f}秒')
+        return {'ok': True, 'exists': True, 'path': path, 'text': text,
+                'bytes': len(text.encode('utf-8'))}
+    except UnicodeDecodeError as exc:
+        _log(logger, f'[codex] 读取配置文件失败（编码不兼容）：UnicodeDecodeError')
+        return {'ok': False, 'exists': True, 'path': path, 'text': '',
+                'warning': f'配置文件不是 UTF-8 编码，无法在界面查看：{exc}'}
+    except OSError as exc:
+        _log(logger, f'[codex] 读取配置文件失败：{type(exc).__name__}')
+        return {'ok': False, 'exists': True, 'path': path, 'text': '',
+                'warning': f'读取 Codex 配置文件失败：{exc}'}
+
+
+def status(*, environ=None, data_root=None, logger=None):
+    """返回 Codex 配置同步状态摘要，不含配置正文与任何敏感值。"""
+    path = config_path(environ)
+    snap_path = snapshot_path(data_root)
+    exists = os.path.isfile(path)
+    parse_error = ''
+    parsed = {}
+    if exists:
+        try:
+            text, parsed = _read_existing(path)
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            parse_error = f'{type(exc).__name__}: {exc}'
+    current = _current_values(parsed)
+    snapshot = _load_snapshot(snap_path, logger)
+    if snapshot is None:
+        snapshot = {'version': SNAPSHOT_VERSION, 'config_path': '', 'fields': {}}
+    fields = snapshot.get('fields') or {}
+    synced_fields = []
+    deviated_fields = []
+    for field, record in fields.items():
+        last = record.get('last_written')
+        if last is None:
+            continue
+        synced_fields.append(field)
+        value, present = current.get(field, (None, False))
+        if not present or value != last:
+            deviated_fields.append(field)
+    residual_fields = []
+    for section, values in _TARGETS.items():
+        for key in values:
+            field = _field_key(section, key)
+            if field in fields:
+                continue
+            value, present = current.get(field, (None, False))
+            if present and _looks_managed(section, key, value):
+                residual_fields.append(field)
+    return {
+        'ok': True,
+        'path': path,
+        'config_exists': exists,
+        'parse_error': parse_error,
+        'snapshot_exists': os.path.isfile(snap_path),
+        'snapshot_fields': len(fields),
+        'last_mixed_port': int(snapshot.get('mixed_port') or 0),
+        'synced_fields': len(synced_fields),
+        'deviated_fields': deviated_fields,
+        'residual_fields': residual_fields,
+    }
 
 
 def managed_fields():

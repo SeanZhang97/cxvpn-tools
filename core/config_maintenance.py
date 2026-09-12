@@ -19,7 +19,6 @@ HISTORY_LIMIT = 12
 MAX_IMPORT_BYTES = 2 * 1024 * 1024
 SAFE_CONFIG_FIELDS = (
     'vpn_name', 'renew_hours', 'auto_renew', 'auto_connect', 'close_to_tray',
-    'global_hotkeys_enabled', 'lightweight_mode',
     'captcha_max_attempts', 'captcha_gate_max_refresh', 'sms_timeout',
     'browser_data_dir',
 )

@@ -322,6 +322,21 @@ def windows_system_proxy():
         return ''
 
 
+def windows_manual_proxy_state():
+    """读取 Windows 手动代理原始启用位与地址，供 TUN 启用门控使用。
+
+    ``windows_system_proxy`` 把“启用但地址为空”视为不可用返回空串，但
+    ``ProxyEnable=1`` 本身就会让遵循系统代理的应用绕过 TUN（地址为空时
+    部分应用直接无法上网）。TUN 门控必须读取原始启用位，不能复用可用性语义。
+    """
+    try:
+        state = proxy_guard.read_proxy_state()
+    except (OSError, ImportError):
+        return {'enabled': False, 'server': ''}
+    return {'enabled': bool(state.get('enable')),
+            'server': str(state.get('server') or '')}
+
+
 def _proxy_display(value):
     if not value:
         return ''
@@ -929,6 +944,29 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
     if config.get('capture_mode') == 'tun' and conflicts:
         names = '、'.join(sorted({item.get('name', '') for item in conflicts}))
         raise RoutingError(f'检测到其他 TUN 正在接管默认路由（{names}），请先关闭其 TUN 模式')
+    if config.get('capture_mode') == 'tun':
+        # TUN 无法接管遵循 Windows 系统代理的应用流量：ProxyEnable=1 时
+        # 这些请求会绕过 TUN 指向既有代理；地址为空时部分应用直接无法
+        # 上网。必须在启用前暴露，不能等用户发现“TUN 开了却没网”。
+        proxy_state = windows_manual_proxy_state()
+        proxy_server = proxy_state['server']
+        if proxy_state['enabled']:
+            if proxy_server == f'127.0.0.1:{config.get("mixed_port", 0)}':
+                # 从本软件系统代理模式切换到 TUN：安装事务会按快照恢复
+                # 原系统代理设置，不阻断切换，仅向用户说明。
+                warnings.append(
+                    'Windows 系统代理当前指向本软件端口，'
+                    '本次启用 TUN 时会自动恢复原系统代理设置')
+            elif not proxy_server:
+                raise RoutingError(
+                    '检测到 Windows 系统代理已开启但未配置服务器地址，'
+                    '遵循系统代理的应用不会进入 TUN 且可能无法上网；'
+                    '请先在 Windows 设置中关闭系统代理后重试')
+            else:
+                raise RoutingError(
+                    f'检测到 Windows 系统代理已开启（{proxy_server}），'
+                    '遵循系统代理的应用不会经过 TUN；'
+                    '请先关闭该系统代理，或改用 Windows 系统代理模式')
     available = {row.get('name'): row for row in interfaces}
     selected = config.get('physical_interface')
     if not selected:
@@ -1570,7 +1608,7 @@ class RoutingManager:
         result = codex_proxy.restore(logger=self._log_best_effort)
         if not result.get('ok'):
             self._log_best_effort(
-                f'[codex] {reason}恢复未完成：保留用户配置并等待下次处理')
+                f'[codex] {reason}删除未完成：保留用户配置并等待下次处理')
         else:
             self._log_best_effort(f'[codex] {reason}执行完成')
 

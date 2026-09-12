@@ -1167,7 +1167,10 @@ class RoutingConfigTests(unittest.TestCase):
     def test_rejects_vpn_with_remote_default_gateway(self):
         config = routing.normalize_config(self.base_config())
 
-        with self.assertRaisesRegex(routing.RoutingError, '远程默认网关'):
+        with mock.patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': False, 'server': ''}), \
+                self.assertRaisesRegex(routing.RoutingError, '远程默认网关'):
             routing.validate_environment(
                 config, [vpn_profile(gateway=True)],
                 [{'name': '以太网'}], [])
@@ -1175,7 +1178,10 @@ class RoutingConfigTests(unittest.TestCase):
     def test_rejects_another_active_tun(self):
         config = routing.normalize_config(self.base_config())
 
-        with self.assertRaisesRegex(routing.RoutingError, '其他 TUN'):
+        with mock.patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': False, 'server': ''}), \
+                self.assertRaisesRegex(routing.RoutingError, '其他 TUN'):
             routing.validate_environment(
                 config, [vpn_profile()], [{'name': '以太网'}],
                 [{'name': 'Clash'}])
@@ -1183,10 +1189,59 @@ class RoutingConfigTests(unittest.TestCase):
     def test_disconnected_vpn_is_fail_closed_warning(self):
         config = routing.normalize_config(self.base_config())
 
-        warnings = routing.validate_environment(
-            config, [vpn_profile(connected=False)], [{'name': '以太网'}], [])
+        with mock.patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': False, 'server': ''}):
+            warnings = routing.validate_environment(
+                config, [vpn_profile(connected=False)], [{'name': '以太网'}], [])
 
         self.assertIn('请求会失败', warnings[0])
+
+    def test_tun_rejects_enabled_system_proxy_with_empty_server(self):
+        config = routing.normalize_config(self.base_config())
+
+        with mock.patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': True, 'server': ''}):
+            with self.assertRaisesRegex(
+                    routing.RoutingError, '未配置服务器地址'):
+                routing.validate_environment(
+                    config, [vpn_profile()], [{'name': '以太网'}], [])
+
+    def test_tun_rejects_enabled_foreign_system_proxy(self):
+        config = routing.normalize_config(self.base_config())
+
+        with mock.patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': True, 'server': 'proxy.corp.test:8080'}):
+            with self.assertRaisesRegex(
+                    routing.RoutingError, 'proxy.corp.test:8080'):
+                routing.validate_environment(
+                    config, [vpn_profile()], [{'name': '以太网'}], [])
+
+    def test_tun_allows_own_mixed_port_with_restore_warning(self):
+        config = routing.normalize_config(self.base_config())
+
+        with mock.patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': True, 'server': '127.0.0.1:17890'}):
+            warnings = routing.validate_environment(
+                config, [vpn_profile()], [{'name': '以太网'}], [])
+
+        self.assertTrue(any('自动恢复' in item for item in warnings))
+
+    def test_system_proxy_mode_ignores_enabled_foreign_proxy(self):
+        config = routing.normalize_config({
+            **self.base_config(), 'schema_version': 8,
+            'capture_mode': 'system-proxy'})
+
+        with mock.patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': True, 'server': 'proxy.corp.test:8080'}):
+            warnings = routing.validate_environment(
+                config, [vpn_profile()], [{'name': '以太网'}], [])
+
+        self.assertFalse(any('系统代理' in item for item in warnings))
 
 
 if __name__ == '__main__':

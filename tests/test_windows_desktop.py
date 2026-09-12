@@ -215,14 +215,31 @@ class WindowsDesktopTest(unittest.TestCase):
 
         controller.show_window.assert_called_once_with()
 
-    def test_global_hotkey_map_uses_fixed_ctrl_alt_shortcuts(self):
-        actions = windows_desktop.HOTKEY_ACTIONS
+    def test_dispose_cleans_tray_when_native_already_disposed(self):
+        calls = []
+        notify = SimpleNamespace(
+            Visible=True, Dispose=lambda: calls.append('notify.dispose'))
+        menu = SimpleNamespace(
+            Dispose=lambda: calls.append('menu.dispose'))
+        icon = SimpleNamespace(
+            Dispose=lambda: calls.append('icon.dispose'))
+        controller = windows_desktop.DesktopController(
+            window=None, close_to_tray=lambda: True, on_exit=lambda: None)
+        controller._notify = notify
+        controller._menu = menu
+        controller._icon = icon
+        native = mock.Mock()
+        native.IsDisposed = True
+        controller._native = native
 
-        self.assertEqual(actions[1], (
-            'toggle_proxy', windows_desktop.MOD_CONTROL | windows_desktop.MOD_ALT,
-            ord('P')))
-        self.assertEqual(actions[2][0], 'toggle_mode')
-        self.assertEqual(actions[3][0], 'open_connections')
+        controller.dispose()
+
+        self.assertIn('notify.dispose', calls)
+        self.assertIn('menu.dispose', calls)
+        self.assertIn('icon.dispose', calls)
+        self.assertIsNone(controller._notify)
+        self.assertIsNone(controller._menu)
+        self.assertIsNone(controller._icon)
 
     def test_open_page_restores_window_then_navigates(self):
         calls = []

@@ -673,7 +673,7 @@
     const confirmed = !needsConfirmation || await confirmAction({
       title: nextEnabled ? (repairing ? '修复网络代理' : '开启网络代理') : '关闭网络代理',
       message: nextEnabled
-        ? `${repairing ? '将重新检查并修复代理服务' : config.capture_mode === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, selectedMode)}。${draftNotice}确认后会自动检查节点和网络，失败会恢复原设置。${config.capture_mode === 'tun' ? '请先关闭其他代理软件的 TUN 模式。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
+        ? `${repairing ? '将重新检查并修复代理服务' : config.capture_mode === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, selectedMode)}。${draftNotice}确认后会自动检查节点和网络，失败会恢复原设置。${config.capture_mode === 'tun' ? '请先关闭其他代理软件的 TUN 模式和 Windows 系统代理。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
         : needsUac
           ? '将停止并迁移旧版 Mihomo TUN 服务，系统恢复使用 Windows 当前路由。该操作需要 UAC。'
           : fastToggleReady

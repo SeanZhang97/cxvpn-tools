@@ -199,8 +199,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             self._cfg_get, self.routing, self.log)
         self.routing_activity._serializable = False
         self._ui_state_stream = UiStateStream(
-            self._build_ui_snapshot, self.log,
-            interval=1.5 if self.cfg.get('lightweight_mode') else 0.5)
+            self._build_ui_snapshot, self.log, interval=0.5)
         self._ui_state_stream._serializable = False
         self._log_writer = _LogWriter(
             os.path.join(cfgmod.BASE, 'run.log'), LOG_FILE_MAX)
@@ -623,11 +622,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             self.worker.enable_auto_connect()
         state_stream = getattr(self, '_ui_state_stream', None)
         if state_stream is not None:
-            state_stream.set_interval(
-                1.5 if self._cfg_get().get('lightweight_mode') else 0.5)
-        desktop = getattr(self, '_desktop', None)
-        if desktop is not None:
-            desktop.refresh_hotkeys()
+            state_stream.set_interval(0.5)
         self._poke_ui_state()
         return True
 
@@ -694,17 +689,82 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
 
     def get_codex_status(self):
         """返回 Codex 配置同步状态摘要，不读取或返回配置正文。"""
-        current = routing.normalize_config(
-            self._cfg_get().get('routing') or routing.default_config())
-        path = codex_proxy.config_path()
+        try:
+            current = routing.normalize_config(
+                self._cfg_get().get('routing') or routing.default_config())
+            summary = codex_proxy.status(logger=self.log)
+        except (OSError, ValueError, TypeError, routing.RoutingError) as exc:
+            self.log(f'[codex] 读取状态失败：{type(exc).__name__}')
+            return {
+                'ok': False,
+                'config_exists': False,
+                'config_path': '',
+                'parse_error': str(exc),
+                'snapshot_exists': False,
+                'snapshot_fields': 0,
+                'last_mixed_port': 0,
+                'synced_fields': 0,
+                'deviated_fields': [],
+                'mixed_port': '',
+                'system_proxy_mode': False,
+                'routing_enabled': False,
+                'residual_fields': [],
+                'restart_required_after_change': True,
+            }
         return {
             'ok': True,
-            'config_exists': os.path.isfile(path),
+            'config_exists': summary['config_exists'],
+            'config_path': summary['path'],
+            'parse_error': summary['parse_error'],
+            'snapshot_exists': summary['snapshot_exists'],
+            'snapshot_fields': summary['snapshot_fields'],
+            'last_mixed_port': summary['last_mixed_port'],
+            'synced_fields': summary['synced_fields'],
+            'deviated_fields': summary['deviated_fields'],
+            'residual_fields': summary.get('residual_fields', []),
             'mixed_port': current['mixed_port'],
             'system_proxy_mode': current['capture_mode'] == 'system-proxy',
             'routing_enabled': bool(current['enabled']),
             'restart_required_after_change': True,
         }
+
+    def sync_codex_proxy(self):
+        """手动把当前 mixed_port 同步到 Codex 配置；端口只从本地配置读取。"""
+        started = time.monotonic()
+        self.log('[codex] 手动同步请求已提交（UI）')
+        try:
+            current = routing.normalize_config(
+                self._cfg_get().get('routing') or routing.default_config())
+            self.log(f'[codex] 手动同步已领取：mixed_port={current["mixed_port"]}')
+            result = codex_proxy.sync(current['mixed_port'], logger=self.log)
+            self.log(f'[codex] 手动同步执行完成，耗时={time.monotonic() - started:.2f}秒'
+                     if result.get('ok')
+                     else f'[codex] 手动同步执行失败，耗时={time.monotonic() - started:.2f}秒')
+            if result.get('ok'):
+                result['restart_required_after_change'] = True
+            return result
+        except (OSError, ValueError, TypeError, routing.RoutingError) as exc:
+            self.log(f'[codex] 手动同步读取配置失败：{type(exc).__name__}')
+            return {'ok': False, 'warning': str(exc)}
+
+    def restore_codex_proxy(self):
+        """关闭 Codex 代理：删除仍等于本工具最后写入值的托管字段。"""
+        started = time.monotonic()
+        self.log('[codex] 关闭代理请求已提交（UI）')
+        result = codex_proxy.restore(logger=self.log)
+        self.log(f'[codex] 关闭代理执行{"完成" if result.get("ok") else "失败"}，耗时={time.monotonic() - started:.2f}秒')
+        if result.get('ok') and result.get('changed'):
+            result['restart_required_after_change'] = True
+        return result
+
+    def read_codex_config(self):
+        """只读返回 Codex 配置原文供 UI 查看；日志不记录内容。"""
+        started = time.monotonic()
+        self.log('[codex] 查看配置请求已提交（UI）')
+        result = codex_proxy.read_config(logger=self.log)
+        if result.get('ok'):
+            self.log(f'[codex] 查看配置已返回，耗时={time.monotonic() - started:.2f}秒')
+        return result
 
     def report_routing_stream_state(self, state, retry_seconds=0):
         """记录实时流量连接状态；不接收 URL、secret 或消息正文。"""
@@ -1198,15 +1258,9 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         return {'ok': ok, 'msg': msg}
 
     def get_desktop_settings(self):
-        desktop = getattr(self, '_desktop', None)
         return {
             'startup_enabled': windows_desktop.is_startup_enabled(),
             'close_to_tray': self._cfg_get().get('close_to_tray', False),
-            'global_hotkeys_enabled': self._cfg_get().get(
-                'global_hotkeys_enabled', False),
-            'global_hotkeys_active': bool(
-                desktop and desktop.hotkeys_active),
-            'lightweight_mode': self._cfg_get().get('lightweight_mode', False),
         }
 
     def desktop_quick_snapshot(self):

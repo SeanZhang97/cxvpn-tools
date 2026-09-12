@@ -43,7 +43,7 @@ for (const id of ['connections-sort', 'proxy-log-level', 'proxy-log-order']) {
 assert.match(activitySource, /RoutingWorkspace\?\.enhanceSelect\?\.\(byId\(id\), \{ compact: true \}\)/);
 
 assert.deepEqual([...new Set(referenced.filter(id => !ids.has(id)))], []);
-assert.doesNotMatch(html, /data-page="routing"/);
+assert.match(html, /data-page="routing"/);
 assert.match(html, /id="page-routing"/);
 for (const page of ['subscriptions', 'nodes', 'rules', 'connections', 'logs']) {
   assert.match(html, new RegExp(`data-page="${page}"`));

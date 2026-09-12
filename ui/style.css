@@ -74,6 +74,9 @@ body.keyboard-navigation nav button:focus-visible {
   stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round;
   transition: color .18s, transform .18s;
 }
+.nav-icon.codex-nav-icon {
+  fill: currentColor; stroke: none; stroke-width: 0;
+}
 nav button:hover { color: var(--txt); background: var(--panel); }
 nav button:hover .nav-icon { color: #a9b9dc; transform: translateX(1px); }
 nav button.active {
@@ -92,6 +95,7 @@ main.browser-mode { overflow: hidden; padding: 0; }
 @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
 header { margin-bottom: 22px; }
 header h2 { font-size: 22px; font-weight: 600; letter-spacing: .5px; }
+header h2 .module-icon { margin-right: 10px; vertical-align: middle; }
 header p { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
 
 /* ---------- 卡片 ---------- */
@@ -189,25 +193,25 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 .proxy-emblem { display: block; width: 100%; height: 100%; pointer-events: none; }
 .proxy-emblem-rings { opacity: .48; transition: opacity .4s; }
 .proxy-emblem-nodes { opacity: .25; }
-.proxy-emblem-orbit { opacity: 0; transform-origin: 80px 80px; }
+.proxy-emblem-orbit { opacity: .3; transform-origin: 80px 80px; animation: proxy-emblem-orbit 26s linear infinite; }
 .proxy-emblem-mark { opacity: .64; filter: saturate(.35); transition: opacity .4s, filter .4s; }
-.proxy-emblem-source { opacity: .3; }
-.proxy-emblem-feed-line { opacity: 0; stroke-dasharray: 24 100; stroke-dashoffset: 24; filter: drop-shadow(0 0 2px rgba(56,189,248,.6)); }
-.proxy-emblem-stream { opacity: 0; stroke-dasharray: 18 100; stroke-dashoffset: 18; filter: drop-shadow(0 0 2px rgba(56,189,248,.85)); }
-.proxy-emblem-star-energy { opacity: 0; filter: drop-shadow(0 0 2px rgba(56,189,248,.7)); }
+.proxy-emblem-source { opacity: .45; animation: proxy-emblem-charge-soft 9s ease-in-out infinite; }
+.proxy-emblem-feed-line { opacity: .55; stroke-dasharray: 24 100; stroke-dashoffset: 24; filter: drop-shadow(0 0 2px rgba(56,189,248,.6)); animation: proxy-emblem-feed-soft 9s ease-in-out infinite; }
+.proxy-emblem-stream { opacity: 0; stroke-dasharray: 18 100; stroke-dashoffset: 18; filter: drop-shadow(0 0 2px rgba(56,189,248,.85)); animation: proxy-emblem-rise-soft 9s cubic-bezier(.4,0,.2,1) infinite; }
+.proxy-emblem-stream:nth-child(2) { animation-delay: .12s; }
+.proxy-emblem-stream:nth-child(3) { animation-delay: .24s; }
+.proxy-emblem-stream:nth-child(4) { animation-delay: .36s; }
+.proxy-emblem-star-energy { opacity: 0; filter: drop-shadow(0 0 2px rgba(56,189,248,.7)); animation: proxy-emblem-ignite-soft 9s ease-in-out infinite; }
 .proxy-orbit.is-active .proxy-emblem-mark {
   opacity: .9; filter: drop-shadow(0 0 2px rgba(56,189,248,.35));
 }
 .proxy-orbit.is-active .proxy-emblem-rings { opacity: .9; }
 .proxy-orbit.is-active .proxy-emblem-nodes { opacity: .6; }
 .proxy-orbit.is-active .proxy-emblem-orbit { opacity: .75; animation: proxy-emblem-orbit 18s linear infinite; }
-.proxy-orbit.is-active .proxy-emblem-source { animation: proxy-emblem-charge 5.6s ease-in-out infinite; }
-.proxy-orbit.is-active .proxy-emblem-feed-line { animation: proxy-emblem-feed 5.6s ease-in-out infinite; }
-.proxy-orbit.is-active .proxy-emblem-stream { animation: proxy-emblem-rise 5.6s cubic-bezier(.4,0,.2,1) infinite; }
-.proxy-orbit.is-active .proxy-emblem-stream:nth-child(2) { animation-delay: .12s; }
-.proxy-orbit.is-active .proxy-emblem-stream:nth-child(3) { animation-delay: .24s; }
-.proxy-orbit.is-active .proxy-emblem-stream:nth-child(4) { animation-delay: .36s; }
-.proxy-orbit.is-active .proxy-emblem-star-energy { animation: proxy-emblem-ignite 5.6s ease-in-out infinite; }
+.proxy-orbit.is-active .proxy-emblem-source { opacity: 1; animation: proxy-emblem-charge 5.6s ease-in-out infinite; }
+.proxy-orbit.is-active .proxy-emblem-feed-line { opacity: 1; animation: proxy-emblem-feed 5.6s ease-in-out infinite; }
+.proxy-orbit.is-active .proxy-emblem-stream { opacity: 1; animation: proxy-emblem-rise 5.6s cubic-bezier(.4,0,.2,1) infinite; }
+.proxy-orbit.is-active .proxy-emblem-star-energy { opacity: 1; animation: proxy-emblem-ignite 5.6s ease-in-out infinite; }
 .proxy-orbit.is-warning .proxy-emblem-mark { opacity: .62; filter: saturate(.2); }
 @keyframes proxy-emblem-orbit { to { transform: rotate(360deg); } }
 @keyframes proxy-emblem-feed {
@@ -232,28 +236,27 @@ h3 { font-size: 14px; margin-bottom: 6px; }
   74%, 81% { opacity: 1; }
   94% { opacity: 0; }
 }
-@media (prefers-reduced-motion: reduce) {
-  /* Keep the connection indicator alive on systems that request reduced motion;
-     use a slower cycle instead of removing the running state altogether. */
-  .proxy-orbit.is-active .proxy-emblem-orbit { animation-duration: 36s; }
-  .proxy-orbit.is-active .proxy-emblem-source,
-  .proxy-orbit.is-active .proxy-emblem-feed-line,
-  .proxy-orbit.is-active .proxy-emblem-stream,
-  .proxy-orbit.is-active .proxy-emblem-star-energy { animation-duration: 11.2s; }
-  .proxy-emblem-mark, .proxy-emblem-rings { transition-duration: .8s; }
+@keyframes proxy-emblem-feed-soft {
+  0% { opacity: 0; stroke-dashoffset: 24; }
+  4% { opacity: .45; }
+  12% { opacity: .5; stroke-dashoffset: -100; }
+  16%, 100% { opacity: 0; stroke-dashoffset: -100; }
 }
-/* 代理状态图形是运行状态指示器，轻量模式也保留最低限度的动态反馈。 */
-body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-orbit {
-  animation: proxy-emblem-orbit 18s linear infinite !important;
-  animation-duration: 18s !important;
-  animation-iteration-count: infinite !important;
+@keyframes proxy-emblem-charge-soft {
+  0%, 100% { opacity: .18; }
+  12%, 20% { opacity: .55; }
+  42%, 88% { opacity: .28; }
 }
-body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-source,
-body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-feed-line,
-body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-stream,
-body.lightweight-mode .proxy-orbit.is-active .proxy-emblem-star-energy {
-  animation-duration: 5.6s !important;
-  animation-iteration-count: infinite !important;
+@keyframes proxy-emblem-rise-soft {
+  0%, 12% { opacity: 0; stroke-dashoffset: 18; }
+  20% { opacity: .5; }
+  60% { opacity: .45; stroke-dashoffset: -100; }
+  64%, 100% { opacity: 0; stroke-dashoffset: -100; }
+}
+@keyframes proxy-emblem-ignite-soft {
+  0%, 65%, 100% { opacity: 0; }
+  74%, 81% { opacity: .5; }
+  94% { opacity: 0; }
 }
 .proxy-connect-copy { min-width: 0; }
 .proxy-state-kicker { color: #7182a7; font-size: 9.5px; font-weight: 750; letter-spacing: 1.7px; }
@@ -966,16 +969,6 @@ input:not([type=checkbox]):focus-visible, select:focus-visible, textarea:focus-v
   outline: none;
 }
 
-body.lightweight-mode *,
-body.lightweight-mode *::before,
-body.lightweight-mode *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
-body.lightweight-mode .sidebar,
-body.lightweight-mode .topbar,
-body.lightweight-mode .routing-savebar,
-body.lightweight-mode .modal-card { backdrop-filter: none !important; }
-body.lightweight-mode .card,
-body.lightweight-mode .routing-p1-grid > .card,
-body.lightweight-mode .routing-grid > .card { box-shadow: none !important; }
 button:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid rgba(34,211,238,.78); outline-offset: 2px;
 }
@@ -1625,6 +1618,19 @@ td .target {
   box-shadow: 0 34px 90px rgba(0,0,0,.62), inset 0 1px rgba(255,255,255,.025);
 }
 .modal-card-wide { width: min(500px, calc(100vw - 40px)); }
+.modal-card-codex { width: min(720px, calc(100vw - 40px)); }
+.codex-view-card { display: flex; flex-direction: column; }
+.codex-view-path {
+  margin: 0 0 12px; font-size: 11px; color: #6d7d9c; font-family: "Cascadia Code", Consolas, monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left;
+}
+.codex-view-content {
+  min-height: 260px; max-height: 52vh; margin: 0; padding: 14px 16px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: rgba(5, 10, 24, .32); color: #b8e9ff;
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.7;
+  white-space: pre; user-select: text;
+}
 .captcha-card { width: min(430px, calc(100vw - 40px)); }
 .confirm-card { width: min(410px, calc(100vw - 40px)); }
 .modal-heading { padding-right: 34px; margin-bottom: 18px; }
@@ -1994,15 +2000,6 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
 .routing-node strong { font-size: 12px; }
 .routing-node .delay { font-size: 11px; }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    scroll-behavior: auto !important;
-    animation-duration: .01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
-  }
-}
-
 /* ---------- 网络代理工作区视觉系统 ---------- */
 .module-title {
   display: inline-flex;
@@ -2032,6 +2029,16 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
   stroke-width: 1.65;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+.codex-module-icon {
+  color: #c3b5ff;
+  border-color: rgba(139, 120, 255, .32);
+  background: linear-gradient(145deg, rgba(139, 120, 255, .2), rgba(34, 211, 238, .08));
+}
+.codex-module-icon svg {
+  fill: currentColor;
+  stroke: none;
+  stroke-width: 0;
 }
 .module-icon-proxy { color: #8fe7ff; border-color: rgba(34,211,238,.3); background: linear-gradient(145deg, rgba(34,211,238,.2), rgba(99,102,241,.12)); }
 .module-icon-subscription { color: #b5b9ff; }
@@ -2272,11 +2279,6 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
   .module-icon { width: 32px; height: 32px; border-radius: 10px; }
   .module-icon svg { width: 18px; height: 18px; }
   .proxy-rate-chart { height: 78px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .proxy-rate-line,
-  .proxy-rate-area,
-  .proxy-shortcuts .proxy-shortcut-arrow { transition: none; }
 }
 
 /* ---------- 网络代理首页重排：以连接状态为主线 ---------- */

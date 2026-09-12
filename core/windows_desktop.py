@@ -18,122 +18,6 @@ LEGACY_INSTANCE_MUTEXES = (r'Local\CXVPNManager.Singleton.v1',)
 WINDOW_TITLE = 'CXVPNTools'
 LEGACY_WINDOW_TITLES = ('CX VPN TOOLS', 'CXVPN管理器')
 ERROR_ALREADY_EXISTS = 183
-WM_HOTKEY = 0x0312
-WM_QUIT = 0x0012
-MOD_ALT = 0x0001
-MOD_CONTROL = 0x0002
-HOTKEY_ACTIONS = {
-    1: ('toggle_proxy', MOD_CONTROL | MOD_ALT, ord('P')),
-    2: ('toggle_mode', MOD_CONTROL | MOD_ALT, ord('M')),
-    3: ('open_connections', MOD_CONTROL | MOD_ALT, ord('C')),
-}
-
-
-class _Point(ctypes.Structure):
-    _fields_ = [('x', wintypes.LONG), ('y', wintypes.LONG)]
-
-
-class _Message(ctypes.Structure):
-    _fields_ = [
-        ('hwnd', wintypes.HWND), ('message', wintypes.UINT),
-        ('wParam', wintypes.WPARAM), ('lParam', wintypes.LPARAM),
-        ('time', wintypes.DWORD), ('pt', _Point),
-    ]
-
-
-class GlobalHotkeyManager:
-    """在独立消息线程注册固定、可审计的全局快捷键。"""
-
-    def __init__(self, callbacks, log=print):
-        self.callbacks = callbacks or {}
-        self.log = log
-        self._thread = None
-        self._thread_id = 0
-        self._ready = threading.Event()
-        self._registered_count = 0
-
-    def start(self, enabled=True):
-        if not enabled or os.name != 'nt':
-            return False
-        if self._thread and self._thread.is_alive():
-            return True
-        self._ready.clear()
-        self._thread = threading.Thread(
-            target=self._run, name='global-hotkeys', daemon=True)
-        self._thread.start()
-        self._ready.wait(2)
-        return self._registered_count == len(self.callbacks)
-
-    def stop(self):
-        thread = self._thread
-        thread_id = self._thread_id
-        if thread and thread.is_alive() and thread_id:
-            try:
-                user32 = ctypes.WinDLL('user32', use_last_error=True)
-                user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0)
-            except OSError:
-                pass
-            thread.join(timeout=3)
-        self._thread = None
-        self._thread_id = 0
-        self._registered_count = 0
-
-    def restart(self, enabled):
-        self.stop()
-        return self.start(bool(enabled))
-
-    def _run(self):
-        user32 = ctypes.WinDLL('user32', use_last_error=True)
-        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-        user32.RegisterHotKey.argtypes = [
-            wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
-        user32.RegisterHotKey.restype = wintypes.BOOL
-        user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.GetMessageW.argtypes = [
-            ctypes.POINTER(_Message), wintypes.HWND, wintypes.UINT,
-            wintypes.UINT]
-        user32.GetMessageW.restype = ctypes.c_int
-        self._thread_id = kernel32.GetCurrentThreadId()
-        registered = []
-        try:
-            for hotkey_id, (action, modifiers, key) in HOTKEY_ACTIONS.items():
-                if action in self.callbacks and user32.RegisterHotKey(
-                        None, hotkey_id, modifiers, key):
-                    registered.append(hotkey_id)
-                elif action in self.callbacks:
-                    self.log(f'[desktop] 全局快捷键注册失败: {action}')
-            self._registered_count = len(registered)
-            if len(registered) != len(self.callbacks):
-                for hotkey_id in registered:
-                    user32.UnregisterHotKey(None, hotkey_id)
-                registered.clear()
-                self._registered_count = 0
-            self._ready.set()
-            if registered:
-                self.log('[desktop] 全局快捷键已启用: Ctrl+Alt+P/M/C')
-            message = _Message()
-            while registered:
-                status = user32.GetMessageW(
-                    ctypes.byref(message), None, 0, 0)
-                if status <= 0:
-                    break
-                if message.message != WM_HOTKEY:
-                    continue
-                action = HOTKEY_ACTIONS.get(int(message.wParam), ('', 0, 0))[0]
-                callback = self.callbacks.get(action)
-                if callback:
-                    try:
-                        callback()
-                    except Exception as exc:
-                        self.log(
-                            f'[desktop] 全局快捷键执行失败: '
-                            f'{type(exc).__name__}')
-        finally:
-            for hotkey_id in registered:
-                user32.UnregisterHotKey(None, hotkey_id)
-            self._thread_id = 0
-            self._registered_count = 0
-            self._ready.set()
 
 
 class SingleInstanceGuard:
@@ -322,7 +206,7 @@ class DesktopController:
     _serializable = False
 
     def __init__(self, window, close_to_tray, on_exit, on_os_shutdown=None,
-                 quick_snapshot=None, quick_actions=None, hotkeys_enabled=None,
+                 quick_snapshot=None, quick_actions=None,
                  on_open_page=None, on_action_complete=None, log=print):
         self.window = window
         self.close_to_tray = close_to_tray
@@ -330,7 +214,6 @@ class DesktopController:
         self._on_os_shutdown = on_os_shutdown
         self._quick_snapshot = quick_snapshot or (lambda: {})
         self._quick_actions = quick_actions or {}
-        self._hotkeys_enabled = hotkeys_enabled or (lambda: False)
         self._on_open_page = on_open_page or (lambda _page: None)
         self._on_action_complete = on_action_complete or (lambda: None)
         self.log = log
@@ -346,15 +229,7 @@ class DesktopController:
         self._menu_item_type = None
         self._exiting = False
         self._started = False
-        self._hotkeys_requested = None
         self._tray_items = {}
-        self._hotkeys = GlobalHotkeyManager({
-            'toggle_proxy': lambda: self._run_quick_action(
-                'toggle_proxy', '代理状态'),
-            'toggle_mode': lambda: self._run_quick_action(
-                'toggle_mode', '流量模式'),
-            'open_connections': lambda: self.open_page('connections'),
-        }, log=self.log)
 
     def start(self):
         if self._started or os.name != 'nt' or self.window.native is None:
@@ -430,30 +305,6 @@ class DesktopController:
             self.log('[desktop] 系统托盘已启动')
 
         self._invoke(setup, wait=True)
-        self.refresh_hotkeys()
-
-    def refresh_hotkeys(self):
-        try:
-            enabled = bool(self._hotkeys_enabled())
-        except Exception:
-            enabled = False
-        if enabled == self._hotkeys_requested:
-            return (not enabled or
-                    self._hotkeys._registered_count == len(
-                        self._hotkeys.callbacks))
-        self._hotkeys_requested = enabled
-        active = self._hotkeys.restart(enabled)
-        if enabled and not active and self._notify:
-            self.notify(
-                '全局快捷键未完全启用',
-                'Ctrl+Alt+P/M/C 中有按键被其它程序占用，请关闭冲突程序后重新开启')
-        return active
-
-    @property
-    def hotkeys_active(self):
-        return bool(
-            self._hotkeys_requested and
-            self._hotkeys._registered_count == len(self._hotkeys.callbacks))
 
     def _on_menu_opening(self, _sender, _args):
         try:
@@ -609,7 +460,6 @@ class DesktopController:
                 pass
 
     def _dispose_native(self):
-        self._hotkeys.stop()
         if self._notify:
             self._notify.Visible = False
             self._notify.Dispose()
@@ -623,5 +473,14 @@ class DesktopController:
 
     def dispose(self):
         self._exiting = True
-        self._hotkeys.stop()
-        self._invoke(self._dispose_native, wait=True)
+        try:
+            self._invoke(self._dispose_native, wait=True)
+        except Exception:
+            pass
+        # 主窗体先于 dispose 销毁时 _invoke 会直接返回；此时在线程内兜底清理托盘，
+        # 避免 NotifyIcon 残留到进程退出、鼠标划过才被 Explorer 刷新移除。
+        if self._notify:
+            try:
+                self._dispose_native()
+            except Exception:
+                pass

@@ -100,7 +100,7 @@ assert.match(css, /\.proxy-connect-card/);
 assert.match(css, /@keyframes proxy-emblem-rise/);
 assert.match(css, /@keyframes proxy-emblem-ignite/);
 assert.match(css, /\.proxy-orbit\.is-active \.proxy-emblem-mark/);
-assert.match(css, /\.proxy-orbit\.is-active \.proxy-emblem-star-energy \{ animation-duration: 11\.2s/);
+assert.match(css, /@keyframes proxy-emblem-feed-soft/);
 assert.match(css, /\.proxy-dashboard-grid/);
 assert.match(css, /\.proxy-subpage-heading/);
 assert.match(css, /\.proxy-selection-warning/);
@@ -109,7 +109,6 @@ assert.match(css, /\.proxy-operation-notice/);
 assert.match(css, /\.proxy-subscription-health/);
 assert.match(css, /\.proxy-stream-state/);
 assert.match(css, /\.proxy-traffic-foot/);
-assert.match(css, /prefers-reduced-motion: reduce/);
 
 console.log('network proxy home and node page: ok');
 

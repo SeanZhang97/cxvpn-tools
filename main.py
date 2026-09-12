@@ -84,8 +84,6 @@ def _run_app():
             'set_mode': api.desktop_set_traffic_mode,
             'select_node': api.desktop_select_node,
         },
-        hotkeys_enabled=lambda: api._cfg_get().get(
-            'global_hotkeys_enabled', False),
         on_open_page=open_page,
         on_action_complete=notify_desktop_action,
         log=api.log)

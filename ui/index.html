@@ -19,6 +19,7 @@
       <button type="button" data-page="overview" class="active" aria-current="page"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg><span>总览</span></button>
       <button type="button" data-page="vpns"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 2v20"/></svg><span>VPN 配置</span></button>
       <button type="button" data-page="proxy"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg><span>网络代理</span></button>
+      <button type="button" data-page="routing"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 6h3a4 4 0 0 1 4 4v.5a4 4 0 0 0 4 4"/><path d="m13 10 2-2 2 2"/></svg><span>域名分流</span></button>
       <button type="button" data-page="subscriptions"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span>订阅</span></button>
       <button type="button" data-page="nodes"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 6h8M7 8l4 8M17 8l-4 8"/></svg><span>节点</span></button>
       <button type="button" data-page="rules"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/><circle cx="18" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></svg><span>规则</span></button>
@@ -26,7 +27,7 @@
       <button type="button" data-page="cx"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>超星账号</span></button>
       <button type="button" data-page="vlm"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m4 20 11-11"/><path d="m12.5 6.5 5 5"/><path d="M18 2v4M16 4h4"/><path d="M6 5v3M4.5 6.5h3"/><path d="M19 15v4M17 17h4"/></svg><span>自动化配置</span></button>
       <button type="button" data-page="browser"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg><span>浏览器</span></button>
-      <button type="button" data-page="codex"><svg class="nav-icon codex-nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M7.5 18.5h9.2a4.3 4.3 0 0 0 .8-8.5A5.8 5.8 0 0 0 6.8 8.5a4.1 4.1 0 0 0 .7 10Z"/><path d="m9 11 2.5 2.2L9 15.5M13.5 15.5h2.8"/></svg><span>Codex</span></button>
+      <button type="button" data-page="codex"><svg class="nav-icon codex-nav-icon" aria-hidden="true" viewBox="0 0 100 100"><path d="M38.355 36.52v-9.415c0-.793.297-1.388.99-1.784l18.93-10.902c2.578-1.486 5.65-2.18 8.82-2.18 11.894 0 19.426 9.218 19.426 19.029 0 .694 0 1.486-.1 2.28L66.799 22.05c-1.189-.694-2.379-.694-3.568 0L38.355 36.52Zm44.202 36.67V50.694c0-1.388-.596-2.38-1.785-3.073L55.897 33.15l8.126-4.658c.694-.396 1.289-.396 1.982 0l18.93 10.902c5.452 3.172 9.118 9.91 9.118 16.452 0 7.531-4.46 14.47-11.496 17.344Zm-50.05-19.82-8.127-4.757c-.693-.396-.99-.99-.99-1.784V25.025c0-10.605 8.126-18.633 19.127-18.633 4.163 0 8.028 1.388 11.3 3.865l-19.525 11.3c-1.189.693-1.784 1.684-1.784 3.072v28.74ZM50 63.478l-11.645-6.541V43.062L50 36.522l11.645 6.54v13.875L50 63.477Zm7.483 30.129c-4.163 0-8.028-1.388-11.3-3.865l19.525-11.3c1.189-.693 1.784-1.684 1.784-3.071V46.629l8.226 4.757c.694.396.991.991.991 1.784v21.803c0 10.605-8.226 18.633-19.226 18.633v.001Zm-23.49-22.101-18.93-10.902c-5.45-3.172-9.117-9.91-9.117-16.451 0-7.632 4.559-14.47 11.595-17.344v22.596c0 1.388.595 2.379 1.784 3.072l24.777 14.37-8.126 4.659c-.694.396-1.289.396-1.982 0ZM32.905 87.76c-11.2 0-19.425-8.425-19.425-18.83 0-.794.1-1.587.198-2.38L33.2 77.85c1.189.693 2.379.693 3.568 0l24.876-14.37v9.415c0 .793-.298 1.388-.992 1.784L41.724 85.58c-2.576 1.486-5.649 2.18-8.82 2.18h.001Zm24.579 11.793c11.992 0 22.001-8.523 24.281-19.822C92.864 76.857 100 66.451 100 55.846c0-6.937-2.973-13.676-8.325-18.533.496-2.081.793-4.163.793-6.243 0-14.172-11.496-24.777-24.777-24.777-2.676 0-5.253.396-7.83 1.288C55.401 3.221 49.257.445 42.517.445c-11.992 0-22.001 8.523-24.281 19.822C7.136 23.14 0 33.547 0 44.152c0 6.938 2.973 13.676 8.325 18.533-.496 2.081-.793 4.163-.793 6.243 0 14.172 11.497 24.778 24.777 24.778 2.676 0 5.253-.397 7.83-1.289 4.459 4.36 10.604 7.136 17.344 7.136Z"/></svg><span>Codex</span></button>
       <button type="button" data-page="help"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.5 2.5 0 1 1 3.7 2.2c-1 .6-1.5 1.1-1.5 2.3"/><path d="M12 17h.01"/></svg><span>帮助说明</span></button>
       <button type="button" data-page="logs"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg><span>日志</span></button>
     </nav>
@@ -168,29 +169,13 @@
             </div>
             <label class="switch compact-switch"><input id="ov-startup" type="checkbox" disabled><i></i></label>
           </div>
-          <div class="setting-row">
+          <div class="setting-row automation-last-setting">
             <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M12 6v9M8.5 11.5 12 15l3.5-3.5"/></svg></span>
             <div>
               <strong>关闭到托盘</strong>
-              <p>关闭主窗口后继续执行后台自动化</p>
+              <p>关闭主窗口后隐藏到托盘；单击托盘图标恢复主窗口</p>
             </div>
             <label class="switch compact-switch"><input id="ov-tray" type="checkbox"><i></i></label>
-          </div>
-          <div class="setting-row">
-            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16"/><path d="m7 7 10 10M17 7 7 17"/></svg></span>
-            <div>
-              <strong>全局快捷键</strong>
-              <p>Ctrl+Alt+P 启停代理，M 切换模式，C 打开连接页</p>
-            </div>
-            <label class="switch compact-switch"><input id="ov-hotkeys" type="checkbox"><i></i></label>
-          </div>
-          <div class="setting-row automation-last-setting">
-            <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/><circle cx="12" cy="12" r="9"/></svg></span>
-            <div>
-              <strong>轻量模式</strong>
-              <p>减少动画、模糊效果和后台状态采样频率</p>
-            </div>
-            <label class="switch compact-switch"><input id="ov-lightweight" type="checkbox"><i></i></label>
           </div>
           <button id="btn-repair" class="maintenance-link">
             <span class="setting-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5-5L7 4l3 3 2.7-2.7a4 4 0 0 1-5 5L2 15l4 4 5.7-5.7a4 4 0 0 0 5-5L14 11l-3-3 3.7-1.7Z"/></svg></span>
@@ -824,11 +809,20 @@
     </section>
 
     <section id="page-codex" class="page settings-page">
-      <header><h2><span class="module-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7.5 18.5h9.2a4.3 4.3 0 0 0 .8-8.5A5.8 5.8 0 0 0 6.8 8.5a4.1 4.1 0 0 0 .7 10Z"/><path d="m9 11 2.5 2.2L9 15.5M13.5 15.5h2.8"/></svg></span>Codex</h2><p>使用 cxvpn-tools 本机代理的 Codex 配置同步</p></header>
+      <header><h2><span class="module-icon codex-module-icon" aria-hidden="true"><svg viewBox="0 0 100 100"><path d="M38.355 36.52v-9.415c0-.793.297-1.388.99-1.784l18.93-10.902c2.578-1.486 5.65-2.18 8.82-2.18 11.894 0 19.426 9.218 19.426 19.029 0 .694 0 1.486-.1 2.28L66.799 22.05c-1.189-.694-2.379-.694-3.568 0L38.355 36.52Zm44.202 36.67V50.694c0-1.388-.596-2.38-1.785-3.073L55.897 33.15l8.126-4.658c.694-.396 1.289-.396 1.982 0l18.93 10.902c5.452 3.172 9.118 9.91 9.118 16.452 0 7.531-4.46 14.47-11.496 17.344Zm-50.05-19.82-8.127-4.757c-.693-.396-.99-.99-.99-1.784V25.025c0-10.605 8.126-18.633 19.127-18.633 4.163 0 8.028 1.388 11.3 3.865l-19.525 11.3c-1.189.693-1.784 1.684-1.784 3.072v28.74ZM50 63.478l-11.645-6.541V43.062L50 36.522l11.645 6.54v13.875L50 63.477Zm7.483 30.129c-4.163 0-8.028-1.388-11.3-3.865l19.525-11.3c1.189-.693 1.784-1.684 1.784-3.071V46.629l8.226 4.757c.694.396.991.991.991 1.784v21.803c0 10.605-8.226 18.633-19.226 18.633v.001Zm-23.49-22.101-18.93-10.902c-5.45-3.172-9.117-9.91-9.117-16.451 0-7.632 4.559-14.47 11.595-17.344v22.596c0 1.388.595 2.379 1.784 3.072l24.777 14.37-8.126 4.659c-.694.396-1.289.396-1.982 0ZM32.905 87.76c-11.2 0-19.425-8.425-19.425-18.83 0-.794.1-1.587.198-2.38L33.2 77.85c1.189.693 2.379.693 3.568 0l24.876-14.37v9.415c0 .793-.298 1.388-.992 1.784L41.724 85.58c-2.576 1.486-5.649 2.18-8.82 2.18h.001Zm24.579 11.793c11.992 0 22.001-8.523 24.281-19.822C92.864 76.857 100 66.451 100 55.846c0-6.937-2.973-13.676-8.325-18.533.496-2.081.793-4.163.793-6.243 0-14.172-11.496-24.777-24.777-24.777-2.676 0-5.253.396-7.83 1.288C55.401 3.221 49.257.445 42.517.445c-11.992 0-22.001 8.523-24.281 19.822C7.136 23.14 0 33.547 0 44.152c0 6.938 2.973 13.676 8.325 18.533-.496 2.081-.793 4.163-.793 6.243 0 14.172 11.497 24.778 24.777 24.778 2.676 0 5.253-.397 7.83-1.289 4.459 4.36 10.604 7.136 17.344 7.136Z"/></svg></span>Codex</h2><p>使用 cxvpn-tools 本机代理的 Codex 配置同步</p></header>
       <div class="card settings-card">
         <div class="settings-card-head"><span class="settings-symbol">01</span><div><h3>代理配置</h3><p id="codex-sync-summary">正在读取 Codex 配置状态…</p></div></div>
-        <div class="row align-end"><div class="field grow"><label>当前 mixed-port</label><input id="codex-mixed-port" readonly></div><div class="field grow"><label>配置文件</label><input value="CODEX_HOME/config.toml（或 %USERPROFILE%\\.codex\\config.toml）" readonly></div></div>
-        <p class="muted">配置变更后需要重启 Codex；内置浏览器和不继承该配置的插件独立进程不受此设置控制。</p>
+        <div class="row align-end"><div class="field grow"><label>当前 mixed-port</label><input id="codex-mixed-port" readonly></div><div class="field grow"><label>配置文件</label><input id="codex-config-path" readonly></div></div>
+        <p id="codex-sync-detail" class="muted">配置由本工具写入时会在用户数据目录保留快照，用于关闭时代理字段移除。</p>
+      </div>
+      <div class="card settings-card">
+        <div class="settings-card-head"><span class="settings-symbol">02</span><div><h3>同步操作</h3><p>开启：把当前代理配置写入 Codex；关闭：删除本工具写入的代理字段。</p></div></div>
+        <div class="row">
+          <button id="btn-codex-toggle" class="btn primary">开启 Codex 代理</button>
+          <button id="btn-codex-view" class="btn ghost">查看配置文件</button>
+        </div>
+        <p id="codex-action-result" class="form-feedback" aria-live="polite"></p>
+        <p class="muted">同步/还原后需要重启 Codex 才能让已运行进程重新加载；本工具不会自动结束 Codex。该配置仅作用于 Codex 读取这些环境变量的进程，内置浏览器、插件独立进程与不继承 config.toml 的请求不受此设置控制。</p>
       </div>
     </section>
 
@@ -1008,6 +1002,14 @@
       </div>
     </section>
   </main>
+</div>
+
+<div id="codemodal" class="modal hidden">
+  <div class="modal-card modal-card-codex codex-view-card">
+    <div class="modal-heading"><span class="modal-kicker">CODEX CONFIG</span><h3>查看 Codex 配置文件</h3></div>
+    <p id="codex-view-path" class="modal-lead codex-view-path"></p>
+    <pre id="codex-view-content" class="codex-view-content" aria-live="polite"></pre>
+  </div>
 </div>
 
 <div id="credmodal" class="modal hidden">

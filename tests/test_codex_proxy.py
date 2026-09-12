@@ -118,10 +118,11 @@ class CodexProxyTests(unittest.TestCase):
         self.assertTrue(self.sync(18080)['ok'])
         self.assertEqual(first, self.read_config())
 
-    def test_restore_returns_original_values_and_removes_added_fields(self):
+    def test_restore_removes_managed_fields_and_keeps_others(self):
         self.write_config(
+            '# 保留注释\n'
             '[features]\n'
-            'respect_system_proxy = false\n'
+            'respect_system_proxy = false # 原值\n'
             '[mcp_servers.node_repl.env]\n'
             'HTTP_PROXY = "http://old:1"\n'
             'CUSTOM = "保留"\n')
@@ -129,14 +130,23 @@ class CodexProxyTests(unittest.TestCase):
         result = self.restore()
 
         self.assertTrue(result['ok'])
+        text = self.read_config()
         parsed = self.parse_config()
-        self.assertIs(False, parsed['features']['respect_system_proxy'])
-        self.assertEqual(
-            parsed['mcp_servers']['node_repl']['env']['HTTP_PROXY'],
-            'http://old:1')
+        self.assertIn('# 保留注释', text)
+        self.assertNotIn('respect_system_proxy', parsed['features'])
+        self.assertNotIn(
+            'HTTP_PROXY', parsed['mcp_servers']['node_repl']['env'])
         self.assertEqual(parsed['mcp_servers']['node_repl']['env']['CUSTOM'], '保留')
-        self.assertNotIn('HTTP_PROXY', parsed['shell_environment_policy']['set'])
         self.assertFalse(os.path.exists(self.snapshot_path))
+
+    def test_restore_removes_created_sections_fields(self):
+        self.assertTrue(self.sync(18080)['ok'])
+
+        self.assertTrue(self.restore()['ok'])
+        parsed = self.parse_config()
+        self.assertNotIn('respect_system_proxy', parsed['features'])
+        self.assertFalse(parsed['mcp_servers']['node_repl']['env'])
+        self.assertFalse(parsed['shell_environment_policy']['set'])
 
     def test_user_manual_change_is_not_overwritten_on_restore(self):
         self.assertTrue(self.sync(18080)['ok'])
@@ -192,6 +202,121 @@ class CodexProxyTests(unittest.TestCase):
         self.assertIn('description = "测试配置"', self.read_config())
         self.assertTrue(self.restore()['ok'])
         self.assertIn('# 中文 🇨🇳 é', self.read_config())
+
+    def test_read_config_returns_original_text(self):
+        original = '# 中文 🇨🇳\n[features]\nrespect_system_proxy = false\n'
+        self.write_config(original)
+
+        result = codex_proxy.read_config(environ=self.environ)
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['exists'])
+        self.assertEqual(original, result['text'])
+        self.assertEqual(self.config_path, result['path'])
+
+    def test_read_config_missing_file_reports_not_exists(self):
+        result = codex_proxy.read_config(environ=self.environ)
+
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['exists'])
+        self.assertEqual('', result['text'])
+
+    def test_read_config_oversize_file_is_refused(self):
+        os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+        with open(self.config_path, 'wb') as stream:
+            stream.write(b'# pad\n' * 200000)
+
+        result = codex_proxy.read_config(environ=self.environ)
+
+        self.assertFalse(result['ok'])
+        self.assertIn('上限', result['warning'])
+
+    def test_status_reports_snapshot_and_deviation(self):
+        self.write_config(
+            '[features]\nrespect_system_proxy = true\n'
+            '[mcp_servers.node_repl.env]\nHTTP_PROXY = "http://old:1"\n')
+        self.assertTrue(self.sync()['ok'])
+
+        state = codex_proxy.status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(state['ok'])
+        self.assertTrue(state['snapshot_exists'])
+        self.assertGreater(state['synced_fields'], 0)
+        self.assertEqual(17890, state['last_mixed_port'])
+        self.assertEqual([], state['deviated_fields'])
+
+        text = self.read_config().replace(
+            'HTTP_PROXY = "http://127.0.0.1:17890"',
+            'HTTP_PROXY = "http://manual:9"')
+        self.write_config(text)
+        state = codex_proxy.status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertIn(
+            'mcp_servers.node_repl.env.HTTP_PROXY', state['deviated_fields'])
+
+    def test_status_without_snapshot_is_safe(self):
+        self.write_config('[other]\nvalue = "中文"\n')
+
+        state = codex_proxy.status(
+            environ=self.environ, data_root=self.data_root)
+
+        self.assertTrue(state['ok'])
+        self.assertFalse(state['snapshot_exists'])
+        self.assertEqual(0, state['synced_fields'])
+        self.assertEqual(0, state['last_mixed_port'])
+
+    def test_status_with_corrupt_config_reports_parse_error(self):
+        self.write_config('[features]\nrespect_system_proxy = [\n')
+
+        state = codex_proxy.status(
+            environ=self.environ, data_root=self.data_root)
+
+        self.assertTrue(state['ok'])
+        self.assertTrue(state['parse_error'])
+
+    def test_status_reports_residual_managed_fields_without_snapshot(self):
+        self.write_config(
+            '[features]\nrespect_system_proxy = true\n'
+            '[mcp_servers.node_repl.env]\n'
+            'HTTP_PROXY = "http://127.0.0.1:17890"\n')
+
+        state = codex_proxy.status(
+            environ=self.environ, data_root=self.data_root)
+
+        self.assertTrue(state['ok'])
+        self.assertIn('features.respect_system_proxy', state['residual_fields'])
+        self.assertIn(
+            'mcp_servers.node_repl.env.HTTP_PROXY', state['residual_fields'])
+
+    def test_restore_without_snapshot_removes_residual_managed_fields(self):
+        self.write_config(
+            '# 保留注释\n'
+            '[features]\nrespect_system_proxy = true\n'
+            '[mcp_servers.node_repl.env]\n'
+            'HTTP_PROXY = "http://127.0.0.1:17890"\n'
+            'CUSTOM = "保留"\n')
+
+        result = self.restore()
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result.get('changed'))
+        text = self.read_config()
+        parsed = self.parse_config()
+        self.assertIn('# 保留注释', text)
+        self.assertNotIn('respect_system_proxy', parsed['features'])
+        self.assertNotIn(
+            'HTTP_PROXY', parsed['mcp_servers']['node_repl']['env'])
+        self.assertEqual(parsed['mcp_servers']['node_repl']['env']['CUSTOM'], '保留')
+
+    def test_restore_without_snapshot_and_no_managed_fields_is_noop(self):
+        original = '[other]\nvalue = "中文"\n'
+        self.write_config(original)
+
+        result = self.restore()
+
+        self.assertTrue(result['ok'])
+        self.assertFalse(result.get('changed'))
+        self.assertEqual(original, self.read_config())
 
     def parse_config(self):
         with open(self.config_path, 'rb') as stream:

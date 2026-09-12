@@ -2,8 +2,8 @@
 
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
 界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
-关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置备份, 配置历史, 诊断包, DNS高级模式, nameserver-policy, 托盘快捷操作, 全局快捷键, 轻量模式
-最后验证：2026-09-10 | 分支：main
+关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置备份, 配置历史, 诊断包, DNS高级模式, nameserver-policy, 托盘快捷操作, 域名分流导航
+最后验证：2026-09-12 | 分支：main
 
 ## 职责边界
 
@@ -284,11 +284,11 @@ commit `28f2efc504059b1dc75c793618b775c8e1b2a5f1`。以下结论只描述该版�
 - v2.5.2 在页面不可见时暂停 Mihomo WebSocket 订阅，并修复连接页内存泄漏和日志强制滚到底部。
   CXVPN 的连接/日志页面必须按可见性启停前端订阅、在用户离开底部时停止自动滚动，并对缓冲区
   设置硬上限；不能用高频轮询替代日志流。
-- DNS 简单/高级模式、托盘快捷操作、固定全局快捷键和轻量模式已按本地安全边界实现。WebDAV、
+- DNS 简单/高级模式与托盘快捷操作已按本地安全边界实现。WebDAV、
   任意启动脚本、外部 Controller 和
   允许局域网连接会扩大凭据或攻击面，不随首轮信息架构改造引入。
 
-## 托盘、全局快捷键与轻量模式
+## 托盘
 
 - `DesktopController` 的托盘菜单在每次展开时调用 `Api.desktop_quick_snapshot`，只读取当前 routing
   配置和 `.nodes.json` 安全快照。菜单展示期望启用状态、规则/全局模式及每个已启用 provider
@@ -297,15 +297,14 @@ commit `28f2efc504059b1dc75c793618b775c8e1b2a5f1`。以下结论只描述该版�
   `desktop_select_node`；三类动作都复用 `_apply_routing_locked` 的预检、服务事务、磁盘原子提交和
   历史记录。节点切换只接受当前持久化快照中的已启用订阅节点，耗时操作在后台线程执行，结果
   通过托盘气泡反馈，不阻塞 WinForms UI 线程。
-- “打开连接页”先恢复主窗口，再由 pywebview 执行现有 `goToPage('connections')`。托盘或快捷键
+- “打开连接页”先恢复主窗口，再由 pywebview 执行现有 `goToPage('connections')`。托盘
   修改配置后发出 `cxvpn:desktop-action`，前端刷新已应用状态但保留正在编辑的 routing 草稿，避免
   高频操作静默丢失未保存内容。
-- 全局快捷键使用独立 Win32 消息线程和 `RegisterHotKey`，固定为 `Ctrl+Alt+P` 启停代理、
-  `Ctrl+Alt+M` 切换规则/全局、`Ctrl+Alt+C` 打开连接页，默认关闭。三项必须全部注册成功才视为
-  active；任一组合被占用时撤销已注册组合并通过托盘提示，不引入键盘钩子或第三方监听依赖。
-- 轻量模式默认关闭。开启后前端禁用大部分动画、模糊和高成本阴影，但代理状态图形保留最低限度动态反馈；后端 `UiStateStream` 采样间隔从
-  0.5 秒调整为 1.5 秒；业务状态变化仍可通过 `poke()` 立即唤醒，连接和日志 WebSocket 原有的
-  页面可见性暂停边界不变，因此不会牺牲代理启停、错误回滚或安全事件响应。
+- 早期轻量模式（关闭动画/模糊、降低状态采样）与全局快捷键（Ctrl+Alt+P/M/C，`RegisterHotKey`）
+  已随 2026-09-12 迭代移除；`UiStateStream` 采样间隔固定为 0.5 秒，动画效果不受系统“减弱动画”
+  设置影响，业务状态变化仍可通过 `poke()` 立即唤醒。
+- 左侧导航新增“域名分流”入口（`data-page="routing"`）直达统一分流页并默认打开概览页签；
+  分流页此前只能从网络代理首页的“高级分流”快捷入口进入。
 
 ## Clash Verge 对照后的当前边界（2026-09-08）
 
@@ -402,7 +401,12 @@ CXVPN 自原生路由服务 `0.3.0`、IPC 协议 `3` 起采用与上述基线一
 1. 规范化配置并校验订阅 URL、域名和出口引用。
 2. 只对实际被默认出口或启用规则引用的手动订阅确认 `selected_node` 仍存在于当前筛选签名
    对应的节点快照；未承载流量的手动订阅不阻止物理/VPN 配置启用。
-3. 查找物理默认接口；仅当选择 TUN 时检测其它正在承载默认路由的 TUN 冲突。
+3. 查找物理默认接口；仅当选择 TUN 时检测其它正在承载默认路由的 TUN 冲突，并读取
+   Windows 手动系统代理原始启用位（`windows_manual_proxy_state`）：`ProxyEnable=1`
+   且地址为空或指向第三方代理时阻断启用并提示先关闭——遵循系统代理的应用不会
+   经过 TUN，地址为空时还会直接无法上网；`windows_system_proxy()` 对空地址返回
+   空串，不能用于该检测。指向本软件 `mixed-port` 时仅提示安装事务会按快照
+   自动恢复，不阻断从系统代理模式切换到 TUN。
 4. 对每个 VPN 出口确认配置存在，且 IPv4、IPv6 远程默认网关都已关闭。
 5. 生成 JSON（YAML 合法子集），用锁定版本的 `mihomo.exe -t` 解析。
 6. 控制面比较包内与已安装 `CXVPNRoutingHost.exe` 的 SHA-256；仅首次安装或摘要变化时通过
