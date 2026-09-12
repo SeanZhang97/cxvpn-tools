@@ -1717,6 +1717,21 @@ td .target {
 .form-feedback.warning { color: var(--warn); }
 .form-feedback.loading { color: var(--acc2); }
 
+/* ---------- 软件更新下载进度 ---------- */
+.app-update-progress { display: grid; gap: 9px; margin-top: 12px; padding: 12px 14px; border: 1px solid rgba(34,211,238,.2); border-radius: 12px; background: linear-gradient(135deg, rgba(34,211,238,.07), rgba(99,102,241,.055)); }
+.app-update-progress.hidden { display: none; }
+.app-update-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.app-update-progress-head > div { min-width: 0; display: grid; gap: 3px; }
+.app-update-progress-head strong { color: #eff6ff; font-size: 12px; }
+.app-update-progress-head span { overflow: hidden; color: #8da0bb; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.app-update-progress-head > span { flex: none; color: #a5f3fc; font-size: 11.5px; font-weight: 620; }
+.app-update-progress progress { width: 100%; height: 7px; overflow: hidden; border: 0; border-radius: 99px; background: rgba(3,8,20,.72); }
+.app-update-progress progress::-webkit-progress-bar { border-radius: 99px; background: rgba(3,8,20,.72); }
+.app-update-progress progress::-webkit-progress-value { border-radius: 99px; background: linear-gradient(90deg, #6366f1, #22d3ee, #34d399); transition: width .2s ease; }
+.app-update-progress-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.app-update-progress-foot span { color: #77839d; font-size: 10px; }
+.app-update-progress-foot .btn { flex: none; margin: 0; }
+
 /* ---------- 输入框内嵌按钮 (眼睛) ---------- */
 .inp-wrap { position: relative; }
 .inp-wrap input { padding-right: 48px; }

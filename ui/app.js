@@ -423,6 +423,7 @@ function bindSettingsAndBrowser() {
   $('btn-test-vlm').onclick = testVlmSettings;
   $('app-auto-update').onchange = saveAppUpdateToggle;
   $('btn-app-update').onclick = () => checkAppUpdate(true);
+  $('btn-app-update-cancel').onclick = () => cancelAppUpdateDownload();
   $('btn-copy-logs').onclick = copyLogs;
   $('btn-confirm-cancel').onclick = () => finishConfirm(false);
   $('btn-confirm-ok').onclick = () => finishConfirm(true);
@@ -460,10 +461,12 @@ async function initializeAppUpdate() {
   }
 }
 
+let appUpdateApplyRequested = false;
+
 async function checkAppUpdate(manual) {
   const button = $('btn-app-update');
   await runBusy(button, '检查中…', async () => {
-    setFeedback($('app-update-result'), '正在连接 GitHub Releases…', 'loading');
+    setFeedback($('app-update-result'), '正在检查更新…', 'loading');
     try {
       const result = await api().check_app_update(!!manual);
       if (!result.ok) {
@@ -471,16 +474,157 @@ async function checkAppUpdate(manual) {
         return;
       }
       if (result.newer) {
-        setFeedback($('app-update-result'),
-          `发现新版本 ${result.latest_version}，请打开 Release 页面下载安装包。`, 'ok');
-        if (result.release_url) toast({ ok: true, msg: `发现新版本 ${result.latest_version}` });
-        if (manual && result.release_url) await api().open_app_release(result.release_url);
-      } else {
-        setFeedback($('app-update-result'),
-          result.msg || `当前已是最新版本（${result.current_version}）`, 'ok');
+        await offerAppUpdate(result, !!manual);
+        return;
       }
+      setFeedback($('app-update-result'),
+        result.msg || `当前已是最新版本（${result.current_version}）`, 'ok');
     } catch (error) {
       setFeedback($('app-update-result'), `检查更新失败：${friendlyError(error)}`, 'bad');
+    }
+  });
+}
+
+async function offerAppUpdate(result, manual) {
+  const latest = result.latest_version || '新版本';
+  if (!result.installer_url) {
+    setFeedback($('app-update-result'),
+      `发现新版本 ${latest}，官方暂未提供自动升级包，请前往发布页面手动下载。`, 'ok');
+    if (result.release_url) toast({ ok: true, msg: `发现新版本 ${latest}` });
+    if (manual && result.release_url) await api().open_app_release(result.release_url);
+    return;
+  }
+  const accepted = await confirmAction({
+    title: '发现新版本',
+    message: `检测到新版本 ${latest}（当前 ${result.current_version}）。确认后将自动下载升级包并完成升级，过程中应用会自动退出并重启。`,
+    confirmText: '立即升级',
+    tone: 'notice',
+    kicker: '软件更新',
+  });
+  if (!accepted) {
+    setFeedback($('app-update-result'),
+      `已暂缓升级：新版本 ${latest} 可随时重新检查并安装。`, 'ok');
+    return;
+  }
+  try {
+    const started = await api().start_app_update_download(
+      result.installer_url, latest, result.installer_sha256 || '');
+    if (!started.ok) {
+      setFeedback($('app-update-result'), started.msg || '开始下载失败', 'bad');
+      return;
+    }
+    setFeedback($('app-update-result'), `正在下载新版本 ${latest}…`, 'loading');
+  } catch (error) {
+    setFeedback($('app-update-result'), `开始下载失败：${friendlyError(error)}`, 'bad');
+  }
+}
+
+function formatUpdateBytes(value) {
+  const size = Number(value);
+  if (!Number.isFinite(size) || size <= 0) return '0 MB';
+  if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatUpdateSpeed(bps) {
+  const size = Number(bps);
+  if (!Number.isFinite(size) || size <= 0) return '';
+  return `${formatUpdateBytes(size)}/s`;
+}
+
+function applyAppUpdateState(state) {
+  const box = $('app-update-download');
+  if (!box) return;
+  if (!state || !state.phase || state.phase === 'idle') {
+    box.classList.add('hidden');
+    return;
+  }
+  const bar = $('app-update-progress');
+  const percentText = $('app-update-progress-text');
+  const labelText = $('app-update-progress-label');
+  const detailText = $('app-update-progress-detail');
+  const hintText = $('app-update-progress-hint');
+  const cancelBtn = $('btn-app-update-cancel');
+  const version = state.version ? ` ${state.version}` : '';
+  const knownTotal = Number(state.total_bytes) > 0;
+  const percent = Math.max(0, Math.min(100, Math.round(Number(state.progress) || 0)));
+  box.classList.remove('hidden');
+  if (state.phase === 'downloading') {
+    labelText.textContent = `正在下载新版本${version}`;
+    if (knownTotal) {
+      bar.value = percent;
+      percentText.textContent = `${percent}%`;
+    } else {
+      bar.removeAttribute('value');
+      percentText.textContent = '';
+    }
+    const downloaded = formatUpdateBytes(state.downloaded_bytes);
+    const total = knownTotal ? ` / 共 ${formatUpdateBytes(state.total_bytes)}` : '';
+    const speed = formatUpdateSpeed(state.speed_bps);
+    detailText.textContent = `已下载 ${downloaded}${total}${speed ? ` · ${speed}` : ''}`;
+    cancelBtn.classList.remove('hidden');
+    cancelBtn.disabled = false;
+    hintText.textContent = '下载完成后将自动开始升级，应用会短暂退出并重启';
+    return;
+  }
+  cancelBtn.classList.add('hidden');
+  cancelBtn.disabled = true;
+  if (state.phase === 'downloaded') {
+    labelText.textContent = `新版本${version}下载完成`;
+    bar.value = 100;
+    percentText.textContent = '100%';
+    detailText.textContent = '完整性校验通过，正在准备升级…';
+    hintText.textContent = '升级期间应用会自动退出，完成后自动重启';
+    void requestAppUpdateInstall();
+    return;
+  }
+  if (state.phase === 'installing') {
+    labelText.textContent = '正在升级';
+    bar.value = 100;
+    percentText.textContent = '';
+    detailText.textContent = state.msg || '正在安装新版本，请稍候…';
+    hintText.textContent = '安装完成后应用会自动重启';
+    return;
+  }
+  bar.value = 0;
+  percentText.textContent = '';
+  appUpdateApplyRequested = false;
+  if (state.phase === 'cancelled') {
+    labelText.textContent = '下载已取消';
+    detailText.textContent = state.msg || '已取消下载新版本';
+    setFeedback($('app-update-result'), state.msg || '已取消下载新版本', 'ok');
+  } else {
+    labelText.textContent = '升级未完成';
+    detailText.textContent = state.msg || '下载或安装未能完成';
+    setFeedback($('app-update-result'), state.msg || '升级未完成，可重新检查后重试', 'bad');
+  }
+  hintText.textContent = '可点击“立即检查更新”重新尝试';
+}
+
+async function requestAppUpdateInstall() {
+  if (appUpdateApplyRequested) return;
+  appUpdateApplyRequested = true;
+  try {
+    const result = await api().apply_app_update();
+    if (!result?.ok) {
+      appUpdateApplyRequested = false;
+      setFeedback($('app-update-result'), result?.msg || '启动升级失败', 'bad');
+    }
+  } catch (error) {
+    appUpdateApplyRequested = false;
+    setFeedback($('app-update-result'), `启动升级失败：${friendlyError(error)}`, 'bad');
+  }
+}
+
+async function cancelAppUpdateDownload() {
+  const button = $('btn-app-update-cancel');
+  await runBusy(button, '取消中…', async () => {
+    try {
+      const result = await api().cancel_app_update_download();
+      if (!result.ok) toast({ ok: false, msg: result.msg || '当前没有正在进行的下载' });
+    } catch (error) {
+      toast({ ok: false, msg: `取消下载失败：${friendlyError(error)}` });
     }
   });
 }
@@ -1522,6 +1666,7 @@ function applyUiStateSnapshot(snapshot) {
   if (!snapshot) return;
   updateOverview(snapshot.state || {}, snapshot.vpn_status || {});
   if (snapshot.ip_info) renderIpInfo(snapshot.ip_info);
+  applyAppUpdateState(snapshot.app_update);
   blockingModalSync = blockingModalSync
     .then(() => syncBlockingModals(snapshot.captcha, snapshot.sms))
     .catch(error => console.error('阻塞弹窗状态同步失败', error));

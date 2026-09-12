@@ -855,11 +855,25 @@
           <div><h3>软件更新</h3><p id="app-version-text">当前版本：读取中</p></div>
         </div>
         <div class="row align-center">
-          <span class="muted grow">自动检查 GitHub Releases，发现新版本后提示你决定是否更新。</span>
+          <span class="muted grow">自动检查软件更新，发现新版本后提示你决定是否升级。</span>
           <label class="switch compact-switch" title="自动检查更新"><input id="app-auto-update" type="checkbox"><i></i></label>
           <button id="btn-app-update" class="btn ghost" type="button">立即检查更新</button>
         </div>
         <p id="app-update-result" class="form-feedback" aria-live="polite"></p>
+        <div id="app-update-download" class="app-update-progress hidden">
+          <div class="app-update-progress-head">
+            <div>
+              <strong id="app-update-progress-label">正在下载新版本</strong>
+              <span id="app-update-progress-detail">准备中…</span>
+            </div>
+            <span id="app-update-progress-text">0%</span>
+          </div>
+          <progress id="app-update-progress" max="100" value="0"></progress>
+          <div class="app-update-progress-foot">
+            <span id="app-update-progress-hint">下载完成后将自动开始升级，应用会短暂退出并重启</span>
+            <button id="btn-app-update-cancel" class="btn ghost" type="button">取消下载</button>
+          </div>
+        </div>
       </div>
       <div class="card quickstart-card">
         <div class="help-card-head">
@@ -915,7 +929,7 @@
             </ol>
             <h4>方式 C：Android SmsForwarder 邮箱转发</h4>
             <ol>
-              <li>从项目官方 GitHub Releases 下载并安装 <b>pppscn/SmsForwarder</b>；安装前请自行确认来源和所需权限。</li>
+              <li>从项目官方发布页下载并安装 <b>pppscn/SmsForwarder</b>；安装前请自行确认来源和所需权限。</li>
               <li>首次打开后授予读取短信权限，并按系统提示允许后台运行、忽略电池优化。部分品牌还需开启自启动、后台高耗电权限，并在最近任务中锁定 App。</li>
               <li>进入“发送通道 → ＋ → 邮箱”，QQ 邮箱填写：SMTP 服务器 <b>smtp.qq.com</b>、端口 <b>465</b>、开启 SSL；发件账号填写 QQ 邮箱，密码填写邮箱授权码，收件人可以填写同一邮箱。</li>
               <li>进入“转发规则 → 短信”，设置内容包含“超星学习通”（也可以按发件人过滤），发送通道选择刚创建的邮箱通道。</li>

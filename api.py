@@ -159,6 +159,9 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         self._routing_observability_available = None
         self._log_version = 0
         self._ui_state_stream = None
+        self._app_download = app_update.UpdateDownloadState()
+        self._app_download_cancel = threading.Event()
+        self._app_update_lock = threading.Lock()
         self._ip_info_lock = threading.Lock()
         self._ip_info_thread = None
         self._ip_info_refresh_queued = False
@@ -500,6 +503,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             current_ip_info = json.loads(json.dumps(self._ip_info))
         manual = json.loads(json.dumps(self._manual)) if self._manual else None
         sms = {'id': self._sms_ui_id} if self._sms_ui else None
+        app_download = getattr(self, '_app_download', None)
         return {
             'state': self.get_state(),
             'vpn_status': self.vpn_status(),
@@ -508,6 +512,8 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             'browser': self.get_browser(),
             'logs_version': logs_version,
             'ip_info': current_ip_info,
+            'app_update': app_download.snapshot() if app_download is not None
+                          else {'phase': 'idle'},
             'routing_telemetry': self.routing_telemetry.snapshot(),
             'routing_revision': getattr(self, '_routing_revision', 0),
         }
@@ -597,6 +603,116 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         result = app_update.open_release(url)
         self.log('[app-update] release page open: ok=%s' % result.get('ok'))
         return result
+
+    # ---------- 软件升级（下载 + 静默安装） ----------
+
+    def start_app_update_download(self, installer_url='', latest_version='',
+                                  expected_sha256=''):
+        """UI 确认升级后启动后台下载；进度经 UI 状态流推送。"""
+        with self._app_update_lock:
+            phase = self._app_download.snapshot().get('phase')
+            if phase == 'downloading':
+                return {'ok': False, 'msg': '升级包正在下载中，请稍候'}
+            if phase == 'installing':
+                return {'ok': False, 'msg': '升级正在进行，请稍候'}
+            if phase == 'downloaded':
+                return {'ok': True, 'msg': '升级包已就绪，可直接开始升级'}
+            version = str(latest_version or '').strip()
+            self._app_download.begin(version)
+            self._app_download_cancel = threading.Event()
+            url = str(installer_url or '').strip()
+            sha = str(expected_sha256 or '').strip().lower()
+        self.log('[app-update] 升级包下载任务已提交: version=%s read_timeout=%ss' % (
+            version, app_update.DOWNLOAD_READ_TIMEOUT))
+        threading.Thread(
+            target=self._run_app_download, name='app-update-download',
+            args=(url, version, sha), daemon=True).start()
+        return {'ok': True, 'msg': f'开始下载新版本 {version}'.strip()}
+
+    def _run_app_download(self, url, version, expected_sha256):
+        """下载工作线程：消费下载任务并回写终态，避免阻塞其它后台任务。"""
+        self.log('[app-update] 后台已领取升级包下载任务，开始执行')
+        started = time.monotonic()
+        result = app_update.download_installer(
+            url, expected_sha256=expected_sha256,
+            state=self._app_download,
+            cancel_event=self._app_download_cancel, log=self.log)
+        elapsed = time.monotonic() - started
+        if result.get('ok'):
+            app_update.prune_old_installers(result.get('path'))
+            self.log('[app-update] 升级包下载任务成功: elapsed=%.1fs' % elapsed)
+            self._poke_ui_state()
+            return
+        if result.get('cancelled'):
+            self._app_download.update(
+                phase='cancelled', progress=0, speed_bps=0,
+                msg='已取消下载新版本')
+            self.log('[app-update] 升级包下载任务已取消: elapsed=%.1fs' % elapsed)
+        else:
+            self._app_download.update(
+                phase='failed', progress=0, speed_bps=0,
+                msg=result.get('msg') or '下载升级包失败')
+            self.log('[app-update] 升级包下载任务失败: elapsed=%.1fs' % elapsed)
+        self._poke_ui_state()
+
+    def cancel_app_update_download(self):
+        with self._app_update_lock:
+            phase = self._app_download.snapshot().get('phase')
+            if phase != 'downloading':
+                return {'ok': False, 'msg': '当前没有正在进行的下载'}
+        self._app_download_cancel.set()
+        self.log('[app-update] 已请求取消升级包下载')
+        return {'ok': True, 'msg': '已请求取消下载'}
+
+    def apply_app_update(self):
+        """下载完成后启动静默安装器；安装器负责退出旧版并部署新版。"""
+        with self._app_update_lock:
+            snapshot = self._app_download.snapshot()
+            phase = snapshot.get('phase')
+            if phase == 'installing':
+                return {'ok': False, 'msg': '升级已在进行中'}
+            if phase != 'downloaded':
+                return {'ok': False, 'msg': '升级包尚未下载完成'}
+            installer_path = snapshot.get('path')
+            version = snapshot.get('version')
+            self._app_download.update(
+                phase='installing', speed_bps=0, msg='正在启动升级…')
+        fallback_dir = os.path.dirname(os.path.abspath(sys.executable))
+        result = app_update.launch_installer(
+            installer_path, version, fallback_dir=fallback_dir, log=self.log)
+        if not result.get('ok'):
+            self._app_download.update(
+                phase='failed', progress=0,
+                msg=result.get('msg') or '启动升级失败')
+            self.log('[app-update] 启动升级失败: %s' % result.get('msg'))
+            self._poke_ui_state()
+            return result
+        threading.Thread(
+            target=self._monitor_app_update_install, args=(version,),
+            name='app-update-install-monitor', daemon=True).start()
+        self._poke_ui_state()
+        return result
+
+    def _monitor_app_update_install(self, version,
+                                    timeout=app_update.INSTALL_MONITOR_TIMEOUT):
+        """跟踪静默安装；超时未完成则把 UI 恢复为可重试状态。"""
+        deadline = time.monotonic() + timeout
+        self.log('[app-update] 升级监控任务已提交: version=%s timeout=%ss' % (
+            version, timeout))
+        while time.monotonic() < deadline:
+            time.sleep(3)
+            if app_update.installed_display_version() == str(version or ''):
+                self.log(
+                    '[app-update] 新版本 %s 已安装就绪，等待守护进程重启' % version)
+                return
+        with self._app_update_lock:
+            if self._app_download.snapshot().get('phase') == 'installing':
+                self._app_download.update(
+                    phase='failed', progress=0,
+                    msg='升级未完成：安装可能被取消或失败，可稍后重试')
+                self._poke_ui_state()
+        self.log('[app-update] 升级监控超时: version=%s timeout=%ss' % (
+            version, timeout))
 
     def save_config(self, cfg):
         if not isinstance(cfg, dict) or ('proxy_providers' in cfg and 'routing' not in cfg):

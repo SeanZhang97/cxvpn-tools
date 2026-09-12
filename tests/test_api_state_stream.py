@@ -71,11 +71,14 @@ class ApiStateStreamTests(unittest.TestCase):
         target.get_browser = mock.Mock(return_value={})
         target.routing_telemetry = mock.Mock()
         target.routing_telemetry.snapshot.return_value = {}
+        target._app_download = mock.Mock()
+        target._app_download.snapshot.return_value = {'phase': 'idle'}
 
         snapshot = target._build_ui_snapshot()
 
         self.assertTrue(snapshot['ip_info']['loading'])
         self.assertEqual(snapshot['ip_info']['local']['ip'], '192.168.1.2')
+        self.assertEqual(snapshot['app_update'], {'phase': 'idle'})
 
     def test_force_refresh_queues_while_ip_query_is_running(self):
         target = api.Api.__new__(api.Api)
