@@ -6,11 +6,11 @@
 - 审查对象：最终打包并启动的 `dist/CXVPNTools/CXVPNTools.exe`
 - 窗口：1426 × 893 px，Windows 桌面深色主题
 - 运行状态：代理与统一分流未启用；1 个启用订阅；72 条本地缓存记录；未执行真实 TUN、UAC 或外部订阅请求
-- 最终网络代理首页：`C:\develop\workspace\cxvpn-manager\build_tmp\design-audit-2026-08-31\final-proxy-home-ready.png`
-- 最终域名分流概览：`C:\develop\workspace\cxvpn-manager\build_tmp\design-audit-2026-08-31\final-routing-overview.png`
-- 最终分流规则：`C:\develop\workspace\cxvpn-manager\build_tmp\design-audit-2026-08-31\final-routing-rules.png`
-- 最终订阅管理：`C:\develop\workspace\cxvpn-manager\build_tmp\design-audit-2026-08-31\final-routing-providers-ready.png`
-- 最终节点工作台：`C:\develop\workspace\cxvpn-manager\build_tmp\design-audit-2026-08-31\final-node-workbench-empty.png`
+- 最终网络代理首页：`build_tmp/design-audit-2026-08-31/final-proxy-home-ready.png`
+- 最终域名分流概览：`build_tmp/design-audit-2026-08-31/final-routing-overview.png`
+- 最终分流规则：`build_tmp/design-audit-2026-08-31/final-routing-rules.png`
+- 最终订阅管理：`build_tmp/design-audit-2026-08-31/final-routing-providers-ready.png`
+- 最终节点工作台：`build_tmp/design-audit-2026-08-31/final-node-workbench-empty.png`
 
 ### Findings
 
@@ -48,11 +48,11 @@ final result: passed
 
 ## 当前记录：代理状态超星流光图标
 
-- source visual truth path: `C:\Users\29511\.codex\generated_images\01a05ffc-9347-7142-b59f-4b16bc79c4be\exec-658e3fe9-3985-4321-bb72-90789bfaa236.png`
-- implementation screenshot path: `C:\develop\workspace\cxvpn-tools\design-qa-line-star.png`
-- flow-state screenshot path: `C:\develop\workspace\cxvpn-tools\design-qa-line-flow.png`
-- full-view comparison evidence: `C:\develop\workspace\cxvpn-tools\design-qa-line-comparison-full.png`
-- focused-region comparison evidence: `C:\develop\workspace\cxvpn-tools\design-qa-line-comparison-focus.png`
+- source visual truth: external generated reference (not committed)
+- implementation screenshot path: `design-qa-line-star.png`
+- flow-state screenshot path: `design-qa-line-flow.png`
+- full-view comparison evidence: `design-qa-line-comparison-full.png`
+- focused-region comparison evidence: `design-qa-line-comparison-focus.png`
 - viewport: 705 × 270 CSS px
 - source pixels: 2028 × 776，按相同长宽比归一化为 705 × 270
 - implementation pixels: 705 × 270，浏览器 viewport 705 × 270，截图密度 1:1

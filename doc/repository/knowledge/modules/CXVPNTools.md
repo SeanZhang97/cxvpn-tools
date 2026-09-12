@@ -267,7 +267,7 @@
   + 已配对 Phone Link。
 - 图标: make_icon.py 生成黑底圆角流星 icon.ico 与 ui/logo.png；
   改图标后需删除 build_tmp 强制重嵌 EXE 图标（PyInstaller 缓存不感知 icon 变化）。
-- 源码在 `D:\develop\workspace\cxvpn-tools`；`main.py`、`api.py`、`core/`、`ui/`
+- 源码位于仓库根目录；`main.py`、`api.py`、`core/`、`ui/`
   或打包资源发生变化后，按项目规则执行
   `uv run --with pyinstaller python build.py`，并核对 LocalAppData 用户数据未丢失、
   `dist` 未混入运行时数据。
