@@ -450,6 +450,58 @@ class RoutingSchemaTests(unittest.TestCase):
         manager._native_service.activate_system_proxy.assert_not_called()
         manager._native_service.rollback.assert_called_once_with('tx-fail')
 
+    def test_tun_confirms_manual_proxy_is_suspended_before_commit(self):
+        manager = routing.RoutingManager()
+        manager._native_service = mock.Mock()
+        manager._native_service.apply.return_value = {'transaction_id': 'tx-tun'}
+        manager._native_provider_files = mock.Mock(return_value=[])
+        manager._wait_native_ready = mock.Mock()
+        manager._sync_codex_proxy = mock.Mock()
+        manager._refresh_user_proxy_settings = mock.Mock(return_value=True)
+        config = routing.normalize_config({
+            **routing.default_config(), 'capture_mode': 'tun',
+            'physical_interface': 'Ethernet'})
+
+        with mock.patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': False, 'server': ''}):
+            manager._install('candidate.json', config)
+
+        manager._refresh_user_proxy_settings.assert_called_once_with(
+            'TUN 接管关闭系统代理后')
+        manager._wait_native_ready.assert_called_once_with(config, 'active')
+        manager._native_service.commit.assert_called_once_with('tx-tun')
+        manager._native_service.rollback.assert_not_called()
+
+    def test_tun_manual_proxy_readback_or_refresh_failure_rolls_back(self):
+        for refreshed, state in (
+                (False, {'enabled': False, 'server': ''}),
+                (True, {'enabled': True, 'server': '127.0.0.1:17890'}),
+                (True, {'enabled': False, 'server': '127.0.0.1:17890'})):
+            with self.subTest(refreshed=refreshed, state=state):
+                manager = routing.RoutingManager()
+                manager._native_service = mock.Mock()
+                manager._native_service.apply.return_value = {
+                    'transaction_id': 'tx-tun-fail'}
+                manager._native_provider_files = mock.Mock(return_value=[])
+                manager._wait_native_ready = mock.Mock()
+                manager._refresh_user_proxy_settings = mock.Mock(
+                    return_value=refreshed)
+                config = routing.normalize_config({
+                    **routing.default_config(), 'capture_mode': 'tun',
+                    'physical_interface': 'Ethernet'})
+
+                with mock.patch.object(
+                        routing, 'windows_manual_proxy_state',
+                        return_value=state), self.assertRaisesRegex(
+                            routing.RoutingError, '关闭回读不一致'):
+                    manager._install('candidate.json', config)
+
+                manager._wait_native_ready.assert_not_called()
+                manager._native_service.commit.assert_not_called()
+                manager._native_service.rollback.assert_called_once_with(
+                    'tx-tun-fail')
+
     def test_system_proxy_registry_readback_mismatch_rolls_back(self):
         manager = routing.RoutingManager()
         manager._native_service = mock.Mock()

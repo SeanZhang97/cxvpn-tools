@@ -15,6 +15,7 @@ def main():
             'test_api_codex_proxy',
             'test_routing', 'test_routing_optimization', 'test_routing_commit',
             'test_routing_service', 'test_routing_speedtest', 'test_routing_reliability',
+            'test_routing_network',
             'test_routing_selection', 'test_routing_aggregate', 'test_routing_schema', 'test_routing_auto_policy',
             'test_api_routing_stream',
         ]

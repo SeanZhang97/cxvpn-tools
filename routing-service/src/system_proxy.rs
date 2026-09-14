@@ -1,6 +1,9 @@
-use crate::util::{atomic_write, AppResult};
+use crate::util::{atomic_write, transaction_id, AppResult};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, ffi::c_void, fs, path::Path};
+use std::{
+    collections::HashSet, ffi::c_void, fs, io::Write, path::Path,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 use windows_sys::Win32::{
     Foundation::ERROR_SUCCESS,
     Networking::WinInet::{
@@ -24,6 +27,45 @@ struct Snapshot {
     proxy_server: Option<String>,
     proxy_override: Option<String>,
     auto_config_url: Option<String>,
+}
+
+impl Snapshot {
+    fn normalize_empty_endpoint(&mut self) -> bool {
+        // 空地址和仅含冒号的占位值不是可恢复的代理，不能重新打开启用位。
+        // 不解析或改写其它格式，保留企业代理、按协议代理、IPv6 和 PAC。
+        let endpoint = self.proxy_server.as_deref().unwrap_or("").trim();
+        if !endpoint.is_empty() && endpoint != ":" {
+            return false;
+        }
+        if self.proxy_enable.unwrap_or(0) == 0 && self.proxy_server.is_none() {
+            return false;
+        }
+        self.proxy_enable = Some(0);
+        self.proxy_server = None;
+        true
+    }
+
+    fn normalize_managed_endpoint(&mut self, managed_port: Option<u16>) -> bool {
+        if !self.is_managed_endpoint(managed_port) {
+            return false;
+        }
+        self.proxy_enable = Some(0);
+        self.proxy_server = None;
+        true
+    }
+
+    fn is_managed_endpoint(&self, managed_port: Option<u16>) -> bool {
+        let Some(port) = managed_port.filter(|value| *value >= 1024) else {
+            return false;
+        };
+        self.proxy_enable.unwrap_or(0) != 0
+            && self
+                .proxy_server
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case(&format!("127.0.0.1:{port}"))
+    }
 }
 
 pub fn is_active(base: &Path) -> bool {
@@ -115,9 +157,22 @@ pub fn restore(base: &Path, owner_sid: &str) -> AppResult<()> {
         return Ok(());
     }
     let data = fs::read(&path).map_err(|e| format!("读取系统代理快照失败: {e}"))?;
-    let snapshot: Snapshot =
+    let mut snapshot: Snapshot =
         serde_json::from_slice(&data).map_err(|e| format!("解析系统代理快照失败: {e}"))?;
-    let key = open(owner_sid, KEY_SET_VALUE)?;
+    let started = Instant::now();
+    log_restore(base, "开始恢复用户系统代理快照");
+    if snapshot.normalize_empty_endpoint() {
+        // 保留原始异常快照供审计；备份失败时不覆盖现场。
+        atomic_write(
+            &base.join(format!("system-proxy-invalid-{}.json", transaction_id())),
+            &data,
+        )?;
+        log_restore(
+            base,
+            "原快照含空代理地址：已保留异常备份，将关闭手动代理并清除空地址",
+        );
+    }
+    let key = open(owner_sid, KEY_READ | KEY_SET_VALUE)?;
     let result = (|| -> AppResult<()> {
         restore_string(key, "ProxyServer", snapshot.proxy_server.as_deref())?;
         restore_string(key, "ProxyOverride", snapshot.proxy_override.as_deref())?;
@@ -125,11 +180,131 @@ pub fn restore(base: &Path, owner_sid: &str) -> AppResult<()> {
         // 最后恢复启用位，避免短暂把原启用状态指向候选端口。
         restore_dword(key, "ProxyEnable", snapshot.proxy_enable)?;
         notify();
+        if query_dword(key, "ProxyEnable")? != snapshot.proxy_enable
+            || query_string(key, "ProxyServer")? != snapshot.proxy_server
+            || query_string(key, "ProxyOverride")? != snapshot.proxy_override
+            || query_string(key, "AutoConfigURL")? != snapshot.auto_config_url
+        {
+            return Err("Windows 系统代理恢复后回读不一致，已保留恢复快照".to_string());
+        }
         fs::remove_file(&path).map_err(|e| format!("清理系统代理快照失败: {e}"))?;
         Ok(())
     })();
     unsafe { RegCloseKey(key) };
+    log_restore(base, &format!(
+        "系统代理快照恢复{}，耗时 {} ms{}",
+        if result.is_ok() { "成功" } else { "失败" },
+        started.elapsed().as_millis(),
+        result
+            .as_ref()
+            .err()
+            .map(|error| format!("：{error}"))
+            .unwrap_or_default(),
+    ));
     result
+}
+
+pub fn suspend_for_tun(
+    base: &Path,
+    owner_sid: &str,
+    managed_port: Option<u16>,
+) -> AppResult<()> {
+    let path = base.join(SNAPSHOT_FILE);
+    let key = open(owner_sid, KEY_READ | KEY_SET_VALUE)?;
+    let started = Instant::now();
+    log_restore(base, "开始暂停 Windows 系统代理以启用 TUN");
+    let result = (|| -> AppResult<()> {
+        let current = Snapshot {
+            proxy_enable: query_dword(key, "ProxyEnable")?,
+            proxy_server: query_string(key, "ProxyServer")?,
+            proxy_override: query_string(key, "ProxyOverride")?,
+            auto_config_url: query_string(key, "AutoConfigURL")?,
+        };
+        if !path.is_file()
+            && managed_port.is_some()
+            && current.proxy_enable.unwrap_or(0) != 0
+            && !current.is_managed_endpoint(managed_port)
+        {
+            return Err("TUN 启用前检测到非本软件的 Windows 手动代理".to_string());
+        }
+        let data = if path.is_file() {
+            fs::read(&path).map_err(|e| format!("读取系统代理快照失败: {e}"))?
+        } else {
+            serde_json::to_vec(&current).map_err(|e| format!("序列化系统代理快照失败: {e}"))?
+        };
+        let mut snapshot: Snapshot =
+            serde_json::from_slice(&data).map_err(|e| format!("解析系统代理快照失败: {e}"))?;
+        if snapshot.normalize_empty_endpoint() {
+            atomic_write(
+                &base.join(format!("system-proxy-invalid-{}.json", transaction_id())),
+                &data,
+            )?;
+            log_restore(
+                base,
+                "原快照含空代理地址：已保留异常备份，将长期恢复目标归一化为关闭",
+            );
+        } else if snapshot.normalize_managed_endpoint(managed_port) {
+            atomic_write(
+                &base.join(format!(
+                    "system-proxy-managed-loop-{}.json",
+                    transaction_id()
+                )),
+                &data,
+            )?;
+            log_restore(
+                base,
+                "原快照误指向本软件端口：已保留审计备份，将长期恢复目标归一化为关闭",
+            );
+        }
+        let normalized = serde_json::to_vec(&snapshot)
+            .map_err(|e| format!("序列化系统代理快照失败: {e}"))?;
+        if !path.is_file() || normalized != data {
+            atomic_write(&path, &normalized)?;
+        }
+
+        // 先关闭启用位，再移除候选端点和 PAC，避免短暂把应用指向空地址。
+        set_dword(key, "ProxyEnable", 0)?;
+        delete_value(key, "ProxyServer")?;
+        delete_value(key, "AutoConfigURL")?;
+        notify();
+        if query_dword(key, "ProxyEnable")? != Some(0)
+            || query_string(key, "ProxyServer")?.is_some()
+            || query_string(key, "AutoConfigURL")?.is_some()
+        {
+            return Err("TUN 启用前关闭 Windows 系统代理后回读不一致".to_string());
+        }
+        Ok(())
+    })();
+    unsafe { RegCloseKey(key) };
+    log_restore(
+        base,
+        &format!(
+            "TUN 系统代理暂停{}，耗时 {} ms{}",
+            if result.is_ok() { "成功" } else { "失败" },
+            started.elapsed().as_millis(),
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("：{error}"))
+                .unwrap_or_default(),
+        ),
+    );
+    result
+}
+
+fn log_restore(base: &Path, message: &str) {
+    // 与服务主日志一致；日志写入失败不能中断代理恢复。
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(base.join("service.log"))
+    {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = writeln!(file, "{stamp} {message}");
+    }
 }
 
 fn open(owner_sid: &str, access: u32) -> AppResult<HKEY> {
@@ -292,7 +467,82 @@ fn notify() {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_bypass_domains, proxy_override};
+    use super::{normalize_bypass_domains, proxy_override, Snapshot};
+
+    fn snapshot(server: Option<&str>, enabled: Option<u32>) -> Snapshot {
+        Snapshot {
+            proxy_enable: enabled,
+            proxy_server: server.map(str::to_string),
+            proxy_override: Some("<local>;*.corp.test".to_string()),
+            auto_config_url: Some("https://corp.test/proxy.pac".to_string()),
+        }
+    }
+
+    #[test]
+    fn restore_disables_empty_or_colon_endpoints_and_preserves_pac() {
+        for server in [None, Some(""), Some(" "), Some(":"), Some(" : ")] {
+            for enabled in [None, Some(0), Some(1)] {
+                let mut value = snapshot(server, enabled);
+                value.normalize_empty_endpoint();
+                assert_eq!(value.proxy_enable.unwrap_or(0), 0);
+                assert_eq!(value.proxy_server, None);
+                assert_eq!(value.proxy_override.as_deref(), Some("<local>;*.corp.test"));
+                assert_eq!(value.auto_config_url.as_deref(), Some("https://corp.test/proxy.pac"));
+                assert!(!value.normalize_empty_endpoint());
+            }
+        }
+    }
+
+    #[test]
+    fn restore_preserves_original_nonempty_proxy_settings() {
+        for server in [
+            "proxy.corp.test:8080",
+            "http=proxy:80;https=proxy:443",
+            "[::1]:7890",
+            "127.0.0.1:7890",
+            "代理.example:8080",
+        ] {
+            for enabled in [None, Some(0), Some(1)] {
+                let mut value = snapshot(Some(server), enabled);
+                assert!(!value.normalize_empty_endpoint());
+                assert_eq!(value.proxy_enable, enabled);
+                assert_eq!(value.proxy_server.as_deref(), Some(server));
+            }
+        }
+    }
+
+    #[test]
+    fn tun_normalizes_snapshot_that_points_back_to_managed_port() {
+        let mut value = snapshot(Some("127.0.0.1:17890"), Some(1));
+
+        assert!(value.normalize_managed_endpoint(Some(17890)));
+        assert_eq!(value.proxy_enable, Some(0));
+        assert_eq!(value.proxy_server, None);
+        assert!(!value.normalize_managed_endpoint(Some(17890)));
+    }
+
+    #[test]
+    fn tun_preserves_unrelated_or_disabled_proxy_snapshot() {
+        for (server, enabled, managed_port) in [
+            ("proxy.corp.test:8080", Some(1), Some(17890)),
+            ("127.0.0.1:17890", Some(0), Some(17890)),
+            ("127.0.0.1:17890", Some(1), Some(7890)),
+            ("127.0.0.1:17890", Some(1), None),
+        ] {
+            let mut value = snapshot(Some(server), enabled);
+            assert!(!value.normalize_managed_endpoint(managed_port));
+            assert_eq!(value.proxy_enable, enabled);
+            assert_eq!(value.proxy_server.as_deref(), Some(server));
+        }
+    }
+
+    #[test]
+    fn restore_keeps_absent_manual_proxy_fields_absent() {
+        let mut value = snapshot(None, None);
+        assert!(!value.normalize_empty_endpoint());
+        assert_eq!(value.proxy_enable, None);
+        assert_eq!(value.proxy_server, None);
+    }
 
     #[test]
     fn proxy_override_lists_each_domain_and_subdomain_pattern() {

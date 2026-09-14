@@ -32,6 +32,13 @@ SNAPSHOT_FILE_NAME = 'proxy_guard_snapshot.json'
 
 _LOOPBACK_EXACT = {'localhost', '127.0.0.1', '::1'}
 
+_INTERNET_OPTION_SETTINGS_CHANGED = 39
+_INTERNET_OPTION_REFRESH = 37
+_HWND_BROADCAST = 0xFFFF
+_WM_SETTINGCHANGE = 0x001A
+_SMTO_BLOCK = 0x0001
+_SMTO_ABORTIFHUNG = 0x0002
+
 
 def _file_path(name, base=None):
     return os.path.join(base or cfgmod.BASE, name)
@@ -100,6 +107,51 @@ def set_proxy_enabled(enabled, registry=None):
                             registry.REG_DWORD, 1 if enabled else 0)
     finally:
         registry.CloseKey(key)
+
+
+def refresh_user_proxy_settings(timeout_ms=1000, wininet=None, user32=None):
+    """在当前登录用户会话刷新 WinINet，并通知已打开的设置窗口。"""
+    if os.name != 'nt' and (wininet is None or user32 is None):
+        return {
+            'ok': False,
+            'settings_changed': False,
+            'refreshed': False,
+            'broadcast': False,
+        }
+
+    import ctypes
+    from ctypes import wintypes
+
+    wininet = wininet or ctypes.WinDLL('wininet', use_last_error=True)
+    user32 = user32 or ctypes.WinDLL('user32', use_last_error=True)
+    set_option = wininet.InternetSetOptionW
+    set_option.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
+    set_option.restype = wintypes.BOOL
+    send_message = user32.SendMessageTimeoutW
+    send_message.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+    send_message.restype = wintypes.LPARAM
+
+    settings_changed = bool(set_option(
+        None, _INTERNET_OPTION_SETTINGS_CHANGED, None, 0))
+    refreshed = bool(set_option(
+        None, _INTERNET_OPTION_REFRESH, None, 0))
+    section = ctypes.create_unicode_buffer('Internet Settings')
+    message_result = ctypes.c_size_t()
+    broadcast = bool(send_message(
+        _HWND_BROADCAST, _WM_SETTINGCHANGE, 0,
+        ctypes.cast(section, ctypes.c_void_p).value,
+        _SMTO_BLOCK | _SMTO_ABORTIFHUNG,
+        max(100, min(int(timeout_ms), 5000)),
+        ctypes.byref(message_result)))
+    return {
+        'ok': settings_changed and refreshed and broadcast,
+        'settings_changed': settings_changed,
+        'refreshed': refreshed,
+        'broadcast': broadcast,
+    }
 
 
 # ---------- 条目解析 ----------

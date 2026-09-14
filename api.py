@@ -26,6 +26,7 @@ from core.routing_api_tasks import RoutingTaskApi
 from core.routing_aggregate import AggregateSelectionApi
 from core.routing_tasks import operation_scope
 from core.routing_updates import RoutingUpdateWorker
+from core.routing_network import RoutingNetworkWorker
 from core.ui_state_stream import UiStateStream
 from core.worker import Worker
 
@@ -195,6 +196,11 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             self._cfg_get, self.routing, self._routing_lock, self.log,
             task_runner=self._routing_provider_task)
         self.routing_updates._serializable = False
+        self.routing_network = RoutingNetworkWorker(
+            self._cfg_get, self.routing, self._routing_lock,
+            lambda value, target: self._apply_routing_locked(
+                value, '自动物理出口切换', expected_interface=target), self.log)
+        self.routing_network._serializable = False
         self.routing_telemetry = MihomoTelemetryRelay(
             self._cfg_get, self.routing, self.log, self._poke_ui_state)
         self.routing_telemetry._serializable = False
@@ -291,6 +297,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         if not self.worker.is_alive():
             self.worker.start()
         self.routing_updates.start()
+        self.routing_network.start()
         state_stream = getattr(self, '_ui_state_stream', None)
         if state_stream is not None:
             state_stream.start()
@@ -571,6 +578,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         self.routing_activity.stop()
         self._ui_state_stream.stop()
         self.routing_updates.stop()
+        self.routing_network.stop()
         self.worker.stop()
         # 正常退出即视为优雅结束，清除脏标记；仅系统关机路径会在此前
         # 由 _os_shutdown_cleanup 先清扫代理（用户点击退出的场景不碰代理）。
@@ -1218,7 +1226,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             self.log(
                 f'[routing-history] 历史记录写入失败: {type(exc).__name__}')
 
-    def _apply_routing_locked(self, value, source, replacement_cfg=None):
+    def _apply_routing_locked(self, value, source, replacement_cfg=None, expected_interface=None):
         """在持有 _routing_lock 时提交路由和磁盘配置，并维护有效历史。"""
         self._routing_changed()
         previous_cfg = self._cfg_get()
@@ -1235,9 +1243,10 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             except Exception as exc:
                 self.log(
                     f'[routing-history] 基线记录失败: {type(exc).__name__}')
-            result = self.routing.apply(
-                requested, defer_standby=True,
-                allow_fast_toggle=allow_fast_toggle)
+            apply_options = {'defer_standby': True, 'allow_fast_toggle': allow_fast_toggle}
+            if expected_interface is not None:
+                apply_options.update(allow_fast_toggle=False, expected_interface=expected_interface)
+            result = self.routing.apply(requested, **apply_options)
             standby_pending = bool(result.pop('standby_pending', False))
             save_exc = None
             with self._lock:

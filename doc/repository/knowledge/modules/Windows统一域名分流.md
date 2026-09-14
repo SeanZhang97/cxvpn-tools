@@ -3,7 +3,7 @@
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
 界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
 关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置备份, 配置历史, 诊断包, DNS高级模式, nameserver-policy, 托盘快捷操作, 域名分流导航
-最后验证：2026-09-12 | 分支：main
+最后验证：2026-09-13 | 分支：main
 
 ## 职责边界
 
@@ -314,9 +314,24 @@ commit `28f2efc504059b1dc75c793618b775c8e1b2a5f1`。以下结论只描述该版�
 - 节点测速对 Mihomo 延迟字段做有限数值归一化：允许数字字符串和有限浮点，拒绝 `bool`；
   proxy-provider 节点同时识别 `provider_name` 与 `provider` 字段，结果保留单节点
   `elapsed_ms` 供运行态进度和诊断使用，安全节点快照仍只持久化白名单字段。
-- 系统代理快切继续由原生服务事务负责；Python 侧同时核对服务返回的 `runtime_mode`、
-  `system_proxy_active` 与 Windows 注册表最终值。状态不一致会尽力切回 standby，再向 UI 报错，
+- 系统代理快切继续由原生服务事务负责；Python 侧核对服务返回的 `runtime_mode`、
+  `system_proxy_active`，开启时还核对 Windows 注册表最终端点。状态不一致会尽力切回 standby，再向 UI 报错，
   不把 IPC 已响应误报为系统代理已生效。
+- 原生服务恢复系统代理快照后，GUI 必须在当前登录用户会话调用 WinINet 设置变更与刷新，
+  再用单窗口超时 1 秒的 `WM_SETTINGCHANGE` 广播通知已打开的 Windows 设置页（不是整个广播总计 1 秒）。通知失败只记录
+  各阶段结果和耗时，不回滚已经成功完成的代理关闭事务。
+- `system_proxy::restore` 对原快照中缺失、空白或仅为 `:` 的手动代理地址做有限归一化：
+  不恢复无地址的启用状态，清除空地址；原本完全缺失的手动代理字段保持缺失。
+  正常地址、按协议地址、IPv6、绕过列表和 PAC 按原值恢复，不做泛化的地址重写。
+  归一化前将原快照另存为服务目录的 `system-proxy-invalid-<id>.json`；备份失败不写注册表。
+  恢复四个字段并逐项回读一致后才删除活动恢复快照；回读失败保留快照并报错。
+  该恢复边界覆盖快切关闭、停止和退出 system-proxy；切换到 active TUN 时不恢复快照，而是
+  暂停手动代理并保留快照。服务的 `system_proxy_active=false` 表示当前没有 system-proxy 接管；
+  active TUN 可以仍持有等待停止时恢复的用户代理快照。
+- 手动代理异常诊断需区分注册表字段可读与 WinINet 选项可读：注册表中启用位为 1、
+  地址为 `:` 的现场可以被普通字段读取，但 WinINet 联合查询服务器选项会报参数错误。
+  可排除服务器字段单独读取 flags、绕过和 PAC；获用户授权的修复使用当前用户
+  per-connection API，仅清除手动代理位和空端点，并回读确认其它选项及 TUN 核心未变。
 - 启动复核还会将持久化 `routing.enabled` 与 Windows 实际手动代理端点对账：配置应启用但
   CXVPN `mixed-port` 未恢复时补做接管；配置已关闭但端点精确指向当前 `mixed-port` 时关闭残留。
   非 CXVPN 端点不被自动修改，避免误伤其它代理软件。
@@ -405,8 +420,8 @@ CXVPN 自原生路由服务 `0.3.0`、IPC 协议 `3` 起采用与上述基线一
    Windows 手动系统代理原始启用位（`windows_manual_proxy_state`）：`ProxyEnable=1`
    且地址为空或指向第三方代理时阻断启用并提示先关闭——遵循系统代理的应用不会
    经过 TUN，地址为空时还会直接无法上网；`windows_system_proxy()` 对空地址返回
-   空串，不能用于该检测。指向本软件 `mixed-port` 时仅提示安装事务会按快照
-   自动恢复，不阻断从系统代理模式切换到 TUN。
+   空串，不能用于该检测。指向本软件 `mixed-port` 时仅提示 TUN 事务会暂时关闭该代理并在
+   停止 TUN 后恢复进入接管前的合法设置，不阻断从系统代理模式切换到 TUN。
 4. 对每个 VPN 出口确认配置存在，且 IPv4、IPv6 远程默认网关都已关闭。
 5. 生成 JSON（YAML 合法子集），用锁定版本的 `mihomo.exe -t` 解析。
 6. 控制面比较包内与已安装 `CXVPNRoutingHost.exe` 的 SHA-256；仅首次安装或摘要变化时通过
@@ -425,7 +440,9 @@ CXVPN 自原生路由服务 `0.3.0`、IPC 协议 `3` 起采用与上述基线一
 9. commit 前，系统代理模式先用显式 `127.0.0.1:mixed_port` 做多端点探测，再由服务在未提交事务内完整快照
    `ProxyEnable`、`ProxyServer`、`ProxyOverride`、`AutoConfigURL`，写入安全 bypass 和逐域名的
    `domain;*.domain` 入口绕过、关闭 PAC，
-   回读注册表确认与刚验证的 mixed-port 一致；TUN 模式验证系统 DNS/HTTPS 链路。各链路使用有限端点
+   回读注册表确认与刚验证的 mixed-port 一致；TUN 模式先由服务保存原始代理快照、关闭并回读
+   手动代理与 PAC，再由当前用户控制面刷新 WinINet/设置窗口并二次回读，最后验证系统 DNS/HTTPS
+   链路。各链路使用有限端点
    和共用期限，前两个端点并行。端到端链路不可用时先 rollback，再读取原生服务脱敏诊断，
    不能以 Controller 就绪代替公网可用。
    诊断日志可能包含中文和国旗等非 BMP 节点名，文件与 IPC 均保持 UTF-8；控制台不支持字符时
@@ -433,7 +450,8 @@ CXVPN 自原生路由服务 `0.3.0`、IPC 协议 `3` 起采用与上述基线一
    Python 默认 `urllib.request.urlopen` 会继承 Windows 系统代理；VLM 等应用内请求如需完全绕开
    `mixed-port`，应把其 API 主域名加入入口绕过，而不能仅依赖 Mihomo 内部 `PHYSICAL` 规则来改变
    DevTools 或客户端看到的远程地址。
-10. 系统代理事务失败、超时、rollback、关闭运行时或 Windows Service 停止时恢复四字段原值。
+10. 系统代理事务失败、超时、关闭运行时或 Windows Service 停止时恢复四字段原值；rollback
+   恢复到旧 TUN 时会立即重新暂停系统代理，恢复到旧 system-proxy 时重新激活原 mixed-port。
    Mihomo 单次异常退出先恢复系统代理再重启；60 秒内连续退出 3 次删除运行标记并熔断，防止
    死代理。服务重启会根据运行标记和快照恢复运行时；未完成事务仍恢复旧版本。
 11. 服务成功后，以同目录临时文件、`fsync` 和 `os.replace` 原子保存 `config.json`；若保存

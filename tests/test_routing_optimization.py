@@ -53,7 +53,11 @@ class RoutingOptimizationTests(unittest.TestCase):
         manager._controller_request = Mock(side_effect=OSError('reload rejected'))
         manager._wait_native_ready = Mock()
         manager._native_provider_files = Mock(return_value=[])
-        manager._install('offline-candidate', value)
+        manager._refresh_user_proxy_settings = Mock(return_value=True)
+        with patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': False, 'server': ''}):
+            manager._install('offline-candidate', value)
         manager._native_service.rollback.assert_called_once_with('hot')
         manager._native_service.commit.assert_called_once_with('full')
         self.assertEqual([call.kwargs['allow_reload'] for call in manager._native_service.apply.call_args_list], [True, False])
@@ -67,11 +71,15 @@ class RoutingOptimizationTests(unittest.TestCase):
         manager._native_service.apply.return_value = {'transaction_id': 'tx', 'config_sha256': 'ABC'}
         manager._wait_native_ready = Mock()
         manager._native_provider_files = Mock(return_value=[])
+        manager._refresh_user_proxy_settings = Mock(return_value=True)
         def log(message):
             if '事务提交成功' in message:
                 raise UnicodeEncodeError('ascii', '节点 🇯🇵', 0, 1, 'offline console')
         manager.log = log
-        manager._install('offline-candidate', value)
+        with patch.object(
+                routing, 'windows_manual_proxy_state',
+                return_value={'enabled': False, 'server': ''}):
+            manager._install('offline-candidate', value)
         manager._native_service.commit.assert_called_once_with('tx')
         manager._native_service.rollback.assert_not_called()
 

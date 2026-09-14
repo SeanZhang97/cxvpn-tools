@@ -103,12 +103,16 @@ class RoutingReliabilityTests(unittest.TestCase):
         manager.status = mock.Mock(return_value={'running': False})
         manager._uninstall_legacy = mock.Mock()
 
-        result = manager.apply({
-            'enabled': False, 'default_outbound': 'physical'})
+        with mock.patch.object(
+                routing.proxy_guard, 'refresh_user_proxy_settings',
+                return_value={'ok': True}) as refresh:
+            result = manager.apply({
+                'enabled': False, 'default_outbound': 'physical'})
 
         self.assertTrue(result['ok'])
         manager._native_service.stop_runtime.assert_called_once()
         manager._uninstall_legacy.assert_not_called()
+        refresh.assert_called_once_with(timeout_ms=1000)
 
     def test_mihomo_error_redacts_urls_and_secrets(self):
         detail = routing._sanitize_mihomo_error(
@@ -193,11 +197,15 @@ class RoutingReliabilityTests(unittest.TestCase):
         manager._native_service.apply.return_value = {
             'transaction_id': 'transaction-1'}
         manager._wait_native_ready = mock.Mock()
+        manager._refresh_user_proxy_settings = mock.Mock(return_value=True)
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, 'config.json')
             with open(path, 'w', encoding='utf-8') as stream:
                 json.dump({'mode': 'rule'}, stream)
-            manager._install(path, config)
+            with mock.patch.object(
+                    routing, 'windows_manual_proxy_state',
+                    return_value={'enabled': False, 'server': ''}):
+                manager._install(path, config)
 
         manager._native_service.ensure_installed.assert_called_once()
         manager._native_service.apply.assert_called_once()
@@ -356,11 +364,15 @@ class RoutingReliabilityTests(unittest.TestCase):
             'transaction_id': 'transaction-2'}
         manager._wait_native_ready = mock.Mock(side_effect=routing.RoutingError(
             '手动选择的代理节点未能加载'))
+        manager._refresh_user_proxy_settings = mock.Mock(return_value=True)
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, 'config.json')
             with open(path, 'w', encoding='utf-8') as stream:
                 json.dump({'mode': 'rule'}, stream)
-            with self.assertRaisesRegex(routing.RoutingError, '手动选择'):
+            with mock.patch.object(
+                    routing, 'windows_manual_proxy_state',
+                    return_value={'enabled': False, 'server': ''}), \
+                    self.assertRaisesRegex(routing.RoutingError, '手动选择'):
                 manager._install(path, config)
 
         manager._native_service.rollback.assert_called_once_with('transaction-2')
@@ -386,12 +398,16 @@ class RoutingReliabilityTests(unittest.TestCase):
             'mihomo_log': [f'当前节点 {flag} 日本东京']}
         manager._wait_native_ready = mock.Mock(side_effect=routing.RoutingError(
             'TUN 公网自检失败'))
+        manager._refresh_user_proxy_settings = mock.Mock(return_value=True)
 
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, 'config.json')
             with open(path, 'w', encoding='utf-8') as stream:
                 json.dump({'mode': 'rule'}, stream)
-            with self.assertRaisesRegex(routing.RoutingError, '公网自检'):
+            with mock.patch.object(
+                    routing, 'windows_manual_proxy_state',
+                    return_value={'enabled': False, 'server': ''}), \
+                    self.assertRaisesRegex(routing.RoutingError, '公网自检'):
                 manager._install(path, config)
 
         manager._native_service.rollback.assert_called_once_with(

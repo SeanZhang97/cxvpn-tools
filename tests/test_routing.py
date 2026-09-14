@@ -71,6 +71,7 @@ class RoutingConfigTests(unittest.TestCase):
             generated['tun']['route-exclude-address'], ['203.0.113.8/32'])
         self.assertTrue(generated['tun']['auto-detect-interface'])
         self.assertTrue(generated['tun']['strict-route'])
+        self.assertEqual(generated['cxvpn-managed-proxy-port'], 17890)
         self.assertEqual(generated['external-controller'], '127.0.0.1:19090')
         self.assertNotIn('external-controller-cors', generated)
         self.assertFalse(generated['allow-lan'])
@@ -90,6 +91,23 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(
             generated['proxy-providers']['provider-default']['header'],
             {'User-Agent': ['Clash-Verge']})
+
+    def test_tun_routes_selected_domain_to_bound_windows_vpn(self):
+        source = self.base_config()
+        source['capture_mode'] = 'tun'
+        config = routing.normalize_config(source)
+
+        generated = routing.build_mihomo_config(
+            config, [vpn_profile()], ['203.0.113.8/32'])
+        proxies = {item['name']: item for item in generated['proxies']}
+
+        self.assertTrue(generated['tun']['enable'])
+        self.assertTrue(generated['tun']['strict-route'])
+        self.assertEqual(
+            generated['tun']['route-exclude-address'], ['203.0.113.8/32'])
+        self.assertEqual(proxies['VPN-1']['type'], 'direct')
+        self.assertEqual(proxies['VPN-1']['interface-name'], '公司 VPN')
+        self.assertIn('DOMAIN,mh.chaoxing.com,VPN-1', generated['rules'])
 
     def test_standby_config_keeps_loopback_core_without_system_capture(self):
         config = routing.normalize_config(self.base_config())
@@ -875,7 +893,12 @@ class RoutingConfigTests(unittest.TestCase):
             manager._native_service = mock.Mock()
             manager._native_service.apply.return_value = {
                 'transaction_id': 'cache-transaction'}
-            with mock.patch.object(manager, '_wait_native_ready'):
+            with mock.patch.object(manager, '_wait_native_ready'), \
+                    mock.patch.object(
+                        manager, '_refresh_user_proxy_settings',
+                        return_value=True), mock.patch.object(
+                        routing, 'windows_manual_proxy_state',
+                        return_value={'enabled': False, 'server': ''}):
                 manager._install(config_path, config)
 
         staged = manager._native_service.apply.call_args.args[1]
@@ -1228,7 +1251,7 @@ class RoutingConfigTests(unittest.TestCase):
             warnings = routing.validate_environment(
                 config, [vpn_profile()], [{'name': '以太网'}], [])
 
-        self.assertTrue(any('自动恢复' in item for item in warnings))
+        self.assertTrue(any('暂时关闭' in item for item in warnings))
 
     def test_system_proxy_mode_ignores_enabled_foreign_proxy(self):
         config = routing.normalize_config({

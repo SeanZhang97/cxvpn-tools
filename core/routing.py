@@ -210,12 +210,12 @@ def list_physical_interfaces():
     """按默认路由优先级返回可用于公网直连的物理接口。"""
     script = r'''
 $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-  Sort-Object RouteMetric, InterfaceMetric)
+  Sort-Object @{Expression={$_.RouteMetric + $_.InterfaceMetric}}, InterfaceIndex)
 $seen = @{}
 $result = foreach ($route in $routes) {
   if ($seen.ContainsKey($route.InterfaceAlias)) { continue }
   $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
-  if (-not $adapter -or $adapter.Status -ne 'Up') { continue }
+  if (-not $adapter -or $adapter.Status -ne 'Up' -or -not $adapter.HardwareInterface) { continue }
   $text = "$($route.InterfaceAlias) $($adapter.InterfaceDescription)"
   if ($text -match '(?i)vpn|wintun|wireguard|mihomo|clash|sing-box|tap|loopback') { continue }
   $seen[$route.InterfaceAlias] = $true
@@ -952,11 +952,11 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
         proxy_server = proxy_state['server']
         if proxy_state['enabled']:
             if proxy_server == f'127.0.0.1:{config.get("mixed_port", 0)}':
-                # 从本软件系统代理模式切换到 TUN：安装事务会按快照恢复
-                # 原系统代理设置，不阻断切换，仅向用户说明。
+                # 从本软件系统代理模式切换到 TUN：原生事务会暂时关闭
+                # 手动代理并保留恢复快照，不阻断切换，仅向用户说明。
                 warnings.append(
                     'Windows 系统代理当前指向本软件端口，'
-                    '本次启用 TUN 时会自动恢复原系统代理设置')
+                    '本次启用 TUN 时会暂时关闭，停止 TUN 后恢复原设置')
             elif not proxy_server:
                 raise RoutingError(
                     '检测到 Windows 系统代理已开启但未配置服务器地址，'
@@ -975,7 +975,10 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
         selected = interfaces[0].get('name', '')
         config['physical_interface'] = selected
     elif selected not in available:
-        raise RoutingError(f'物理网络接口不存在或未连接：{selected}')
+        alternative = next(iter(available), '')
+        hint = (f'；可在物理直连接口选择“自动选择”或“{alternative}”'
+                if alternative else '；当前没有可用的物理默认接口')
+        raise RoutingError(f'指定物理接口未连接或无默认路由：{selected}{hint}')
 
     profiles = {row.get('name'): row for row in vpns}
     for name in _target_vpns(config):
@@ -1088,8 +1091,12 @@ def _preview_provider_download_route(provider, system_proxy='',
 
 
 def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
-                        standby=False):
+                        standby=False, physical_interface=None):
     """生成 JSON（YAML 的合法子集），避免额外引入 YAML 依赖。"""
+    signature = RoutingManager._config_signature(config)
+    config = dict(config)
+    if physical_interface is not None:
+        config['physical_interface'] = physical_interface
     targets = [] if standby else _target_vpns(config)
     proxy_names = {name: f'VPN-{index + 1}' for index, name in enumerate(targets)}
     proxies = [{
@@ -1154,6 +1161,10 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
         })
 
     generated = {
+        'cxvpn-config-signature': signature,
+        # TUN 运行时 mixed-port 固定为 0，原生服务仍需识别本软件历史
+        # 手动代理端口，避免把自引用快照当成用户原始设置再次恢复。
+        'cxvpn-managed-proxy-port': config['mixed_port'],
         'mixed-port': (config['mixed_port']
                        if standby or config['capture_mode'] == 'system-proxy'
                        else 0),
@@ -1612,12 +1623,39 @@ class RoutingManager:
         else:
             self._log_best_effort(f'[codex] {reason}执行完成')
 
+    def _refresh_user_proxy_settings(self, reason):
+        started_at = time.monotonic()
+        self._log_best_effort(
+            f'[routing] {reason}当前用户会话刷新请求已提交：'
+            'WinINet + WM_SETTINGCHANGE，单窗口消息超时=1秒')
+        try:
+            result = proxy_guard.refresh_user_proxy_settings(timeout_ms=1000)
+        except (OSError, ValueError) as exc:
+            self._log_best_effort(
+                f'[routing] {reason}当前用户会话刷新失败：'
+                f'异常={type(exc).__name__}，'
+                f'耗时={time.monotonic() - started_at:.2f}秒')
+            return False
+        elapsed = time.monotonic() - started_at
+        if result.get('ok'):
+            self._log_best_effort(
+                f'[routing] {reason}当前用户会话刷新成功，耗时={elapsed:.2f}秒')
+            return True
+        self._log_best_effort(
+            f'[routing] {reason}当前用户会话刷新未完全生效：'
+            f'WinINetChanged={bool(result.get("settings_changed"))}，'
+            f'WinINetRefresh={bool(result.get("refreshed"))}，'
+            f'WindowBroadcast={bool(result.get("broadcast"))}，'
+            f'耗时={elapsed:.2f}秒；代理关闭状态保持不变')
+        return False
+
     def _service_state(self, allow_powershell=True):
         try:
             native = self._native_service.status()
         except _routing_service.ServiceError:
             native = None
         if native:
+            compatible = self._native_service._compatible(native)
             return {
                 'installed': True,
                 'state': 'Running',
@@ -1627,9 +1665,14 @@ class RoutingManager:
                 'runtime_mode': str(native.get('runtime_mode') or (
                     'active' if native.get('runtime_enabled') else 'stopped')),
                 'service_version': str(native.get('service_version') or ''),
+                'service_compatible': compatible,
                 'system_proxy_active': bool(native.get('system_proxy_active')),
                 'fast_toggle_ready': bool(native.get('fast_toggle_ready')),
                 'config_sha256': str(native.get('config_sha256') or ''),
+                'applied_capture_mode': native.get('applied_capture_mode'),
+                'applied_physical_interface': native.get('applied_physical_interface'),
+                'applied_config_signature': native.get('applied_config_signature'),
+                'pending_transaction': native.get('pending_transaction'),
                 'crash_fused': bool(native.get('crash_fused')),
             }
         if not allow_powershell:
@@ -2605,13 +2648,19 @@ if ($service) {{
         runtime_mode = str(service.get('runtime_mode') or (
             'active' if runtime_expected else 'stopped'))
         core_running = bool(version)
-        capture_ready = (normalized['capture_mode'] != 'system-proxy' or
+        actual_capture = service.get('applied_capture_mode')
+        if (not actual_capture and service.get('backend') == 'native' and
+                runtime_mode == 'active' and core_running):
+            # 兼容升级前的服务：active 且没有系统代理快照时，运行配置只能是 TUN。
+            actual_capture = ('system-proxy' if service.get('system_proxy_active') else 'tun')
+        actual_capture = actual_capture or normalized['capture_mode']
+        capture_ready = (actual_capture != 'system-proxy' or
                          bool(service.get('system_proxy_active')))
         running = bool(
-            normalized['enabled'] and core_running and
+            core_running and
             runtime_mode == 'active' and capture_ready)
         standby = bool(
-            not normalized['enabled'] and core_running and
+            core_running and
             runtime_mode == 'standby')
         return {
             'ok': True,
@@ -2622,15 +2671,24 @@ if ($service) {{
             'standby': standby,
             'runtime_mode': runtime_mode,
             'traffic_mode': normalized['traffic_mode'],
-            'capture_mode': normalized['capture_mode'],
+            'capture_mode': actual_capture,
+            'configured_capture_mode': normalized['capture_mode'],
+            'configuration_pending': bool(running and (
+                not normalized['enabled'] or actual_capture != normalized['capture_mode'] or
+                (service.get('applied_config_signature') and
+                 service['applied_config_signature'] != self._config_signature(normalized)) or
+                (normalized['physical_interface'] and service.get('applied_physical_interface') and
+                 normalized['physical_interface'] != service['applied_physical_interface']))),
             'dns_mode': normalized['dns_mode'],
             'service_state': service.get('state', 'Unknown'),
             'service_backend': service.get('backend', 'unknown'),
             'service_version': service.get('service_version', ''),
             'service_update_required': bool(
                 service.get('backend') == 'native' and
-                service.get('service_version') !=
-                _routing_service.SERVICE_VERSION),
+                (service.get('service_compatible') is False or
+                 (service.get('service_compatible') is None and
+                  service.get('service_version') !=
+                  _routing_service.SERVICE_VERSION))),
             'mihomo_version': version or MIHOMO_VERSION,
             'winsw_version': WINSW_VERSION,
             'rule_count': len(normalized['rules']),
@@ -2639,7 +2697,7 @@ if ($service) {{
             'actual_rule_count': len(_effective_rules(normalized)),
             'provider_count': len([
                 item for item in normalized['proxy_providers'] if item['enabled']]),
-            'physical_interface': normalized['physical_interface'],
+            'physical_interface': service.get('applied_physical_interface') or normalized['physical_interface'],
             'mixed_port': normalized['mixed_port'],
             'system_proxy_active': bool(service.get('system_proxy_active')),
             'fast_toggle_ready': bool(service.get('fast_toggle_ready')),
@@ -3285,6 +3343,20 @@ if ($service) {{
                     reload_failed = True
                     raise
                 self.log('[routing] 运行配置热重载成功，开始回读与出口验证')
+            if (runtime_mode == 'active' and
+                    config['capture_mode'] == 'tun'):
+                self._log_best_effort(
+                    '[routing] TUN 候选事务已启动，开始确认 Windows 手动代理已关闭')
+                refreshed = self._refresh_user_proxy_settings(
+                    'TUN 接管关闭系统代理后')
+                proxy_state = windows_manual_proxy_state()
+                if (not refreshed or proxy_state['enabled'] or
+                        proxy_state['server']):
+                    raise RoutingError(
+                        'TUN 启用后 Windows 手动代理关闭回读不一致，'
+                        '已自动恢复原设置')
+                self._log_best_effort(
+                    '[routing] TUN 接管前 Windows 手动代理关闭与当前用户会话刷新已确认')
             self._wait_native_ready(config, runtime_mode)
             if (runtime_mode == 'active' and
                     config['capture_mode'] == 'system-proxy'):
@@ -3482,6 +3554,7 @@ if ($service) {{
         if enabled:
             self._sync_codex_proxy(config, '系统代理激活后')
         else:
+            self._refresh_user_proxy_settings('系统代理关闭后')
             self._restore_codex_proxy('代理关闭后')
         return {
             'ok': True,
@@ -3492,15 +3565,22 @@ if ($service) {{
             'status': self.status(config),
         }
 
-    def apply(self, value, defer_standby=False, allow_fast_toggle=False):
+    def apply(self, value, defer_standby=False, allow_fast_toggle=False, expected_interface=None):
         config = normalize_config(value)
         self.log(
             f'[routing] 收到分流应用请求：enabled={config["enabled"]}，'
             f'mode={config["traffic_mode"]}，规则 {len(config["rules"])} 条')
         service_state = self._service_state()
-        if (allow_fast_toggle and
-                self._can_fast_toggle_system_proxy(config, service_state) and
-                (not config['enabled'] or self.runtime_matches(config, service_state))):
+        can_fast_toggle = bool(
+            allow_fast_toggle and
+            self._can_fast_toggle_system_proxy(config, service_state) and
+            (not config['enabled'] or self.runtime_matches(config, service_state)))
+        if can_fast_toggle and config['enabled'] and not config['physical_interface']:
+            # 自动模式的待机核心可能仍绑定上一张网卡，开启前复核而非直接复用。
+            available = self._environment.snapshot(False, fresh=True)['interfaces']
+            can_fast_toggle = bool(available and available[0]['name'] ==
+                                   service_state.get('applied_physical_interface'))
+        if can_fast_toggle:
             return self._fast_toggle_system_proxy(config, config['enabled'])
         if not config['enabled']:
             if service_state.get('state') == 'Unknown':
@@ -3518,6 +3598,7 @@ if ($service) {{
                     except _routing_service.ServiceError as exc:
                         raise RoutingError(
                             f'关闭统一分流失败：{_sanitize_mihomo_error(exc)}') from exc
+                    self._refresh_user_proxy_settings('系统流量接管停止后')
                     self.log('[routing] 系统流量接管已停止，Windows 原始路由已恢复')
                     if enabled_providers and not defer_standby:
                         try:
@@ -3570,7 +3651,11 @@ if ($service) {{
         environment = self._environment.snapshot(config['capture_mode'] == 'tun', fresh=True)
         vpns, interfaces, conflicts = (environment['vpns'], environment['interfaces'],
                                        environment['tun_conflicts'])
-        warnings = validate_environment(config, vpns, interfaces, conflicts)
+        # 校验只解析当次运行网卡，不能把“自动”回写成用户的固定选择。
+        resolved = dict(config)
+        warnings = validate_environment(resolved, vpns, interfaces, conflicts)
+        if expected_interface is not None and resolved['physical_interface'] != expected_interface:
+            raise RoutingError('物理网络再次变化，本次自动切换已取消，保留现有运行态')
         excludes, resolve_warnings = _resolve_vpn_server_routes(
             vpns, set(_target_vpns(config)))
         warnings.extend(resolve_warnings)
@@ -3579,7 +3664,8 @@ if ($service) {{
         config_path = os.path.join(staging, 'config.json')
         os.makedirs(test_data, exist_ok=True)
         generated = build_mihomo_config(
-            config, vpns, excludes, windows_system_proxy())
+            config, vpns, excludes, windows_system_proxy(),
+            physical_interface=resolved['physical_interface'])
         _write_json(config_path, generated)
         self.log('[routing] Mihomo 候选配置已生成，开始离线语法预检（超时 45 秒）')
         self._test_config(config_path, test_data)
@@ -3601,9 +3687,11 @@ if ($service) {{
         system_proxy_domains = system_proxy_bypass_domains(config)
         environment = self._environment.snapshot(config['capture_mode'] == 'tun')
         vpns = environment['vpns']
-        warnings = validate_environment(config, vpns, environment['interfaces'], environment['tun_conflicts'])
+        resolved = dict(config)
+        warnings = validate_environment(resolved, vpns, environment['interfaces'], environment['tun_conflicts'])
         generated = build_mihomo_config(
-            config, vpns, system_proxy=windows_system_proxy())
+            config, vpns, system_proxy=windows_system_proxy(),
+            physical_interface=resolved['physical_interface'])
         verify_runtime()
         with tempfile.TemporaryDirectory(prefix='cxvpn-routing-preview-') as root:
             path = os.path.join(root, 'config.json')

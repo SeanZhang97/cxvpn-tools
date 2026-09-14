@@ -487,7 +487,8 @@
     const summary = window.RoutingWorkspace?.nodeSummary?.(selectedGroupId) || {};
     renderOperationNotice();
     setModeUi(config.traffic_mode || selectedMode);
-    setText('proxy-capture-status', config.capture_mode === 'tun' ? 'TUN（高级）' : 'Windows 系统代理');
+    const actualCapture = running ? status.capture_mode || config.capture_mode : config.capture_mode;
+    setText('proxy-capture-status', actualCapture === 'tun' ? 'TUN（高级）' : 'Windows 系统代理');
     setText('proxy-default-outbound', outboundName(config.default_outbound));
     const builtinCount = status.builtin_rule_pack?.rule_count || 0;
     const cnFallback = config.system_proxy_bypass?.include_cn_direct ? ' / GEOIP CN' : '';
@@ -507,7 +508,9 @@
       : phase === 'degraded' ? '代理需要修复'
         : phase === 'unknown' ? '服务状态未知' : '代理未开启');
     setText('proxy-state-detail', running
-      ? `${config.capture_mode === 'tun' ? 'TUN' : 'Windows 系统代理'}接管 · ${selectedMode === 'global' ? '全局' : '规则'}策略 · 默认出口 ${outboundName(config.default_outbound)}。`
+      ? status.configuration_pending
+        ? `现有 ${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'} 仍在运行，保存配置与运行状态不一致；请检查配置后重新应用。`
+        : `${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'}接管 · ${selectedMode === 'global' ? '全局' : '规则'}策略 · 默认出口 ${outboundName(config.default_outbound)}。`
       : phase === 'unknown'
         ? '暂时无法读取 Windows 服务状态。为避免重复启动或误判关闭，请先重新检查。'
         : phase === 'degraded'
@@ -689,7 +692,7 @@
       config,
       nextEnabled ? (repairing ? '代理服务已修复' : '代理已开启') : '代理已关闭',
       nextEnabled ? '正在启动代理…' : '正在关闭代理…',
-      nextEnabled ? '代理未开启，系统路由已恢复' : '代理关闭未完成',
+      nextEnabled ? '代理配置应用失败，请检查当前运行状态' : '代理关闭未完成',
       () => backend().set_routing_enabled(
         nextEnabled, nextEnabled ? selectedMode : ''));
   }

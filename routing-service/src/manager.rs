@@ -206,6 +206,27 @@ impl RuntimeManager {
             .ok()
             .and_then(|path| sha256_file(&path).ok())
             .unwrap_or_default();
+        let applied: serde_json::Value = fs::read(self.config_path())
+            .ok()
+            .and_then(|data| serde_json::from_slice(&data).ok())
+            .unwrap_or_default();
+        let capture = applied
+            .get("tun")
+            .and_then(|tun| tun.get("enable"))
+            .and_then(|value| value.as_bool())
+            .map(|tun| if tun { "tun" } else { "system-proxy" });
+        let physical = applied
+            .get("proxies")
+            .and_then(|value| value.as_array())
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    row.get("name").and_then(|value| value.as_str()) == Some("PHYSICAL")
+                })
+            })
+            .and_then(|row| row.get("interface-name"))
+            .and_then(|value| value.as_str());
+        let system_proxy_active = self.desired_proxy_port()?.is_some()
+            && system_proxy::is_active(&self.base);
         Ok((
             "服务状态已读取".to_string(),
             json!({
@@ -218,7 +239,12 @@ impl RuntimeManager {
                 "mihomo_pid": self.child.as_ref().map(|child| child.id()),
                 "pending_transaction": self.pending.as_ref().map(|item| item.id.as_str()),
                 "config_sha256": hash,
-                "system_proxy_active": system_proxy::is_active(&self.base),
+                "applied_capture_mode": capture,
+                "applied_physical_interface": physical,
+                "applied_config_signature": applied
+                    .get("cxvpn-config-signature")
+                    .and_then(|value| value.as_str()),
+                "system_proxy_active": system_proxy_active,
                 "fast_toggle_ready": self.fast_toggle_marker_path().is_file(),
                 "crash_fused": self.crash_fused,
             }),
@@ -347,8 +373,14 @@ impl RuntimeManager {
                 let _ = remove_any(&self.fast_toggle_marker_path());
             }
             if !hot_reload { self.start_runtime()?; }
-            if runtime_mode == "standby" || self.desired_proxy_port()?.is_none() {
+            if runtime_mode == "standby" {
                 system_proxy::restore(&self.base, &self.owner_sid)?;
+            } else if self.desired_tun_enabled()? {
+                system_proxy::suspend_for_tun(
+                    &self.base,
+                    &self.owner_sid,
+                    self.managed_proxy_port()?,
+                )?;
             }
             Ok(())
         })();
@@ -661,11 +693,40 @@ impl RuntimeManager {
         }
     }
 
+    fn desired_tun_enabled(&self) -> AppResult<bool> {
+        let data = fs::read(self.config_path()).map_err(|e| format!("读取运行配置失败: {e}"))?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&data).map_err(|e| format!("解析运行配置失败: {e}"))?;
+        Ok(value
+            .get("tun")
+            .and_then(|tun| tun.get("enable"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false))
+    }
+
+    fn managed_proxy_port(&self) -> AppResult<Option<u16>> {
+        let data = fs::read(self.config_path()).map_err(|e| format!("读取运行配置失败: {e}"))?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&data).map_err(|e| format!("解析运行配置失败: {e}"))?;
+        Ok(value
+            .get("cxvpn-managed-proxy-port")
+            .and_then(|value| value.as_u64())
+            .filter(|port| (1024..=65535).contains(port))
+            .map(|port| port as u16))
+    }
+
     fn reconcile_system_proxy(&self) -> AppResult<()> {
         if self.marker_path().is_file() && self.runtime_mode() == "active" {
             if let Some(port) = self.desired_proxy_port()? {
                 let bypass_domains = self.system_proxy_bypass_domains()?;
                 return system_proxy::activate(&self.base, &self.owner_sid, port, &bypass_domains);
+            }
+            if self.desired_tun_enabled()? {
+                return system_proxy::suspend_for_tun(
+                    &self.base,
+                    &self.owner_sid,
+                    self.managed_proxy_port()?,
+                );
             }
         }
         system_proxy::restore(&self.base, &self.owner_sid)
@@ -830,9 +891,14 @@ fn can_reload_files(previous: &Path, candidate: &Path) -> bool {
 }
 
 fn reload_compatible(mut previous: serde_json::Value, mut candidate: serde_json::Value) -> bool {
-    let (Some(left), Some(right)) = (previous.as_object_mut(), candidate.as_object_mut()) else { return false; };
+    let (Some(left), Some(right)) = (previous.as_object_mut(), candidate.as_object_mut()) else {
+        return false;
+    };
     // 仅允许规则、模式和节点组变化；端口/TUN/DNS/provider/接口保持完全相同。
-    for field in ["rules", "proxy-groups", "mode"] { left.remove(field); right.remove(field); }
+    for field in ["rules", "proxy-groups", "mode", "cxvpn-config-signature"] {
+        left.remove(field);
+        right.remove(field);
+    }
     left == right
 }
 

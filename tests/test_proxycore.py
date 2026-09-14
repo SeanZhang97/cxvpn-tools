@@ -53,6 +53,28 @@ class ProxyCoreConfirmationTests(unittest.TestCase):
         enable.assert_called_once_with(True)
         manager._native_service.set_system_proxy_enabled.assert_called_once_with(True)
 
+    def test_fast_disable_refreshes_current_user_windows_settings(self):
+        manager = self._manager()
+        manager._native_service.set_system_proxy_enabled.return_value = {
+            'runtime_mode': 'standby',
+            'system_proxy_active': False,
+        }
+        manager.status = mock.Mock(return_value={'running': False})
+        manager._restore_codex_proxy = mock.Mock()
+        config = routing.normalize_config({
+            'enabled': False,
+            'capture_mode': 'system-proxy',
+            'mixed_port': 17890,
+        })
+        with mock.patch.object(
+                routing.proxy_guard, 'refresh_user_proxy_settings',
+                return_value={'ok': True}) as refresh:
+            result = manager._fast_toggle_system_proxy(config, False)
+
+        self.assertTrue(result['ok'])
+        refresh.assert_called_once_with(timeout_ms=1000)
+        manager._restore_codex_proxy.assert_called_once_with('代理关闭后')
+
     @staticmethod
     def _api_for_startup_reconcile(enabled):
         api = Api.__new__(Api)

@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from core import proxy_guard
 
@@ -227,6 +228,31 @@ class ProxyGuardTest(unittest.TestCase):
         self.assertEqual('', state['server'])
         self.assertEqual('', state['override'])
         self.assertEqual('', state['auto_config'])
+
+    def test_refresh_user_proxy_settings_notifies_wininet_and_windows(self):
+        wininet = mock.Mock()
+        wininet.InternetSetOptionW.side_effect = [1, 1]
+        user32 = mock.Mock()
+        observed_sections = []
+
+        def send_message(_window, _message, _wparam, lparam,
+                         _flags, _timeout, _result):
+            import ctypes
+            observed_sections.append(ctypes.wstring_at(lparam))
+            return 1
+
+        user32.SendMessageTimeoutW.side_effect = send_message
+
+        result = proxy_guard.refresh_user_proxy_settings(
+            timeout_ms=750, wininet=wininet, user32=user32)
+
+        self.assertTrue(result['ok'])
+        self.assertEqual(
+            [mock.call(None, 39, None, 0), mock.call(None, 37, None, 0)],
+            wininet.InternetSetOptionW.call_args_list)
+        self.assertEqual(['Internet Settings'], observed_sections)
+        self.assertEqual(
+            750, user32.SendMessageTimeoutW.call_args.args[5])
 
 
 if __name__ == '__main__':

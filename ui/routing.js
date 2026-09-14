@@ -917,7 +917,7 @@
       .filter(rule => rule.enabled !== false).map(item => item.outbound)]
       .some(value => value === 'proxy' || value?.startsWith('proxy:'));
     const checks = [
-      [!!byId('routing-interface')?.value, '物理出口', byId('routing-interface')?.value || '未找到可用物理接口'],
+      physicalInterfaceCheck(routingConfig.physical_interface, setup.interfaces || []),
       [routingConfig?.capture_mode !== 'tun' || !(setup?.tun_conflicts || []).length, '接管方式', routingConfig?.capture_mode === 'tun'
         ? ((setup?.tun_conflicts || []).length ? '需关闭其他代理软件的 TUN 模式' : 'TUN 高级接管可用')
         : `Windows 系统代理 → 127.0.0.1:${routingConfig?.mixed_port || 17890}`],
@@ -991,6 +991,14 @@
     ['routing-dns-mode', 'routing-dns-enhanced'].forEach(id => byId(id)?._routingWidget?.refresh());
   }
 
+  function physicalInterfaceCheck(selected, available) {
+    if (!selected) return [available.length > 0, '物理出口', available.length
+      ? `自动选择 · 当前 ${available[0].name}` : '自动选择 · 当前没有可用物理默认接口'];
+    const connected = available.some(item => item.name === selected);
+    return [connected, '物理出口', connected ? `指定接口 · ${selected}`
+      : `指定接口 ${selected} 未连接或无默认路由${available.length ? `；可选择自动或 ${available[0].name}` : ''}`];
+  }
+
   function fillForm() {
     byId('routing-enabled').checked = !!routingConfig.enabled;
     byId('routing-capture-mode').value = routingConfig.capture_mode || 'system-proxy';
@@ -999,11 +1007,16 @@
     byId('routing-builtin-pack').value = routingConfig.builtin_rule_pack || 'off';
     const interfaces = byId('routing-interface');
     interfaces.replaceChildren();
+    interfaces.append(option('', '自动选择（跟随物理网络）'));
     (setup.interfaces || []).forEach(item => {
       interfaces.append(option(item.name, item.name, item.description));
     });
-    if (!interfaces.options.length) interfaces.append(option('', '未找到物理默认接口'));
-    interfaces.value = routingConfig.physical_interface || interfaces.options[0].value;
+    if (routingConfig.physical_interface && !(setup.interfaces || []).some(
+      item => item.name === routingConfig.physical_interface)) {
+      interfaces.append(option(routingConfig.physical_interface,
+        `${routingConfig.physical_interface}（未连接或无默认路由）`));
+    }
+    interfaces.value = routingConfig.physical_interface || '';
     outboundOptions(byId('routing-default'), routingConfig.default_outbound);
     const allStrategy = byId('routing-proxy-strategy');
     allStrategy.replaceChildren(...strategyOptions().map(item => option(...item)));
