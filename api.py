@@ -260,7 +260,6 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         try:
             repaired = proxy_guard.startup_check(log=self.log)
             if repaired:
-                codex_proxy.restore(logger=self.log)
                 self._pending_notice = {
                     'title': '系统代理已修复',
                     'message': (f'检测到上次异常退出残留的本地代理 '
@@ -364,13 +363,11 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                         self.log('[routing] 启动时系统代理恢复成功')
                     else:
                         self.log('[routing] 启动时系统代理已与配置一致')
-                        self.routing._sync_codex_proxy(current, f'{source}代理有效校正')
                     return
 
                 if current['enabled'] and state.get('runtime_running') \
                         and state.get('runtime_mode') == 'active':
-                    self.log(f'[routing] {source}确认 TUN 核心已运行，校正 Codex 配置')
-                    self.routing._sync_codex_proxy(current, f'{source}代理有效校正')
+                    self.log(f'[routing] {source}确认 TUN 核心已运行')
                     return
 
                 if expected_proxy and not current['enabled'] \
@@ -881,13 +878,34 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
 
     def restore_codex_proxy(self):
         """关闭 Codex 代理：删除仍等于本工具最后写入值的托管字段。"""
+        return self._restore_codex_proxy('UI')
+
+    def _restore_codex_proxy(self, source):
         started = time.monotonic()
-        self.log('[codex] 关闭代理请求已提交（UI）')
+        self.log(f'[codex] 关闭代理请求已提交（{source}）')
+        self.log(f'[codex] 关闭代理请求已领取，开始执行（{source}）')
         result = codex_proxy.restore(logger=self.log)
         self.log(f'[codex] 关闭代理执行{"完成" if result.get("ok") else "失败"}，耗时={time.monotonic() - started:.2f}秒')
         if result.get('ok') and result.get('changed'):
             result['restart_required_after_change'] = True
         return result
+
+    def _close_codex_after_proxy_disabled(self, result):
+        """软件代理关闭已提交；Codex 清理失败不能撤销这个结果。"""
+        try:
+            cleanup = self._restore_codex_proxy('软件代理关闭后')
+        except Exception as exc:
+            self.log(f'[codex] 软件代理关闭后的配置清理失败：{type(exc).__name__}')
+            cleanup = {'ok': False}
+        if not cleanup.get('ok'):
+            result.setdefault('warnings', []).append(
+                '软件代理已关闭，但 Codex 代理配置移除失败；请到 Codex 页面重试。')
+        else:
+            if cleanup.get('changed'):
+                result['msg'] = (result.get('msg') or '代理已关闭') + '；Codex 配置已更新，需重启 Codex'
+            if cleanup.get('warnings'):
+                result.setdefault('warnings', []).append(
+                    f'Codex 有 {len(cleanup["warnings"])} 个手动修改的字段已保留。')
 
     def read_codex_config(self):
         """只读返回 Codex 配置原文供 UI 查看；日志不记录内容。"""
@@ -1282,6 +1300,11 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                         '请保持软件打开并重新应用原配置') from save_exc
                 raise routing.RoutingError(
                     '配置保存失败，已自动恢复原分流状态') from save_exc
+            # 仅在启用 -> 关闭的事务成功提交后清理；启动对账和保存失败回滚
+            # 都不能连带修改 Codex 配置。
+            if (result.get('ok') and previous_routing['enabled'] and
+                    not result['config'].get('enabled')):
+                self._close_codex_after_proxy_disabled(result)
             routing.subscription_store.prune_cache(
                 result['config'].get('proxy_providers') or [])
             self._history_record(

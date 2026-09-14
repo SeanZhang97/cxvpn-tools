@@ -456,7 +456,6 @@ class RoutingSchemaTests(unittest.TestCase):
         manager._native_service.apply.return_value = {'transaction_id': 'tx-tun'}
         manager._native_provider_files = mock.Mock(return_value=[])
         manager._wait_native_ready = mock.Mock()
-        manager._sync_codex_proxy = mock.Mock()
         manager._refresh_user_proxy_settings = mock.Mock(return_value=True)
         config = routing.normalize_config({
             **routing.default_config(), 'capture_mode': 'tun',

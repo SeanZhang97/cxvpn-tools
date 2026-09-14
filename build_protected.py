@@ -31,6 +31,10 @@ import shutil
 import subprocess
 import sys
 
+from core.desktop_runtime import ensure_desktop_runtime
+
+ensure_desktop_runtime(wait=True)
+
 import PyInstaller.__main__
 
 from build_runtime import build_routing_service

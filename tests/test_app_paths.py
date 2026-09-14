@@ -162,13 +162,16 @@ class AppPathsTest(unittest.TestCase):
             self._write(target / 'config.json', current_value)
             self._write(target / app_paths.STATE_DATABASE_NAME, 'database')
             self._write(portable / 'config.json', legacy_value)
+            self._write(portable / 'codex_proxy_snapshot.json', 'old snapshot')
+            self._write(portable / 'routing' / 'providers' / 'old.yaml', 'old cache')
+            self._write(base / 'old-local' / 'routing' / 'history' / 'old.json', '{}')
             now = time.time()
             os.utime(target / 'config.json', (now - 60, now - 60))
             os.utime(portable / 'config.json', (now, now))
 
             result = app_paths.migrate_legacy_user_data(
                 data_root=str(target), legacy_roots=[str(portable)],
-                legacy_local_root=str(base / 'missing-old-local'),
+                legacy_local_root=str(base / 'old-local'),
                 bundled_rule_pack_root=str(base / 'missing-rule-packs'))
 
             self.assertEqual(result['warnings'], [])
@@ -176,10 +179,11 @@ class AppPathsTest(unittest.TestCase):
                 (target / 'config.json').read_text(encoding='utf-8'),
                 current_value)
             self.assertEqual(result['replaced'], [])
-            self.assertEqual(
-                result['conflicts'][0]['reason'], 'canonical-state-present')
-            backup = pathlib.Path(result['conflicts'][0]['backup'])
-            self.assertEqual(backup.read_text(encoding='utf-8'), legacy_value)
+            self.assertEqual(result['conflicts'], [])
+            self.assertEqual(result['copied'], [])
+            self.assertFalse((target / 'codex_proxy_snapshot.json').exists())
+            self.assertFalse((target / 'routing').exists())
+            self.assertEqual((portable / 'config.json').read_text(encoding='utf-8'), legacy_value)
 
     def test_migration_never_replaces_valid_target_with_invalid_config(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -14,13 +14,23 @@
   `taskkill /F /IM "CXVPNTools.exe"`；首次名称迁移时同时关闭旧版
   `CX VPN TOOLS.exe` 和 `CXVPN管理器.exe`，存在同源 python 进程时一并
   `Stop-Process -Force`，再开始打包（否则输出文件被占用）。
-- `build.py` 自带用户配置保留（config.json 打包前后自动备份恢复），打包后
-  核对 `dist/CXVPNTools/config.json` 内容未丢失、exe 时间戳为最新。
+- `build.py` 自带用户主库备份和配置摘要核对；打包前后核对真实用户目录中的
+  `state.sqlite3` 配置和兼容 `config.json` 未丢失、exe 时间戳为最新。
+  `dist/CXVPNTools/` 不应携带用户配置、主库或凭据。
 - 打包耗时以实际为准（通常数分钟），失败时按构建日志排查，不因超时中断。
 - 打包成功并完成配置与产物核对后，**自动启动新版**
   `dist/CXVPNTools/CXVPNTools.exe`，无需询问；启动后确认进程存在。若启动失败，
   按启动错误排查，并在交付中如实说明。
 - 打包和重启均视为交付的一部分：如实说明产物路径、配置保留结果与新版是否已启动。
+
+## 单一用户数据源
+
+- 安装版、源码版和直接打包版必须读写同一份 `%LOCALAPPDATA%\CXVPNTools` 用户数据，
+  不得按 exe/工作区目录另建活动配置。SQLite 是主存储，JSON 仅用于首次导入和兼容导出。
+- 主库已存在时不再从旧安装目录自动合并用户数据；历史和恢复备份不是另一份活动数据源。
+- 从 Codex 等打包应用启动时，逻辑路径可能被重定向到启动器的 LocalCache。
+  必须保留 `desktop_runtime` 的实际文件路径检查与桌面启动流程；不得只比较路径字符串或
+  包身份就声称读取了主库。打包、重启后的配置核对应在同一真实桌面数据视图中执行。
 
 ## 受保护打包（build_protected.py）
 

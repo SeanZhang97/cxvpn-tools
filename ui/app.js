@@ -126,12 +126,9 @@ async function refreshCodexPage() {
     } else if (Array.isArray(state.deviated_fields) && state.deviated_fields.length) {
       text = `Codex 代理已开启（${state.synced_fields} 个托管字段）；其中 ${state.deviated_fields.length} 个字段被手动修改，关闭代理时将跳过。`;
     } else if (state.last_mixed_port && state.mixed_port !== state.last_mixed_port) {
-      text = `Codex 代理上次开启端口为 ${state.last_mixed_port}，当前端口已变为 ${state.mixed_port}；可重新开启。`;
+      text = `Codex 代理上次开启端口为 ${state.last_mixed_port}，当前端口已变为 ${state.mixed_port}；请手动关闭后重新开启以更新端口。`;
     } else {
       text = `Codex 代理已开启（端口 ${state.last_mixed_port}）。已运行的 Codex 需要重启才会加载。`;
-    }
-    if (state.system_proxy_mode && state.routing_enabled) {
-      text += ' 代理有效运行时本工具也会自动校正。';
     }
     summary.textContent = text;
     if (detail) {

@@ -199,10 +199,10 @@ def _merge_directory(source, target, copied, warnings):
 def migrate_legacy_user_data(data_root=None, legacy_roots=None,
                              legacy_local_root=None,
                              bundled_rule_pack_root=None):
-    """把便携目录和旧产品 LocalAppData 数据合并到当前用户目录。
+    """首次建立主库前，把旧数据合并到当前用户目录。
 
-    普通文件只复制目标中不存在的内容；配置冲突时保留有效且较新的版本，
-    并把另一版本备份到用户目录。不删除旧数据，也不跟随符号链接。
+    主库已存在时不再读取安装目录或旧产品目录中的用户数据；资源规则包
+    仍可补齐。首次迁移不删除旧数据，也不跟随符号链接。
     """
     target_root = os.path.abspath(data_root or user_data_root())
     copied = []
@@ -222,13 +222,15 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
             'warnings': [f'{target_root}: {type(exc).__name__}: {exc}'],
         }
 
-    if legacy_roots is None:
+    canonical_state_exists = os.path.isfile(
+        os.path.join(target_root, STATE_DATABASE_NAME))
+    if canonical_state_exists:
+        roots = []
+    elif legacy_roots is None:
         roots = [install_root(), resource_root()]
     else:
         roots = list(legacy_roots)
     seen = set()
-    allow_config_replace = not os.path.isfile(
-        os.path.join(target_root, STATE_DATABASE_NAME))
     for root in roots:
         if not root:
             continue
@@ -243,7 +245,7 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
             if filename == 'config.json':
                 _merge_config_file(
                     source, target, target_root, copied, replaced, conflicts,
-                    blocking, warnings, allow_replace=allow_config_replace)
+                    blocking, warnings)
             else:
                 _copy_file_if_missing(source, target, copied, warnings)
         for dirname in USER_DATA_DIRS:
@@ -268,9 +270,10 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
     if old_local is None:
         old_local = os.path.join(
             os.path.dirname(target_root), LEGACY_APP_DATA_NAME)
-    for relative in (
+    legacy_directories = () if canonical_state_exists else (
             os.path.join('routing', 'providers'),
-            os.path.join('routing', 'history')):
+            os.path.join('routing', 'history'))
+    for relative in legacy_directories:
         _merge_directory(
             os.path.join(old_local, relative),
             os.path.join(target_root, relative), copied, warnings)

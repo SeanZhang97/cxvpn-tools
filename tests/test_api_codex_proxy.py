@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """api.py 中 Codex 交互接口的离线测试：不访问真实 Codex、网络、服务或注册表。"""
+import threading
 import unittest
 from unittest import mock
 
 import api
 
-from core import codex_proxy
+from core import codex_proxy, routing
 
 
 class ApiCodexProxyTests(unittest.TestCase):
@@ -111,6 +112,119 @@ class ApiCodexProxyTests(unittest.TestCase):
         self.assertEqual(18080, state['mixed_port'])
         self.assertEqual(
             ['features.respect_system_proxy'], state['deviated_fields'])
+
+    def test_status_and_view_never_sync_or_restore_when_routing_enabled(self):
+        target = self.instance({'enabled': True, 'mixed_port': 19000})
+        with mock.patch.object(codex_proxy, 'sync') as sync, \
+                mock.patch.object(codex_proxy, 'restore') as restore, \
+                mock.patch.object(codex_proxy, 'status', return_value={
+                    'config_exists': True, 'path': 'offline/config.toml',
+                    'parse_error': '', 'snapshot_exists': True, 'snapshot_fields': 17,
+                    'last_mixed_port': 17890, 'synced_fields': 17, 'deviated_fields': [],
+                }), \
+                mock.patch.object(codex_proxy, 'read_config', return_value={'ok': True}):
+            for _ in range(2):
+                state = target.get_codex_status()
+                self.assertTrue(target.read_codex_config()['ok'])
+                self.assertEqual(state['mixed_port'], 19000)
+                self.assertEqual(state['last_mixed_port'], 17890)
+            sync.assert_not_called()
+            restore.assert_not_called()
+
+
+class ApiCodexProxyCloseTests(unittest.TestCase):
+    def setUp(self):
+        for target, name, options in (
+                ('api.cfgmod.save', 'save', {}),
+                ('api.routing.subscription_store.prune_cache', 'prune', {}),
+                ('api.codex_proxy.sync', 'sync', {}),
+                ('api.codex_proxy.restore', 'restore', {
+                    'return_value': {'ok': True, 'changed': True}})):
+            patcher = mock.patch(target, **options)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        self.sync.assert_not_called()
+
+    def instance(self, enabled=True):
+        target = api.Api.__new__(api.Api)
+        target.cfg = {'routing': routing.normalize_config({
+            'enabled': enabled, 'mixed_port': 19000})}
+        target._lock = threading.Lock()
+        target._routing_lock = threading.Lock()
+        target.log = mock.Mock()
+        target.routing = mock.Mock()
+        target.routing_history = mock.Mock()
+        target._poke_ui_state = mock.Mock()
+        target._start_routing_standby_reconcile = mock.Mock()
+        target.routing.apply.side_effect = lambda value, **_: {
+            'ok': True, 'config': value, 'warnings': [], 'msg': '配置已应用'}
+        return target
+
+    def test_disable_from_page_home_and_tray_cleans_only_after_commit(self):
+        for entry in ('page', 'home', 'tray'):
+            with self.subTest(entry=entry):
+                target = self.instance()
+                self.save.reset_mock()
+                self.restore.reset_mock()
+                self.save.side_effect = lambda _: self.restore.assert_not_called()
+
+                def restore(**_):
+                    self.save.assert_called_once()
+                    self.assertFalse(target.cfg['routing']['enabled'])
+                    return {'ok': True, 'changed': True}
+
+                self.restore.side_effect = restore
+                if entry == 'page':
+                    result = target.apply_routing({**target.cfg['routing'], 'enabled': False})
+                elif entry == 'home':
+                    result = target.set_routing_enabled(False)
+                else:
+                    result = target.desktop_toggle_routing()
+                self.assertTrue(result['ok'])
+                self.assertIn('需重启 Codex', result['msg'])
+                self.restore.assert_called_once_with(logger=target.log)
+                target.routing.apply.assert_called_once()
+
+    def test_enable_port_change_and_already_disabled_save_leave_codex_alone(self):
+        for previous, requested, port in ((False, True, 19000),
+                                          (True, True, 19100),
+                                          (False, False, 19000)):
+            with self.subTest(previous=previous, requested=requested, port=port):
+                target = self.instance(previous)
+                result = target.apply_routing({
+                    **target.cfg['routing'], 'enabled': requested, 'mixed_port': port})
+                self.assertTrue(result['ok'])
+                self.restore.assert_not_called()
+
+    def test_failed_disable_or_config_rollback_never_cleans_codex(self):
+        for stage in ('service', 'save'):
+            with self.subTest(stage=stage):
+                target = self.instance()
+                if stage == 'service':
+                    target.routing.apply.side_effect = routing.RoutingError('offline failure')
+                else:
+                    self.save.side_effect = OSError('offline save failure')
+                result = target.set_routing_enabled(False)
+                self.assertFalse(result['ok'])
+                self.assertTrue(target.cfg['routing']['enabled'])
+                self.assertEqual(target.routing.apply.call_count, 1 if stage == 'service' else 2)
+                self.restore.assert_not_called()
+
+    def test_cleanup_failure_or_manual_conflict_preserves_successful_proxy_stop(self):
+        for cleanup in ({'ok': False, 'warning': 'offline failure'},
+                        OSError('offline interruption'),
+                        {'ok': True, 'changed': True, 'warnings': ['features.respect_system_proxy']}):
+            with self.subTest(cleanup=type(cleanup).__name__):
+                target = self.instance()
+                self.restore.side_effect = cleanup if isinstance(cleanup, Exception) else None
+                self.restore.return_value = cleanup
+                result = target.set_routing_enabled(False)
+                self.assertTrue(result['ok'])
+                self.assertFalse(target.cfg['routing']['enabled'])
+                self.assertTrue(result['warnings'])
+                target.routing.apply.assert_called_once()
 
 
 if __name__ == '__main__':

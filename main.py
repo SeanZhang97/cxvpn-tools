@@ -15,6 +15,9 @@ if __name__ == '__main__' and '--storage-recovery-probe' in sys.argv:
     raise SystemExit(0)
 
 from core import app_paths
+from core.desktop_runtime import ensure_desktop_runtime
+
+ensure_desktop_runtime()
 
 _DATA_MIGRATION = app_paths.migrate_legacy_user_data()
 
@@ -43,7 +46,15 @@ def _boot_log(msg):
 
 def _run_app():
     startup_mode = '--startup' in sys.argv[1:]
+    from core import config, state_store
+    config_root = os.path.dirname(config.CFG_PATH)
+    if os.path.normcase(config_root) != os.path.normcase(DATA_ROOT):
+        raise RuntimeError('应用配置路径与用户数据目录不一致，已停止启动')
     api = Api()
+    _boot_log(
+        f'config loaded: user_data_root={DATA_ROOT}; '
+        f'database={state_store.database_path(config_root)}; '
+        f'revision={state_store.current_revision(config_root)}')
     ui = os.path.join(BASE, 'ui', 'index.html')
     win = webview.create_window(
         WINDOW_TITLE, ui, js_api=api,
