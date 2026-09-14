@@ -22,6 +22,7 @@ USER_DATA_FILES = (
     'codex_proxy_snapshot.json',
 )
 USER_DATA_DIRS = (
+    'config-history',
     'webview_data',
     'browser_data',
     'captcha_cache',
@@ -31,6 +32,7 @@ USER_DATA_DIRS = (
 )
 RULE_PACK_FILES = ('local-direct-v1.txt', 'cn-direct-v1.txt')
 MIGRATION_BACKUP_DIR = 'migration-backups'
+STATE_DATABASE_NAME = 'state.sqlite3'
 
 
 def resource_root():
@@ -120,7 +122,7 @@ def _replace_file(source, target):
 
 
 def _merge_config_file(source, target, target_root, copied, replaced,
-                       conflicts, blocking, warnings):
+                       conflicts, blocking, warnings, allow_replace=True):
     """合并主配置；不同内容按有效性和修改时间择新，并保留另一份。"""
     if not os.path.isfile(source) or os.path.islink(source):
         return
@@ -136,7 +138,8 @@ def _merge_config_file(source, target, target_root, copied, replaced,
         source_valid = _valid_config_file(source)
         target_valid = _valid_config_file(target)
         source_newer = os.stat(source).st_mtime_ns > os.stat(target).st_mtime_ns
-        use_source = source_valid and (not target_valid or source_newer)
+        use_source = (allow_replace and source_valid and
+                      (not target_valid or source_newer))
         discarded = target if use_source else source
         discarded_digest = target_digest if use_source else source_digest
         backup = _preserve_config_copy(
@@ -157,7 +160,8 @@ def _merge_config_file(source, target, target_root, copied, replaced,
             'target': target,
             'kept': source if use_source else target,
             'backup': backup,
-            'reason': ('target-invalid' if use_source and not target_valid else
+            'reason': ('canonical-state-present' if not allow_replace else
+                       'target-invalid' if use_source and not target_valid else
                        'source-newer' if use_source else
                        'source-invalid' if not source_valid else
                        'target-newer-or-equal'),
@@ -223,6 +227,8 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
     else:
         roots = list(legacy_roots)
     seen = set()
+    allow_config_replace = not os.path.isfile(
+        os.path.join(target_root, STATE_DATABASE_NAME))
     for root in roots:
         if not root:
             continue
@@ -237,7 +243,7 @@ def migrate_legacy_user_data(data_root=None, legacy_roots=None,
             if filename == 'config.json':
                 _merge_config_file(
                     source, target, target_root, copied, replaced, conflicts,
-                    blocking, warnings)
+                    blocking, warnings, allow_replace=allow_config_replace)
             else:
                 _copy_file_if_missing(source, target, copied, warnings)
         for dirname in USER_DATA_DIRS:

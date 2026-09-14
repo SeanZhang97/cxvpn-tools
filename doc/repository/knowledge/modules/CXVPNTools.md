@@ -3,7 +3,7 @@
 模块: 业务工具 | 入口: `main.py`（pywebview 窗口）| 后端桥接: `api.py`
 后台线程: `core/worker.py` | 连接编排: `core/vpn_service.py` | 构建: `build.py` | 界面: `ui/`
 内置浏览器: `core/browser_win.py`（WebView2 原生窗口 + JS 桥接）
-最后验证: 2026-09-06 | 分支: main
+最后验证: 2026-09-14 | 分支: main（工作区）
 
 侧栏品牌区使用单行 `CXVPN` + `Tools` 组合，与 44px 图标垂直居中；
 产品名、窗口标题、可执行文件与打包目录统一为 `CXVPNTools`。
@@ -57,6 +57,8 @@
   `Local\CXVPNManager.Singleton.v1` 以阻止新旧版本并行。重复启动优先查找标题为
   `CXVPNTools` 的窗口，并兼容唤醒旧版 `CX VPN TOOLS` / `CXVPN管理器`窗口，
   不会创建第二个 Api、worker 或托盘图标。
+  当前产品名的 Run 项只要非空就表示用户已启用开机启动；程序取得单实例锁后会把陈旧的同名
+  启动命令校正到当前 EXE 绝对路径，并继续删除旧产品名入口，避免下次登录再次先启动旧安装目录。
   仅 `CloseReason.UserClosing` 且 `close_to_tray=true` 时拦截关闭；关机、注销和显式
   退出必须放行。`CloseReason.WindowsShutDown/TaskManagerClosing` 会先经
   `on_os_shutdown` 同步清扫本地系统代理残留（见 `modules/系统代理残留清扫.md`），

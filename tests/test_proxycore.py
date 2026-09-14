@@ -110,6 +110,21 @@ class ProxyCoreConfirmationTests(unittest.TestCase):
         api.routing._fast_toggle_system_proxy.assert_called_once_with(
             mock.ANY, True)
 
+    def test_startup_preserves_active_foreign_system_proxy(self):
+        api = self._api_for_startup_reconcile(True)
+        with mock.patch(
+                'api.routing.windows_system_proxy',
+                return_value='http://127.0.0.1:7897'):
+            api._start_routing_standby_reconcile()
+            api._routing_standby_thread.join(1)
+
+        api.routing._fast_toggle_system_proxy.assert_not_called()
+        api.routing.apply.assert_not_called()
+        api.routing._sync_codex_proxy.assert_not_called()
+        self.assertTrue(any(
+            '保留当前代理并跳过 CXVPN 自动接管' in call.args[0]
+            for call in api.log.call_args_list))
+
     def test_startup_clears_only_our_stale_proxy_when_persisted_disabled(self):
         api = self._api_for_startup_reconcile(False)
         api.routing._can_fast_toggle_system_proxy.return_value = False

@@ -107,6 +107,8 @@ assert.match(app, /中断授权流程/);
 assert.match(app, /function handleRenewalAction/);
 assert.match(app, /中断自动化/);
 assert.match(app, /\$\('btn-br-automation'\)\.onclick = handleRenewalAction/);
+assert.doesNotMatch(app, /save_config\(CFG\)/,
+  '设置保存必须提交字段级 patch，禁止用过期页面快照覆盖整份配置');
 assert.match(app, /tone: 'warning'/);
 assert.match(app, /`show toast-\$\{tone\}`/);
 assert.match(app, /\['success', 'error', 'warning', 'info'\]/);

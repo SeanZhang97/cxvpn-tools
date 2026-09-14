@@ -152,6 +152,35 @@ class AppPathsTest(unittest.TestCase):
             backup = pathlib.Path(result['conflicts'][0]['backup'])
             self.assertEqual(backup.read_text(encoding='utf-8'), old_value)
 
+    def test_migration_never_replaces_config_after_state_database_exists(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = pathlib.Path(temp)
+            portable = base / 'portable'
+            target = base / 'Local' / 'CXVPNTools'
+            current_value = '{"phone":"current"}'
+            legacy_value = '{"phone":"newer legacy"}'
+            self._write(target / 'config.json', current_value)
+            self._write(target / app_paths.STATE_DATABASE_NAME, 'database')
+            self._write(portable / 'config.json', legacy_value)
+            now = time.time()
+            os.utime(target / 'config.json', (now - 60, now - 60))
+            os.utime(portable / 'config.json', (now, now))
+
+            result = app_paths.migrate_legacy_user_data(
+                data_root=str(target), legacy_roots=[str(portable)],
+                legacy_local_root=str(base / 'missing-old-local'),
+                bundled_rule_pack_root=str(base / 'missing-rule-packs'))
+
+            self.assertEqual(result['warnings'], [])
+            self.assertEqual(
+                (target / 'config.json').read_text(encoding='utf-8'),
+                current_value)
+            self.assertEqual(result['replaced'], [])
+            self.assertEqual(
+                result['conflicts'][0]['reason'], 'canonical-state-present')
+            backup = pathlib.Path(result['conflicts'][0]['backup'])
+            self.assertEqual(backup.read_text(encoding='utf-8'), legacy_value)
+
     def test_migration_never_replaces_valid_target_with_invalid_config(self):
         with tempfile.TemporaryDirectory() as temp:
             base = pathlib.Path(temp)

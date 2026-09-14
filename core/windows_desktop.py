@@ -149,9 +149,10 @@ def set_startup_enabled(enabled, registry=winreg, command=None):
 
 
 def migrate_legacy_startup_registration(registry=winreg, command=None):
-    """将旧产品名的 Run 项平滑迁移到当前名称。
+    """将已启用的 Run 项校正到当前程序并清理旧产品名。
 
-    只迁移启动项名称和可执行文件路径，不触碰用户数据。
+    只维护启动项名称和可执行文件路径，不触碰用户数据。已有当前产品名
+    但路径陈旧时仍视为用户已启用开机启动，并更新到当前可执行文件。
     """
     try:
         read_key = registry.OpenKey(
@@ -160,10 +161,10 @@ def migrate_legacy_startup_registration(registry=winreg, command=None):
         return False
     try:
         try:
-            registry.QueryValueEx(read_key, APP_NAME)
-            current_exists = True
+            current_value, _ = registry.QueryValueEx(read_key, APP_NAME)
+            current_value = str(current_value or '')
         except OSError:
-            current_exists = False
+            current_value = ''
         legacy_values = []
         for name in LEGACY_APP_NAMES:
             try:
@@ -173,7 +174,13 @@ def migrate_legacy_startup_registration(registry=winreg, command=None):
                 continue
     finally:
         registry.CloseKey(read_key)
-    if not legacy_values:
+    enabled = bool(current_value.strip() or any(
+        value.strip() for value in legacy_values))
+    expected = command or startup_command()
+    needs_update = (enabled and
+                    os.path.normcase(current_value.strip()) !=
+                    os.path.normcase(expected.strip()))
+    if not needs_update and not legacy_values:
         return False
     try:
         write_key = registry.CreateKeyEx(
@@ -181,10 +188,10 @@ def migrate_legacy_startup_registration(registry=winreg, command=None):
     except OSError:
         return False
     try:
-        if not current_exists and any(value.strip() for value in legacy_values):
+        if needs_update:
             registry.SetValueEx(
                 write_key, APP_NAME, 0, registry.REG_SZ,
-                command or startup_command())
+                expected)
         for name in LEGACY_APP_NAMES:
             try:
                 registry.DeleteValue(write_key, name)

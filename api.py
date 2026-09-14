@@ -327,14 +327,19 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                 state = self.routing._service_state()
 
                 # 异常重启可能留下仍指向 CXVPN mixed-port 的 Windows 手动代理，
-                # 但持久化配置已经是关闭状态；反过来，配置仍是开启状态时也要
-                # 在服务已运行但系统代理未恢复的情况下补做一次接管。只处理精确
-                # 匹配当前 mixed-port 的端点，不触碰第三方代理配置。
+                # 但持久化配置已经是关闭状态；反过来，配置仍是开启状态且系统
+                # 代理处于关闭状态时，可以补做一次接管。若用户已经切换到其它
+                # 本地代理，则以当前系统选择为准，启动恢复不得覆盖第三方代理。
                 expected_proxy = (
                     f'http://127.0.0.1:{current["mixed_port"]}'
                     if current['capture_mode'] == 'system-proxy' else '')
                 actual_proxy = routing.windows_system_proxy()
                 if expected_proxy and current['enabled']:
+                    if actual_proxy and actual_proxy != expected_proxy:
+                        self.log(
+                            f'[routing] {source}检测到其它系统代理 '
+                            f'{actual_proxy}，保留当前代理并跳过 CXVPN 自动接管')
+                        return
                     runtime_ok = bool(
                         state.get('installed') and
                         state.get('backend') == 'native' and
@@ -723,18 +728,21 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             version, timeout))
 
     def save_config(self, cfg):
-        if not isinstance(cfg, dict) or ('proxy_providers' in cfg and 'routing' not in cfg):
-            raise ValueError('分流配置必须通过专用配置入口提交')
+        if not isinstance(cfg, dict):
+            raise ValueError('配置更新必须是对象')
+        protected = {
+            'authorization', 'credential_status', 'creds', 'routing'}
+        if protected.intersection(cfg):
+            raise ValueError(
+                '当前界面提交了过期的完整配置，请重启软件后再保存')
+        unknown = set(cfg).difference(cfgmod.DEFAULT)
+        if unknown:
+            raise ValueError('配置更新包含未知字段')
         with self._lock:
             old_default = self.cfg.get('vpn_name', '')
             old_auto_connect = bool(self.cfg.get('auto_connect', False))
-            authorization = self.cfg.get('authorization') or {}
-            routing_config = self.cfg.get('routing') or routing.default_config()
             committed = json.loads(json.dumps(self.cfg))
             committed.update(json.loads(json.dumps(cfg)))
-            committed['authorization'] = authorization
-            # 分流状态只能通过 apply_routing 原子变更，避免普通设置保存绕过预检。
-            committed['routing'] = routing_config
             cfgmod.save(committed)
             self.cfg = committed
             new_default = self.cfg.get('vpn_name', '')

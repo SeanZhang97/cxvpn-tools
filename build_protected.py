@@ -34,6 +34,7 @@ import sys
 import PyInstaller.__main__
 
 from build_runtime import build_routing_service
+from build_lifecycle import complete_build, prepare_build
 from core.app_paths import migrate_legacy_user_data
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -196,9 +197,12 @@ def verify_artifacts(staged):
 
 
 def main():
+    user_config_snapshot = prepare_build()
     build_routing_service()
     legacy_roots = []
-    for root in (DIST_ROOT, *LEGACY_DIST_ROOTS):
+    for root in (
+            DIST_ROOT, *LEGACY_DIST_ROOTS,
+            *user_config_snapshot.get('running_roots', [])):
         legacy_roots.extend((root, os.path.join(root, '_internal')))
     migration = migrate_legacy_user_data(
         legacy_roots=legacy_roots,
@@ -226,6 +230,7 @@ def main():
         [SPEC_PATH, '--noconfirm',
          '--distpath', DIST_DIR, '--workpath', WORK])
     verify_artifacts(staged)
+    complete_build(user_config_snapshot, DIST_ROOT, APP_NAME)
     print('[build-protected] 完成: %s'
           % DIST_ROOT)
 

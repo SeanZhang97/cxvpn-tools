@@ -376,12 +376,30 @@ class MultiVpnApiTests(unittest.TestCase):
         instance = self.make_api([profile('VPN A')])
         instance.cfg['authorization'] = {
             'last_success_at': 1000, 'expires_at': 2000}
+        instance.cfg['phone'] = '13800000000'
+        instance.cfg['creds'] = {
+            'VPN A': {'user': 'alice', 'pass': 'secret'}}
 
         instance.save_config({'vpn_name': 'VPN B', 'auto_connect': True})
 
         self.assertEqual(instance.cfg['authorization']['expires_at'], 2000)
+        self.assertEqual(instance.cfg['phone'], '13800000000')
+        self.assertEqual(instance.cfg['creds']['VPN A']['user'], 'alice')
         instance.worker.update_default_target.assert_called_once_with('VPN B')
         instance.worker.reset_backoff.assert_not_called()
+
+    @patch('api.cfgmod.save')
+    def test_frontend_rejects_stale_full_config_before_overwriting_credentials(
+            self, save):
+        instance = self.make_api([profile('VPN A')])
+        instance.cfg['creds'] = {
+            'VPN A': {'user': 'alice', 'pass': 'secret'}}
+
+        with self.assertRaisesRegex(ValueError, '过期的完整配置'):
+            instance.save_config({'auto_connect': True, 'creds': {}})
+
+        save.assert_not_called()
+        self.assertEqual(instance.cfg['creds']['VPN A']['user'], 'alice')
 
     @patch('api.cfgmod.save')
     def test_enabling_auto_connect_uses_non_destructive_resume(self, save):

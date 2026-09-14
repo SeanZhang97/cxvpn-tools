@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """core/config.py - 配置读写（config.json 位于当前用户 LocalAppData）。"""
 import copy
+import hashlib
 import json
 import os
+import shutil
 import tempfile
 
 from core import app_paths
@@ -12,6 +14,8 @@ from core import state_store
 BASE = app_paths.user_data_root()
 CFG_PATH = os.path.join(BASE, 'config.json')
 CFG_BACKUP_PATH = CFG_PATH + '.bak'
+CFG_HISTORY_DIR = os.path.join(BASE, 'config-history')
+CFG_HISTORY_LIMIT = 20
 
 DEFAULT = {
     'app_update': {
@@ -169,6 +173,7 @@ def _export_json(cfg):
             f.flush()
             os.fsync(f.fileno())
         if os.path.isfile(CFG_PATH):
+            _preserve_config_history(CFG_PATH)
             backup_path = CFG_PATH + '.bak'
             backup_temp = backup_path + '.tmp'
             with open(CFG_PATH, 'rb') as source, open(backup_temp, 'wb') as target:
@@ -189,3 +194,31 @@ def _export_json(cfg):
             pass
         raise
     return True
+
+
+def _preserve_config_history(source):
+    """在覆盖兼容导出前保存可恢复快照，并限制历史数量。"""
+    with open(source, 'rb') as stream:
+        body = stream.read()
+    # 损坏的兼容文件不进入恢复历史；SQLite 主存储仍不受影响。
+    try:
+        valid = isinstance(json.loads(body.decode('utf-8-sig')), dict)
+    except (UnicodeError, json.JSONDecodeError):
+        valid = False
+    if not valid:
+        return
+    digest = hashlib.sha256(body).hexdigest()
+    modified_ns = os.stat(source).st_mtime_ns
+    os.makedirs(CFG_HISTORY_DIR, exist_ok=True)
+    target = os.path.join(
+        CFG_HISTORY_DIR, f'config-{modified_ns}-{digest[:12]}.json')
+    if not os.path.exists(target):
+        shutil.copy2(source, target)
+    snapshots = sorted(
+        (entry for entry in os.scandir(CFG_HISTORY_DIR)
+         if entry.is_file(follow_symlinks=False) and
+         entry.name.startswith('config-') and entry.name.endswith('.json')),
+        key=lambda entry: (entry.stat().st_mtime_ns, entry.name),
+        reverse=True)
+    for entry in snapshots[CFG_HISTORY_LIMIT:]:
+        os.unlink(entry.path)

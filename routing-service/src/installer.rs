@@ -61,7 +61,7 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
             .map_err(|e| format!("备份旧 GeoIP 数据库失败: {e}"))?;
     }
 
-    stop_and_delete_service();
+    stop_and_delete_service()?;
     let result = (|| -> AppResult<()> {
         fs::copy(&source_service, &target_service).map_err(|e| format!("复制服务程序失败: {e}"))?;
         if !target_mihomo.is_file()
@@ -91,7 +91,7 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
     })();
 
     if let Err(error) = result {
-        stop_and_delete_service();
+        let _ = stop_and_delete_service();
         if old_geoip_available && geoip_backup.is_file() {
             let _ = fs::create_dir_all(&data_dir);
             let _ = fs::copy(&geoip_backup, &target_geoip);
@@ -117,8 +117,7 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
 }
 
 pub fn uninstall() -> AppResult<()> {
-    stop_and_delete_service();
-    Ok(())
+    stop_and_delete_service()
 }
 
 fn create_service(binary: &Path) -> AppResult<()> {
@@ -160,28 +159,94 @@ fn start_service() -> AppResult<()> {
     Err("Windows Service 未进入 Running 状态".to_string())
 }
 
-fn stop_and_delete_service() {
-    let query = run_output("sc.exe", &["query", SERVICE_ID]);
-    if !query.as_ref().is_ok_and(|value| value.status.success()) {
-        return;
+fn stop_and_delete_service() -> AppResult<()> {
+    if query_service()?.is_none() {
+        return Ok(());
     }
     let _ = run_output("sc.exe", &["stop", SERVICE_ID]);
+    if !wait_until_stopped_or_missing(40)? {
+        let query = match query_service()? {
+            Some(value) => value,
+            None => return Ok(()),
+        };
+        let pid = service_pid(&query.stdout)
+            .ok_or_else(|| "旧路由服务未停止，且无法确认其进程 PID".to_string())?;
+        let pid_text = pid.to_string();
+        run_checked(
+            Path::new("taskkill.exe"), &["/PID", &pid_text, "/T", "/F"])
+            .map_err(|e| format!("强制结束卡住的旧路由服务失败: {e}"))?;
+        if !wait_until_stopped_or_missing(40)? {
+            return Err(format!(
+                "旧路由服务进程 {pid} 已请求终止，但服务未在期限内停止"));
+        }
+    }
+    let delete = run_output("sc.exe", &["delete", SERVICE_ID])?;
     for _ in 0..40 {
-        if let Ok(output) = run_output("sc.exe", &["query", SERVICE_ID]) {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if text.contains("STOPPED") {
-                break;
+        if query_service()?.is_none() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    let detail = String::from_utf8_lossy(if delete.stderr.is_empty() {
+        &delete.stdout
+    } else {
+        &delete.stderr
+    });
+    Err(format!(
+        "旧路由服务未完成删除: {}",
+        detail.trim()))
+}
+
+fn query_service() -> AppResult<Option<Output>> {
+    let output = run_output("sc.exe", &["queryex", SERVICE_ID])?;
+    if output.status.success() {
+        return Ok(Some(output));
+    }
+    let detail = String::from_utf8_lossy(if output.stderr.is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    });
+    if detail.split(|ch: char| !ch.is_ascii_digit())
+        .any(|part| part == "1060")
+    {
+        return Ok(None);
+    }
+    Err(format!("查询路由服务状态失败: {}", detail.trim()))
+}
+
+fn wait_until_stopped_or_missing(attempts: usize) -> AppResult<bool> {
+    for _ in 0..attempts {
+        match query_service()? {
+            None => return Ok(true),
+            Some(output) if service_has_state(&output.stdout, "STOPPED") => {
+                return Ok(true);
             }
+            Some(_) => thread::sleep(Duration::from_millis(250)),
         }
-        thread::sleep(Duration::from_millis(250));
     }
-    let _ = run_output("sc.exe", &["delete", SERVICE_ID]);
-    for _ in 0..40 {
-        if run_output("sc.exe", &["query", SERVICE_ID]).is_ok_and(|value| !value.status.success()) {
-            break;
+    Ok(false)
+}
+
+fn service_has_state(output: &[u8], expected: &str) -> bool {
+    String::from_utf8_lossy(output).lines().any(|line| {
+        line.split_once(':').is_some_and(|(key, value)| {
+            key.trim().eq_ignore_ascii_case("STATE")
+                && value.split_whitespace().any(|part| {
+                    part.eq_ignore_ascii_case(expected)
+                })
+        })
+    })
+}
+
+fn service_pid(output: &[u8]) -> Option<u32> {
+    String::from_utf8_lossy(output).lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if !key.trim().eq_ignore_ascii_case("PID") {
+            return None;
         }
-        thread::sleep(Duration::from_millis(250));
-    }
+        value.trim().parse::<u32>().ok().filter(|pid| *pid > 0)
+    })
 }
 
 fn harden_acl(base: &Path) -> AppResult<()> {
@@ -236,5 +301,29 @@ fn validate_owner_sid(value: &str) -> AppResult<()> {
         Ok(())
     } else {
         Err("当前 Windows 用户 SID 无效".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{service_has_state, service_pid};
+
+    #[test]
+    fn parses_service_state_and_exact_pid_from_queryex() {
+        let output = br#"
+SERVICE_NAME: CXVPNRoutingService
+        STATE              : 2  START_PENDING
+        PID                : 5792
+"#;
+
+        assert!(service_has_state(output, "START_PENDING"));
+        assert!(!service_has_state(output, "STOPPED"));
+        assert_eq!(service_pid(output), Some(5792));
+    }
+
+    #[test]
+    fn rejects_missing_or_zero_service_pid() {
+        assert_eq!(service_pid(b"PID : 0"), None);
+        assert_eq!(service_pid(b"STATE : 1 STOPPED"), None);
     }
 }

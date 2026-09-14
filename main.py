@@ -165,7 +165,7 @@ def main():
         return
     try:
         if migrate_legacy_startup_registration():
-            _boot_log('legacy startup registration migrated to CXVPNTools')
+            _boot_log('startup registration reconciled to current executable')
         _run_app()
     finally:
         instance.close()

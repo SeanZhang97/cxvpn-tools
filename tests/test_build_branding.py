@@ -59,6 +59,12 @@ class BuildBrandingTest(unittest.TestCase):
             self.assertNotIn('saved_rule_packs', source, relative)
             self.assertNotIn('DIST_RULE_PACK_DIR', source, relative)
 
+    def test_packagers_close_old_instances_verify_config_and_start_new_build(self):
+        for relative in ('build.py', 'build_protected.py'):
+            source = (ROOT / relative).read_text(encoding='utf-8')
+            self.assertIn('prepare_build', source, relative)
+            self.assertIn('complete_build', source, relative)
+
 
 if __name__ == '__main__':
     unittest.main()

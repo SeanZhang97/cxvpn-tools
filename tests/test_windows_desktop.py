@@ -146,7 +146,7 @@ class WindowsDesktopTest(unittest.TestCase):
             registry.values[windows_desktop.APP_NAME])
         self.assertNotIn('CX VPN TOOLS', registry.values)
 
-    def test_startup_brand_migration_keeps_existing_current_value(self):
+    def test_startup_registration_repairs_existing_stale_current_value(self):
         registry = _FakeRegistry()
         registry.values[windows_desktop.APP_NAME] = 'current-command'
         registry.values['CXVPN管理器'] = 'legacy-command'
@@ -155,7 +155,7 @@ class WindowsDesktopTest(unittest.TestCase):
             registry=registry, command='replacement-command')
 
         self.assertEqual(
-            'current-command', registry.values[windows_desktop.APP_NAME])
+            'replacement-command', registry.values[windows_desktop.APP_NAME])
         self.assertNotIn('CXVPN管理器', registry.values)
 
     def test_only_user_close_is_hidden_to_tray(self):

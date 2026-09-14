@@ -55,6 +55,9 @@ class RoutingNetworkWorker:
             self._candidate = None
             return
         state = self._manager._native_service.status()
+        if not isinstance(state, dict):
+            self._candidate = None
+            return
         signature = self._manager._config_signature(config)
         if (not state.get('runtime_running') or state.get('runtime_mode') != 'active'
                 or state.get('pending_transaction')
@@ -86,7 +89,8 @@ class RoutingNetworkWorker:
             return
         try:
             latest = self._manager._native_service.status()
-            if (self._stop_event.is_set()
+            if (not isinstance(latest, dict)
+                    or self._stop_event.is_set()
                     or source != (self._config_getter().get('routing') or {})
                     or latest.get('config_sha256') != state.get('config_sha256')
                     or latest.get('mihomo_pid') != state.get('mihomo_pid')

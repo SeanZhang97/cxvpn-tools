@@ -136,6 +136,8 @@ class ProviderTransactionTests(unittest.TestCase):
         self.stack.enter_context(patch('core.app_paths.user_data_root', return_value=self.root))
         self.stack.enter_context(patch.object(config, 'CFG_PATH', os.path.join(self.root, 'config.json')))
         self.stack.enter_context(patch.object(config, 'CFG_BACKUP_PATH', os.path.join(self.root, 'config.json.bak')))
+        self.stack.enter_context(patch.object(
+            config, 'CFG_HISTORY_DIR', os.path.join(self.root, 'config-history')))
         self.cfg = {'routing': {'proxy_providers': [PROVIDER], 'enabled': False}}
 
     def bundle(self, body=b'proxies: []'):
@@ -153,6 +155,15 @@ class ProviderTransactionTests(unittest.TestCase):
         self.assertNotIn('phone', state_store.load_config())
         self.assertEqual(state_store.current_revision(), old_revision)
         self.assertEqual(state_store.load_cache(subscription_store.provider_filename(PROVIDER))['body'], b'proxies: []')
+
+    def test_config_export_keeps_recoverable_previous_versions(self):
+        config.save({**self.cfg, 'phone': '13800000000'})
+        config.save({**self.cfg, 'phone': ''})
+
+        snapshots = list(Path(config.CFG_HISTORY_DIR).glob('config-*.json'))
+        self.assertEqual(len(snapshots), 1)
+        restored = json.loads(snapshots[0].read_text(encoding='utf-8'))
+        self.assertEqual(restored['phone'], '13800000000')
 
     def test_unified_batch_and_restore_without_files_or_network(self):
         with state_store.transaction():

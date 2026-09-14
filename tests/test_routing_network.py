@@ -184,6 +184,15 @@ class NetworkWorkerTests(unittest.TestCase):
         self.worker.check()
         self.scan.assert_not_called()
 
+    def test_unavailable_service_is_deferred_without_scanning(self):
+        self.manager._native_service.status.return_value = None
+        self.manager._native_service.status.side_effect = None
+
+        self.worker.check()
+
+        self.scan.assert_not_called()
+        self.apply.assert_not_called()
+
     def test_different_unapplied_config_is_not_applied_implicitly(self):
         self.state['applied_config_signature'] = 'other'
         self.worker.check()
@@ -196,6 +205,16 @@ class NetworkWorkerTests(unittest.TestCase):
         self.worker.check()
         self.worker.check()
         self.apply.assert_called_once()
+        self.assertFalse(self.lock.locked())
+
+    def test_service_disappearing_before_apply_cancels_candidate(self):
+        self.worker.check()
+        self.clock.return_value = 116
+        self.manager._native_service.status.side_effect = [dict(self.state), None]
+
+        self.worker.check()
+
+        self.apply.assert_not_called()
         self.assertFalse(self.lock.locked())
 
 

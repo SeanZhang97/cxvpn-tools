@@ -10,6 +10,7 @@ import sys
 import PyInstaller.__main__
 
 from build_runtime import build_routing_service
+from build_lifecycle import complete_build, prepare_build
 from core.app_paths import migrate_legacy_user_data
 from core.version import APP_VERSION, APP_VERSION_TUPLE
 
@@ -21,6 +22,8 @@ DIST_ROOT = os.path.join(DIST_DIR, APP_NAME)
 LEGACY_DIST_ROOTS = [
     os.path.join(DIST_DIR, name) for name in LEGACY_APP_NAMES]
 SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
+
+USER_CONFIG_SNAPSHOT = prepare_build()
 
 
 def _write_version_file():
@@ -36,7 +39,9 @@ build_routing_service()
 
 # PyInstaller 会清空 dist；先把旧便携目录中的用户数据复制到 LocalAppData。
 legacy_roots = []
-for root in (DIST_ROOT, *LEGACY_DIST_ROOTS):
+for root in (
+        DIST_ROOT, *LEGACY_DIST_ROOTS,
+        *USER_CONFIG_SNAPSHOT.get('running_roots', [])):
     legacy_roots.extend((root, os.path.join(root, '_internal')))
 migration = migrate_legacy_user_data(
     legacy_roots=legacy_roots,
@@ -77,3 +82,4 @@ args = [
 ]
 # 稳定后改为 '--noconsole'
 PyInstaller.__main__.run(args)
+complete_build(USER_CONFIG_SNAPSHOT, DIST_ROOT, APP_NAME)

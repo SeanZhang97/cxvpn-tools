@@ -435,7 +435,7 @@ async function saveAppUpdateToggle() {
   CFG.app_update = { ...previous, auto_check: input.checked };
   input.disabled = true;
   try {
-    if (await api().save_config(CFG) === false) throw new Error('后端未保存配置');
+    if (await api().save_config({ app_update: CFG.app_update }) === false) throw new Error('后端未保存配置');
     toast({ ok: true, msg: input.checked ? '自动更新检查已开启' : '自动更新检查已关闭' });
   } catch (error) {
     CFG.app_update = previous;
@@ -764,7 +764,7 @@ async function persistSmsSettings(sms) {
   const previous = CFG.sms;
   CFG.sms = sms;
   try {
-    const saved = await api().save_config(CFG);
+    const saved = await api().save_config({ sms });
     if (saved === false) throw new Error('后端未保存配置');
   } catch (e) {
     CFG.sms = previous;
@@ -897,7 +897,7 @@ async function saveToggle(input, key, enabledMessage, disabledMessage) {
   CFG[key] = next;
   input.disabled = true;
   try {
-    const result = await api().save_config(CFG);
+    const result = await api().save_config({ [key]: next });
     if (result === false) throw new Error('后端未保存配置');
     toast({ ok: true, msg: next ? enabledMessage : disabledMessage });
   } catch (e) {
@@ -1212,7 +1212,7 @@ async function saveCxSettings() {
     CFG.renew_hours = hours;
     setFeedback($('cx-result'), '正在保存…', 'loading');
     try {
-      const saved = await api().save_config(CFG);
+      const saved = await api().save_config({ phone, renew_hours: hours });
       if (saved === false) throw new Error('后端未保存配置');
       setFeedback($('cx-result'), '超星账号配置已保存', 'ok');
       toast({ ok: true, msg: '超星账号配置已保存' });
@@ -1241,7 +1241,7 @@ async function persistVlm(vlm) {
   const previous = CFG.vlm;
   CFG.vlm = vlm;
   try {
-    const saved = await api().save_config(CFG);
+    const saved = await api().save_config({ vlm });
     if (saved === false) throw new Error('后端未保存配置');
   } catch (e) {
     CFG.vlm = previous;
@@ -1547,7 +1547,7 @@ async function setDefaultVpn(name) {
   const previous = CFG.vpn_name;
   CFG.vpn_name = name;
   try {
-    const saved = await api().save_config(CFG);
+    const saved = await api().save_config({ vpn_name: name });
     if (saved === false) throw new Error('后端未保存配置');
     toast({ ok: true, msg: `已将 ${name} 设为默认 VPN` });
     await syncVpnUi({ forceRefresh: true });
