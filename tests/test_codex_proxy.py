@@ -31,6 +31,11 @@ class CodexProxyTests(unittest.TestCase):
         return os.path.join(
             self.data_root, codex_proxy.SNAPSHOT_FILE_NAME)
 
+    @property
+    def transport_snapshot_path(self):
+        return os.path.join(
+            self.data_root, codex_proxy.TRANSPORT_SNAPSHOT_FILE_NAME)
+
     def write_config(self, text):
         os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
         with open(self.config_path, 'w', encoding='utf-8') as stream:
@@ -47,6 +52,10 @@ class CodexProxyTests(unittest.TestCase):
     def restore(self):
         return codex_proxy.restore(
             environ=self.environ, data_root=self.data_root)
+
+    def set_wss(self, enabled):
+        return codex_proxy.set_websocket_enabled(
+            enabled, environ=self.environ, data_root=self.data_root)
 
     def test_missing_config_creates_target_sections(self):
         result = self.sync()
@@ -317,6 +326,219 @@ class CodexProxyTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertFalse(result.get('changed'))
         self.assertEqual(original, self.read_config())
+
+    def test_transport_defaults_to_wss_preferred_without_config(self):
+        state = codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)
+
+        self.assertEqual('wss_preferred', state['transport_mode'])
+        self.assertIs(True, state['websocket_enabled'])
+        self.assertEqual('openai', state['active_provider'])
+        self.assertFalse(state['transport_managed'])
+
+    def test_transport_http_only_adds_managed_provider_and_preserves_others(self):
+        self.write_config(
+            '# 中文 🇨🇳 é\n'
+            'model_provider = "openai"\n\n'
+            '[model_providers.openai_http]\n'
+            'name = "用户 Provider"\n'
+            'base_url = "https://example.test"\n')
+
+        result = self.set_wss(False)
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['changed'])
+        parsed = self.parse_config()
+        self.assertEqual(codex_proxy.HTTP_PROVIDER_ID, parsed['model_provider'])
+        self.assertEqual(
+            codex_proxy.HTTP_PROVIDER,
+            parsed['model_providers'][codex_proxy.HTTP_PROVIDER_ID])
+        self.assertEqual(
+            '用户 Provider', parsed['model_providers']['openai_http']['name'])
+        self.assertIn('# 中文 🇨🇳 é', self.read_config())
+        self.assertTrue(os.path.isfile(self.transport_snapshot_path))
+        state = codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertEqual('http_only', state['transport_mode'])
+        self.assertIs(False, state['websocket_enabled'])
+        self.assertTrue(state['transport_managed'])
+
+    def test_transport_repeated_http_only_is_idempotent(self):
+        self.assertTrue(self.set_wss(False)['ok'])
+        first = self.read_config()
+
+        result = self.set_wss(False)
+
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['changed'])
+        self.assertEqual(first, self.read_config())
+
+    def test_transport_restore_restores_explicit_openai_and_removes_provider(self):
+        self.write_config('model_provider = "openai"\n[other]\nvalue = "保留"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+
+        result = self.set_wss(True)
+
+        self.assertTrue(result['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('openai', parsed['model_provider'])
+        self.assertEqual('保留', parsed['other']['value'])
+        self.assertNotIn(codex_proxy.HTTP_PROVIDER_ID, parsed.get('model_providers', {}))
+        self.assertFalse(os.path.exists(self.transport_snapshot_path))
+
+    def test_transport_restore_removes_added_root_key_when_original_missing(self):
+        self.write_config('[other]\nvalue = "保留"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+
+        self.assertTrue(self.set_wss(True)['ok'])
+
+        parsed = self.parse_config()
+        self.assertNotIn('model_provider', parsed)
+        self.assertNotIn(codex_proxy.HTTP_PROVIDER_ID, parsed.get('model_providers', {}))
+
+    def test_transport_rejects_custom_provider_and_same_id_collision(self):
+        for config in (
+                'model_provider = "cm"\n[model_providers.cm]\nname = "CM"\n',
+                'model_provider = "openai"\n'
+                f'[model_providers.{codex_proxy.HTTP_PROVIDER_ID}]\nname = "用户定义"\n'):
+            with self.subTest(config=config):
+                self.write_config(config)
+                result = self.set_wss(False)
+                self.assertFalse(result['ok'])
+                self.assertEqual(config, self.read_config())
+                if os.path.exists(self.transport_snapshot_path):
+                    os.unlink(self.transport_snapshot_path)
+
+    def test_transport_rejects_unsupported_source_and_complex_toml(self):
+        for config in (
+                'openai_base_url = "https://example.test"\n',
+                'profile = "work"\n',
+                '[model_providers.openai]\nsupports_websockets = false\n',
+                '"model_provider" = "openai"\n',
+                f'model_providers = {{ {codex_proxy.HTTP_PROVIDER_ID} = {{ name = "x" }} }}\n'):
+            with self.subTest(config=config):
+                self.write_config(config)
+                result = self.set_wss(False)
+                self.assertFalse(result['ok'])
+                self.assertEqual(config, self.read_config())
+
+    def test_transport_restore_preserves_manually_modified_provider(self):
+        self.write_config('model_provider = "openai"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+        self.write_config(self.read_config().replace(
+            'name = "OpenAI HTTP via CXVPN"', 'name = "用户已修改"'))
+
+        result = self.set_wss(True)
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['warnings'])
+        parsed = self.parse_config()
+        self.assertEqual('openai', parsed['model_provider'])
+        self.assertEqual(
+            '用户已修改',
+            parsed['model_providers'][codex_proxy.HTTP_PROVIDER_ID]['name'])
+        self.assertFalse(os.path.exists(self.transport_snapshot_path))
+
+    def test_transport_user_changed_active_provider_causes_conflict(self):
+        self.write_config('model_provider = "openai"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+        self.write_config(self.read_config().replace(
+            f'model_provider = "{codex_proxy.HTTP_PROVIDER_ID}"',
+            'model_provider = "cm"'))
+
+        result = self.set_wss(True)
+
+        self.assertFalse(result['ok'])
+        self.assertEqual('cm', self.parse_config()['model_provider'])
+        self.assertTrue(codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)['transport_conflict'])
+
+    def test_transport_restore_remains_available_after_unrelated_profile_change(self):
+        self.write_config('model_provider = "openai"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+        self.write_config('profile = "work"\n' + self.read_config())
+
+        result = self.set_wss(True)
+
+        self.assertTrue(result['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('openai', parsed['model_provider'])
+        self.assertEqual('work', parsed['profile'])
+
+    def test_transport_prepared_snapshot_is_reconciled_without_guessing(self):
+        self.write_config('model_provider = "openai"\n')
+        os.makedirs(self.data_root, exist_ok=True)
+        record = {
+            'version': codex_proxy.TRANSPORT_SNAPSHOT_VERSION,
+            'config_path': self.config_path,
+            'phase': 'prepared',
+            'original_model_provider_exists': True,
+            'original_model_provider': 'openai',
+            'provider_created': True,
+            'last_written': {
+                'model_provider': codex_proxy.HTTP_PROVIDER_ID,
+                'provider': codex_proxy.HTTP_PROVIDER,
+            },
+        }
+        with open(self.transport_snapshot_path, 'w', encoding='utf-8') as stream:
+            __import__('json').dump(record, stream, ensure_ascii=False)
+
+        state = codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertEqual('wss_preferred', state['transport_mode'])
+        self.assertFalse(state['transport_conflict'])
+        self.assertTrue(self.set_wss(False)['ok'])
+        self.assertEqual('http_only', codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)['transport_mode'])
+
+    def test_transport_config_write_failure_restores_snapshot_state(self):
+        self.write_config('model_provider = "openai"\n')
+        original = self.read_config()
+        with mock.patch.object(
+                codex_proxy, '_write_config_if_unchanged',
+                side_effect=OSError('中断')):
+            result = self.set_wss(False)
+
+        self.assertFalse(result['ok'])
+        self.assertEqual(original, self.read_config())
+        self.assertFalse(os.path.exists(self.transport_snapshot_path))
+
+    def test_transport_codex_home_change_refuses_old_snapshot(self):
+        self.write_config('model_provider = "openai"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+        changed = dict(self.environ, CODEX_HOME=os.path.join(self.root, 'other-codex'))
+
+        result = codex_proxy.set_websocket_enabled(
+            True, environ=changed, data_root=self.data_root)
+
+        self.assertFalse(result['ok'])
+        self.assertIn('冲突', result['warning'])
+
+    def test_transport_strict_boolean_validation(self):
+        for value in ('false', 0, None):
+            with self.subTest(value=value):
+                result = codex_proxy.set_websocket_enabled(
+                    value, environ=self.environ, data_root=self.data_root)
+                self.assertFalse(result['ok'])
+                self.assertFalse(os.path.exists(self.config_path))
+
+    def test_proxy_and_transport_settings_are_independent(self):
+        self.write_config('model_provider = "openai"\n')
+        self.assertTrue(self.sync(18080)['ok'])
+        self.assertTrue(self.set_wss(False)['ok'])
+
+        self.assertTrue(self.restore()['ok'])
+        parsed = self.parse_config()
+        self.assertEqual(codex_proxy.HTTP_PROVIDER_ID, parsed['model_provider'])
+        self.assertEqual(
+            codex_proxy.HTTP_PROVIDER,
+            parsed['model_providers'][codex_proxy.HTTP_PROVIDER_ID])
+        self.assertNotIn('respect_system_proxy', parsed.get('features', {}))
+
+        self.assertTrue(self.set_wss(True)['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('openai', parsed['model_provider'])
+        self.assertNotIn(codex_proxy.HTTP_PROVIDER_ID, parsed.get('model_providers', {}))
 
     def parse_config(self):
         with open(self.config_path, 'rb') as stream:

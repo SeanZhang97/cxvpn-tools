@@ -822,6 +822,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             current = routing.normalize_config(
                 self._cfg_get().get('routing') or routing.default_config())
             summary = codex_proxy.status(logger=self.log)
+            transport = codex_proxy.transport_status(logger=self.log)
         except (OSError, ValueError, TypeError, routing.RoutingError) as exc:
             self.log(f'[codex] 读取状态失败：{type(exc).__name__}')
             return {
@@ -838,6 +839,15 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                 'system_proxy_mode': False,
                 'routing_enabled': False,
                 'residual_fields': [],
+                'transport_mode': 'invalid_config',
+                'websocket_enabled': None,
+                'transport_managed': False,
+                'transport_conflict': False,
+                'active_provider': None,
+                'transport_snapshot_exists': False,
+                'transport_transaction_phase': '',
+                'runtime_state_verified': False,
+                'transport_error': str(exc),
                 'restart_required_after_change': True,
             }
         return {
@@ -854,8 +864,34 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             'mixed_port': current['mixed_port'],
             'system_proxy_mode': current['capture_mode'] == 'system-proxy',
             'routing_enabled': bool(current['enabled']),
+            'transport_mode': transport.get('transport_mode', 'unsupported'),
+            'websocket_enabled': transport.get('websocket_enabled'),
+            'transport_managed': bool(transport.get('transport_managed')),
+            'transport_conflict': bool(transport.get('transport_conflict')),
+            'active_provider': transport.get('active_provider'),
+            'transport_snapshot_exists': bool(transport.get('transport_snapshot_exists')),
+            'transport_transaction_phase': transport.get('transport_transaction_phase', ''),
+            'runtime_state_verified': bool(transport.get('runtime_state_verified')),
+            'transport_error': transport.get('transport_error', ''),
             'restart_required_after_change': True,
         }
+
+    def set_codex_websocket(self, enabled):
+        """设置模型 Responses 传输偏好；不结束 Codex，也不改 VPN/代理状态。"""
+        started = time.monotonic()
+        self.log('[codex-transport] UI 请求已提交')
+        if type(enabled) is not bool:
+            self.log('[codex-transport] UI 请求拒绝：enabled 不是布尔值')
+            return {'ok': False, 'warning': 'enabled 必须是布尔值'}
+        self.log(f'[codex-transport] UI 请求已领取，开始执行：目标={"优先 WSS" if enabled else "仅 HTTP/SSE"}')
+        result = codex_proxy.set_websocket_enabled(enabled, logger=self.log)
+        if result.get('ok') and result.get('changed'):
+            result['restart_required_after_change'] = True
+        self.log(
+            f'[codex-transport] UI 请求执行{"完成" if result.get("ok") else "失败"}，'
+            f'目标={"优先 WSS" if enabled else "仅 HTTP/SSE"}，'
+            f'耗时={time.monotonic() - started:.2f}秒')
+        return result
 
     def sync_codex_proxy(self):
         """手动把当前 mixed_port 同步到 Codex 配置；端口只从本地配置读取。"""
