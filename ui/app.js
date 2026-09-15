@@ -87,6 +87,7 @@ function bind() {
 
 let codexViewText = '';
 let codexProxyOn = false;
+let codexTransportBusy = false;
 
 function renderCodexToggle(state) {
   const toggle = $('btn-codex-toggle');
@@ -95,6 +96,35 @@ function renderCodexToggle(state) {
   codexProxyOn = state.synced_fields > 0 || residual;
   toggle.textContent = codexProxyOn ? '关闭 Codex 代理' : '开启 Codex 代理';
   toggle.className = `btn ${codexProxyOn ? 'accent' : 'primary'}`;
+}
+
+function renderCodexTransport(state) {
+  const toggle = $('codex-wss-enabled');
+  const summary = $('codex-transport-summary');
+  const detail = $('codex-transport-detail');
+  if (!toggle || !summary) return;
+  const known = typeof state.websocket_enabled === 'boolean';
+  toggle.checked = state.websocket_enabled === true;
+  toggle.indeterminate = !known;
+  toggle.disabled = codexTransportBusy || !known || Boolean(state.transport_conflict);
+
+  const provider = state.active_provider || '未解析';
+  if (state.transport_mode === 'wss_preferred') {
+    summary.textContent = '模型请求优先使用 WSS；连接失败时 Codex 仍可能回退到 HTTPS/SSE。';
+  } else if (state.transport_mode === 'http_only') {
+    summary.textContent = '模型请求仅使用加密 HTTPS/SSE，不会先尝试 Responses WebSocket。';
+  } else if (state.transport_mode === 'custom_provider') {
+    summary.textContent = `当前使用自定义 Provider（${provider}），本工具不会自动切换。`;
+  } else if (state.transport_mode === 'conflict') {
+    summary.textContent = '传输配置与恢复记录冲突，请检查配置文件后再操作。';
+  } else if (state.transport_mode === 'invalid_config') {
+    summary.textContent = `Codex 配置无法解析：${state.transport_error || '格式错误'}`;
+  } else {
+    summary.textContent = '当前配置包含首版不支持的 Provider、profile 或 openai_base_url，未提供切换。';
+  }
+  if (detail) {
+    detail.textContent = `配置选择：${provider}。切换只影响模型 Responses 请求；保存后需重启 Codex，本工具不会自动结束进程。`;
+  }
 }
 
 async function refreshCodexPage() {
@@ -110,6 +140,7 @@ async function refreshCodexPage() {
       return;
     }
     renderCodexToggle(state);
+    renderCodexTransport(state);
     port.value = state.mixed_port == null ? '' : String(state.mixed_port);
     if (pathInput) pathInput.value = state.config_path || '';
     let text;
@@ -138,6 +169,41 @@ async function refreshCodexPage() {
     }
   } catch (error) {
     summary.textContent = `无法读取 Codex 配置状态：${friendlyError(error)}`;
+  }
+}
+
+function setCodexTransportFeedback(payload) {
+  const target = $('codex-transport-result');
+  if (!target || !payload) return;
+  const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+  if (!payload.ok) {
+    const suffix = payload.changed ? ' 配置已发生变化，请查看状态与配置文件。' : '';
+    target.className = 'form-feedback error';
+    target.textContent = `${payload.warning || '传输方式切换失败'}${suffix}`;
+    toast({ ok: false, msg: payload.warning || '传输方式切换失败' });
+    return;
+  }
+  target.className = `form-feedback ${warnings.length ? 'warning' : 'ok'}`;
+  target.textContent = payload.changed
+    ? `配置已保存，重启 Codex 后生效。${warnings.length ? ` ${warnings.join('；')}` : ''}`
+    : '配置已是目标状态，无需修改。';
+  toast({ ok: true, msg: payload.changed ? '配置已保存，重启 Codex 后生效' : '配置已是目标状态' });
+}
+
+async function setCodexTransport(enabled) {
+  const resultElement = $('codex-transport-result');
+  if (resultElement) resultElement.textContent = '';
+  codexTransportBusy = true;
+  const toggle = $('codex-wss-enabled');
+  if (toggle) toggle.disabled = true;
+  try {
+    const result = await api().set_codex_websocket(enabled);
+    setCodexTransportFeedback(result);
+  } catch (error) {
+    setCodexTransportFeedback({ ok: false, warning: `操作失败：${friendlyError(error)}` });
+  } finally {
+    codexTransportBusy = false;
+    await refreshCodexPage();
   }
 }
 
@@ -226,6 +292,8 @@ function bindCodexPage() {
   };
   const view = $('btn-codex-view');
   if (view) view.onclick = () => void openCodexViewer();
+  const websocket = $('codex-wss-enabled');
+  if (websocket) websocket.onchange = () => void setCodexTransport(websocket.checked);
 }
 
 function bindSecretToggles() {
@@ -945,6 +1013,7 @@ async function connectVpn(name, button, options = {}) {
   if (connectionBusy || !name) return { skipped: true };
   connectionBusy = true;
   let finalResult = null;
+  let credentialRequest = null;
   const original = captureConnectionButton(button);
   setConnectionButtonBusy(button, '正在连接');
   try {
@@ -966,11 +1035,11 @@ async function connectVpn(name, button, options = {}) {
       toast(result);
     }
     if (!result.ok && result.needs_credentials) {
-      await openCredential(name, {
+      credentialRequest = {
         retryConnection: true,
         mode: selectedMode,
         afterAuthorization: !!options.afterAuthorization
-      });
+      };
     }
     if (result.ok && (CFG.credential_status || {})[name]) {
       CFG = await api().get_config();
@@ -984,6 +1053,7 @@ async function connectVpn(name, button, options = {}) {
     restoreConnectionButton(button, original);
     await finishConnectionAction();
   }
+  if (credentialRequest) await openCredential(name, credentialRequest);
   return finalResult;
 }
 
@@ -1015,8 +1085,8 @@ function captureConnectionButton(button) {
 function setConnectionButtonBusy(button, label) {
   if (!button) return;
   button.disabled = true;
+  button.classList.add('is-busy');
   if (button.classList.contains('connection-icon-action')) {
-    button.classList.add('is-busy');
     button.innerHTML = '<span class="connection-action-spinner" aria-hidden="true"></span>';
     button.setAttribute('aria-label', label);
     button.title = label;
@@ -1179,7 +1249,8 @@ async function saveCredential() {
         if (retry) {
           toast({ ok: true, tone: 'info',
             msg: `${credName} 的凭据已保存，正在继续连接` });
-          await connectVpn(retry.name, null, retry);
+          await connectVpn(
+            retry.name, findVpnConnectionButton(retry.name), retry);
         } else {
           toast({ ok: true, msg: `${credName} 的凭据已保存` });
         }
@@ -1538,6 +1609,15 @@ function gatewaySummary(vpn) {
   return families.length
     ? `默认网关：${families.join(' + ')}`
     : '默认网关：均关闭（分流）';
+}
+
+function findVpnConnectionButton(name) {
+  for (const row of document.querySelectorAll('#vpn-tbody tr[data-vpn-name]')) {
+    if (row.dataset.vpnName === name) {
+      return row.querySelector('[data-vpn-action="true"]');
+    }
+  }
+  return null;
 }
 
 async function setDefaultVpn(name) {

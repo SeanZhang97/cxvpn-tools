@@ -1,7 +1,7 @@
 # Windows VPN 凭据与 RAS API
 
 模块: 通用能力 | 代码路径: `core/ras_cred.py`、`core/eap_connect.py`、`core/vpn_connect.py`、`core/vpn_service.py`、`core/vpn_os.py`
-最后验证: 2026-08-29 | 分支: 非 Git 工作区
+最后验证: 2026-09-14 | 分支: main
 
 ## 当前事实（Win11 25H2 实测）
 
@@ -37,7 +37,8 @@
   `RASDIALPARAMS`，而是把软件保存的真实用户名和密码直接交给 `RasDialW`。
 - 软件未保存完整账号密码时，不尝试依赖 Windows 设置页的私有连接状态，也不调用
   会显示界面的 API；在拨号前返回 `needs_credentials`，由软件凭据弹窗补录。若弹框由
-  一次连接动作触发，保存成功后 UI 自动续接原目标；主动打开凭据弹框时只保存不拨号。
+  一次连接动作触发，UI 必须先释放当前连接互斥状态再显示可交互的凭据弹框；保存成功后
+  自动续接原目标，并在该目标当前的连接按钮上显示忙碌状态。主动打开凭据弹框时只保存不拨号。
 
 ### EAP-MSCHAPv2 凭据与无界面连接
 

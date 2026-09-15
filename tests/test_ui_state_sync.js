@@ -68,6 +68,38 @@ function testIconConnectionButtonUsesSpinner() {
   assert.equal(classes.has('is-busy'), false);
 }
 
+function testTextConnectionButtonUsesBusyLayout() {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(between('function captureConnectionButton', 'async function disconnectAll'), context);
+  const classes = new Set(['btn', 'mini', 'primary']);
+  const button = {
+    disabled: false,
+    innerHTML: '连接',
+    classList: {
+      contains(name) { return classes.has(name); },
+      add(name) { classes.add(name); },
+      remove(name) { classes.delete(name); },
+    },
+    getAttribute() { return null; },
+    setAttribute() {},
+    removeAttribute() {},
+    set title(value) { this._title = value; },
+    get title() { return this._title || ''; },
+    set textContent(value) { this.innerHTML = String(value); },
+  };
+  const original = context.captureConnectionButton(button);
+
+  context.setConnectionButtonBusy(button, '正在连接');
+  assert.equal(button.innerHTML, '正在连接…');
+  assert.equal(button.disabled, true);
+  assert.equal(classes.has('is-busy'), true, '文本按钮应触发预留的忙碌态宽度');
+
+  context.restoreConnectionButton(button, original);
+  assert.equal(button.innerHTML, '连接');
+  assert.equal(classes.has('is-busy'), false);
+}
+
 async function testForceRefreshQueuesBehindBackgroundLoad() {
   const calls = [];
   const pending = [];
@@ -240,24 +272,65 @@ function testRenewalActionButtonsStaySynchronized() {
   assert.equal(browser.attributes.get('aria-label'), '正在中断…');
 }
 
-function testMissingCredentialsResumeOnlyTheInterruptedConnection() {
+async function testMissingCredentialsReleaseBusyStateBeforePrompt() {
   const connectFlow = between('async function connectVpn', 'async function disconnectVpn');
+  const finishFlow = between('async function finishConnectionAction', 'async function saveVpnModal');
   const credentialFlow = between('async function openCredential', 'async function deleteVpn');
   const saveFlow = between('async function saveCredential', 'async function saveCxSettings');
+  const calls = [];
+  let resumeResult = null;
+  const context = {
+    CFG: { credential_status: {} },
+    api() {
+      return {
+        connect_vpn: async name => {
+          calls.push(name);
+          return calls.length === 1
+            ? { ok: false, needs_credentials: true, msg: '请补录凭据' }
+            : { ok: true, msg: '已连接' };
+        },
+        get_state: async () => ({}),
+        vpn_status: async () => ({}),
+      };
+    },
+    normalizeResult: result => result,
+    toast() {},
+    captureConnectionButton: () => null,
+    setConnectionButtonBusy() {},
+    restoreConnectionButton() {},
+    updateOverview() {},
+    updateConnectionControls() {},
+    refreshIpInfo() {},
+    refreshUiStateOnce() {},
+    setTimeout() {},
+    friendlyError(error) { return String(error); },
+    async openCredential(name, options) {
+      resumeResult = await context.connectVpn(name, null, options);
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(`let connectionBusy = false;\n${connectFlow}\n${finishFlow}`, context);
+
+  const firstResult = await context.connectVpn('工作 VPN', null);
+  assert.equal(firstResult.needs_credentials, true);
+  assert.equal(calls.length, 2, '凭据弹框可交互前应释放连接互斥状态');
+  assert.equal(resumeResult.ok, true);
   assert.match(connectFlow, /retryConnection:\s*true/);
   assert.match(connectFlow, /mode:\s*selectedMode/);
+  assert.match(connectFlow, /if \(credentialRequest\) await openCredential/);
   assert.match(credentialFlow, /options\.retryConnection/);
   assert.match(saveFlow, /const retry = credentialConnectRetry/);
-  assert.match(saveFlow, /await connectVpn\(retry\.name, null, retry\)/);
+  assert.match(saveFlow, /findVpnConnectionButton\(retry\.name\)/);
 }
 
 Promise.resolve()
   .then(testStructuredButtonRestored)
   .then(testIconConnectionButtonUsesSpinner)
+  .then(testTextConnectionButtonUsesBusyLayout)
   .then(testForceRefreshQueuesBehindBackgroundLoad)
   .then(testVpnRowsUpdateWithoutClearingTable)
   .then(testVpnProfilesUseOneGlobalSnapshot)
   .then(testSecretToggleUsesEyeIconsAndAccessibleLabels)
   .then(testRenewalActionButtonsStaySynchronized)
-  .then(testMissingCredentialsResumeOnlyTheInterruptedConnection)
+  .then(testMissingCredentialsReleaseBusyStateBeforePrompt)
   .then(() => console.log('ui busy state and forced VPN refresh: ok'));

@@ -16,6 +16,8 @@ if __name__ == '__main__' and '--storage-recovery-probe' in sys.argv:
 
 from core import app_paths
 from core.desktop_runtime import ensure_desktop_runtime
+from core.ui_cache import apply_no_cache_patch, purge_stale_webview_cache
+from core.version import APP_VERSION
 
 ensure_desktop_runtime()
 
@@ -50,6 +52,12 @@ def _run_app():
     config_root = os.path.dirname(config.CFG_PATH)
     if os.path.normcase(config_root) != os.path.normcase(DATA_ROOT):
         raise RuntimeError('应用配置路径与用户数据目录不一致，已停止启动')
+    # 内置 HTTP 服务曾丢失 no-cache 响应头，WebView2 会按启发式策略缓存
+    # 旧版页面；补回头并对版本变化的存量缓存做一次清理（不碰 Cookie 等登录态）。
+    # 清理必须在 webview.start() 之前完成，否则缓存目录被 WebView2 锁定。
+    apply_no_cache_patch()
+    purge_stale_webview_cache(
+        os.path.join(DATA_ROOT, 'webview_data'), APP_VERSION, log=_boot_log)
     api = Api()
     _boot_log(
         f'config loaded: user_data_root={DATA_ROOT}; '

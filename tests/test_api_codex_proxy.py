@@ -101,7 +101,14 @@ class ApiCodexProxyTests(unittest.TestCase):
                     'config_exists': True, 'parse_error': '',
                     'snapshot_exists': True, 'snapshot_fields': 3,
                     'last_mixed_port': 17890, 'synced_fields': 3,
-                    'deviated_fields': ['features.respect_system_proxy']}):
+                    'deviated_fields': ['features.respect_system_proxy']}), \
+                mock.patch.object(
+                    codex_proxy, 'transport_status',
+                    return_value={
+                        'transport_mode': 'http_only',
+                        'websocket_enabled': False,
+                        'transport_managed': True,
+                        'active_provider': codex_proxy.HTTP_PROVIDER_ID}):
             state = target.get_codex_status()
 
         self.assertTrue(state['ok'])
@@ -112,6 +119,34 @@ class ApiCodexProxyTests(unittest.TestCase):
         self.assertEqual(18080, state['mixed_port'])
         self.assertEqual(
             ['features.respect_system_proxy'], state['deviated_fields'])
+        self.assertEqual('http_only', state['transport_mode'])
+        self.assertIs(False, state['websocket_enabled'])
+        self.assertTrue(state['transport_managed'])
+
+    def test_set_codex_websocket_requires_strict_boolean(self):
+        target = self.instance()
+        with mock.patch.object(codex_proxy, 'set_websocket_enabled') as setter:
+            for value in ('false', 0, None):
+                with self.subTest(value=value):
+                    result = target.set_codex_websocket(value)
+                    self.assertFalse(result['ok'])
+            setter.assert_not_called()
+
+    def test_set_codex_websocket_passes_explicit_target_and_marks_restart(self):
+        target = self.instance()
+        with mock.patch.object(
+                codex_proxy, 'set_websocket_enabled',
+                return_value={'ok': True, 'changed': True,
+                              'transport_mode': 'http_only'}) as setter:
+            result = target.set_codex_websocket(False)
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['restart_required_after_change'])
+        setter.assert_called_once_with(False, logger=target.log)
+        logged = ' '.join(call.args[0] for call in target.log.call_args_list)
+        self.assertIn('请求已提交', logged)
+        self.assertIn('开始执行', logged)
+        self.assertIn('执行完成', logged)
 
     def test_status_and_view_never_sync_or_restore_when_routing_enabled(self):
         target = self.instance({'enabled': True, 'mixed_port': 19000})
@@ -122,6 +157,9 @@ class ApiCodexProxyTests(unittest.TestCase):
                     'parse_error': '', 'snapshot_exists': True, 'snapshot_fields': 17,
                     'last_mixed_port': 17890, 'synced_fields': 17, 'deviated_fields': [],
                 }), \
+                mock.patch.object(codex_proxy, 'transport_status', return_value={
+                    'transport_mode': 'wss_preferred', 'websocket_enabled': True,
+                    'active_provider': 'openai'}), \
                 mock.patch.object(codex_proxy, 'read_config', return_value={'ok': True}):
             for _ in range(2):
                 state = target.get_codex_status()
