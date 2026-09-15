@@ -42,6 +42,12 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
     let data_dir = base.join("data");
     let target_geoip = data_dir.join(GEOIP_DATABASE);
     let service_backup = base.join("CXVPNRoutingHost.previous.exe");
+    let mihomo_backup = base.join("mihomo.previous.exe");
+    let old_mihomo_available = target_mihomo.is_file();
+    if old_mihomo_available {
+        fs::copy(&target_mihomo, &mihomo_backup)
+            .map_err(|e| format!("备份旧 Mihomo 失败: {e}"))?;
+    }
     let owner_backup = base.join("owner.previous.sid");
     let geoip_backup = base.join("Country.previous.mmdb");
     let old_host_available = target_service.is_file();
@@ -92,6 +98,12 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
 
     if let Err(error) = result {
         let _ = stop_and_delete_service();
+        if old_mihomo_available && mihomo_backup.is_file() {
+            fs::copy(&mihomo_backup, &target_mihomo)
+                .map_err(|e| format!("安装失败: {error}; 恢复旧 Mihomo 失败: {e}"))?;
+        } else if !old_mihomo_available {
+            let _ = fs::remove_file(&target_mihomo);
+        }
         if old_geoip_available && geoip_backup.is_file() {
             let _ = fs::create_dir_all(&data_dir);
             let _ = fs::copy(&geoip_backup, &target_geoip);
@@ -111,6 +123,7 @@ pub fn install(owner_sid: &str) -> AppResult<()> {
         return Err(format!("安装新路由服务失败，已尝试恢复旧服务: {error}"));
     }
     let _ = fs::remove_file(service_backup);
+    let _ = fs::remove_file(mihomo_backup);
     let _ = fs::remove_file(owner_backup);
     let _ = fs::remove_file(geoip_backup);
     Ok(())

@@ -59,6 +59,8 @@ struct PendingRecord {
 }
 
 pub struct RuntimeManager {
+    pub route_state: crate::vpn_routes::Shared,
+    core_job: Option<crate::core_job::CoreJob>,
     base: PathBuf,
     child: Option<Child>,
     pending: Option<PendingTransaction>,
@@ -74,6 +76,8 @@ impl RuntimeManager {
         fs::create_dir_all(&base).map_err(|e| format!("创建服务目录失败: {e}"))?;
         Self::recover_interrupted(&base)?;
         let mut manager = Self {
+            route_state: crate::vpn_routes::RouteState::new(&base)?,
+            core_job: None,
             base,
             child: None,
             pending: None,
@@ -153,6 +157,12 @@ impl RuntimeManager {
             .is_some();
         if exited {
             self.child = None;
+            self.core_job = None;
+            if let Ok(mut routes) = self.route_state.lock() {
+                if let Err(error) = routes.reset(crate::vpn_routes::Policy::default()) {
+                    routes.log(&format!("core exit cleanup failed: {error}"));
+                }
+            }
             self.log("Mihomo 进程异常退出");
             let _ = system_proxy::restore(&self.base, &self.owner_sid);
             let now = Instant::now();
@@ -576,7 +586,13 @@ impl RuntimeManager {
         let error_log = log
             .try_clone()
             .map_err(|e| format!("复制日志句柄失败: {e}"))?;
-        let child = Command::new(self.mihomo_path())
+        let epoch = format!("{}-{}", std::process::id(), std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let policy = crate::vpn_routes::Policy::from_config(
+            &fs::read(self.config_path()).map_err(|e| format!("read route policy: {e}"))?, 0, epoch.clone())?;
+        self.route_state.lock().map_err(|_| "route state unavailable")?.reset(policy.clone())?;
+        let mut child = Command::new(self.mihomo_path())
+            .env("CXVPN_ROUTE_EPOCH", &epoch)
             .arg("-d")
             .arg(self.data_path())
             .arg("-f")
@@ -588,6 +604,14 @@ impl RuntimeManager {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("启动 Mihomo 失败: {e}"))?;
+        self.core_job = match crate::core_job::CoreJob::attach(&child) {
+            Ok(job) => Some(job),
+            Err(error) => { let _ = child.kill(); let _ = child.wait(); return Err(error); }
+        };
+        match self.route_state.lock() {
+            Ok(mut routes) => { routes.policy.pid = child.id(); },
+            Err(_) => { let _ = child.kill(); let _ = child.wait(); return Err("route state unavailable".into()); }
+        }
         self.last_restart = Instant::now();
         self.child = Some(child);
         self.log("Mihomo 运行时已启动");
@@ -745,16 +769,23 @@ impl RuntimeManager {
 
     fn stop_runtime(&mut self) -> AppResult<()> {
         let Some(mut child) = self.child.take() else {
-            return Ok(());
+            self.core_job = None;
+            return self.route_state.lock().map_err(|_| "route state unavailable")?
+                .reset(crate::vpn_routes::Policy::default());
         };
         if child.try_wait().ok().flatten().is_some() {
-            return Ok(());
+            self.core_job = None;
+            return self.route_state.lock().map_err(|_| "route state unavailable")?
+                .reset(crate::vpn_routes::Policy::default());
         }
         if let Err(error) = child.kill() {
             self.child = Some(child);
             return Err(format!("停止 Mihomo 失败: {error}"));
         }
         let _ = child.wait();
+        self.core_job = None;
+        self.route_state.lock().map_err(|_| "route state unavailable")?
+            .reset(crate::vpn_routes::Policy::default())?;
         self.log("Mihomo 运行时已停止");
         Ok(())
     }
@@ -1004,7 +1035,7 @@ mod tests {
     fn cancelled_prepare_cannot_replace_new_generation() {
         let base = std::env::temp_dir().join(format!("cxvpn-prepare-{}", transaction_id()));
         fs::create_dir_all(&base).unwrap();
-        let mut manager = RuntimeManager { base:base.clone(), child:None, pending:None,
+        let mut manager = RuntimeManager { core_job: None, route_state: crate::vpn_routes::RouteState::new(&base).unwrap(), base:base.clone(), child:None, pending:None,
             preparing:None, last_restart:Instant::now(), owner_sid:String::new(),
             crash_times:Vec::new(), crash_fused:false };
         let first = manager.begin_prepare(serde_json::from_value(json!({"op":"apply"})).unwrap()).unwrap();

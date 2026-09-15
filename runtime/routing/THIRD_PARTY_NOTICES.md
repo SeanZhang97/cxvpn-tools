@@ -3,14 +3,19 @@
 ## Mihomo
 
 - Project: https://github.com/MetaCubeX/mihomo
-- Version: v1.19.30
+- Version: v1.19.30-cxvpn.2 (modified 2026-09-14 and 2026-09-15)
 - License: GNU General Public License v3.0
 - License text: https://github.com/MetaCubeX/mihomo/blob/Meta/LICENSE
 - Source corresponding to this release:
   https://github.com/MetaCubeX/mihomo/tree/v1.19.30
 
-`mihomo.exe` is distributed unmodified. Mihomo is a separate program launched and
-controlled through its documented configuration and REST API.
+`mihomo.exe` includes CXVPN's Windows VPN route preparation hook and remains
+licensed under GPL-3.0. The complete corresponding modified source, including
+the license, dependency manifests and build instructions, accompanies the binary
+as `mihomo-source.zip`. Checksums and compiler metadata are in `mihomo-build.json`.
+The maintained patch and build script are `patches/mihomo/` and `build_mihomo.py`
+in the CXVPN source tree. Mihomo remains a separate program; route preparation
+uses a bounded local Named Pipe before its interface-bound TCP/UDP operations.
 
 ## MetaCubeX meta-rules-dat
 

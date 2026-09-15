@@ -90,6 +90,10 @@ fn serve_pipe(pipe: HANDLE, manager: Arc<Mutex<RuntimeManager>>) {
 }
 
 fn create_pipe(owner_sid: &str) -> AppResult<HANDLE> {
+    create_named_pipe(owner_sid, PIPE_NAME)
+}
+
+pub(crate) fn create_named_pipe(owner_sid: &str, pipe_name: &str) -> AppResult<HANDLE> {
     if !valid_sid_text(owner_sid) {
         return Err("服务 IPC 所有者 SID 无效".to_string());
     }
@@ -112,7 +116,7 @@ fn create_pipe(owner_sid: &str) -> AppResult<HANDLE> {
         lpSecurityDescriptor: descriptor,
         bInheritHandle: 0,
     };
-    let name = wide(PIPE_NAME);
+    let name = wide(pipe_name);
     let handle = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
@@ -153,7 +157,7 @@ fn write_response(pipe: HANDLE, response: &Response) -> AppResult<()> {
     write_all(pipe, &body, deadline)
 }
 
-fn read_exact(pipe: HANDLE, buffer: &mut [u8], deadline: std::time::Instant) -> AppResult<()> {
+pub(crate) fn read_exact(pipe: HANDLE, buffer: &mut [u8], deadline: std::time::Instant) -> AppResult<()> {
     let mut offset = 0;
     while offset < buffer.len() {
         let size = (buffer.len() - offset).min(1024 * 1024) as u32;
@@ -166,7 +170,7 @@ fn read_exact(pipe: HANDLE, buffer: &mut [u8], deadline: std::time::Instant) -> 
     Ok(())
 }
 
-fn write_all(pipe: HANDLE, buffer: &[u8], deadline: std::time::Instant) -> AppResult<()> {
+pub(crate) fn write_all(pipe: HANDLE, buffer: &[u8], deadline: std::time::Instant) -> AppResult<()> {
     let mut offset = 0;
     while offset < buffer.len() {
         let size = (buffer.len() - offset).min(1024 * 1024) as u32;

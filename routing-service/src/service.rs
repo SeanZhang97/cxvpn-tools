@@ -60,6 +60,8 @@ fn run() -> AppResult<()> {
         .to_string();
     let manager = Arc::new(Mutex::new(RuntimeManager::new(base, owner_sid.clone())?));
     let stop = Arc::new(AtomicBool::new(false));
+    let route_state = manager.lock().map_err(|_| "route manager unavailable")?.route_state.clone();
+    crate::vpn_route_ipc::start(route_state, stop.clone(), owner_sid.clone());
     {
         let manager = Arc::clone(&manager);
         let stop = Arc::clone(&stop);

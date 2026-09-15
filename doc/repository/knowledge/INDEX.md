@@ -1,11 +1,12 @@
 # 知识库索引 INDEX
 
-最后验证: 2026-09-06 | 分支: main
+最后验证: 2026-09-15 | 分支: main
 
 ## modules
 
 | 模块 | 关键词 | 代码路径 | 知识文件 |
 |---|---|---|---|
+| VPN 目标路由自动维护 | VPN, DNS, 首次访问, fake-IP, 路由租约, Named Pipe, 路由恢复, 核心定制, 未连接物理直连 | core/routing.py, routing-service/src/vpn_route_os.rs, routing-service/src/vpn_routes.rs, routing-service/src/vpn_route_ipc.rs, routing-service/src/core_job.rs, patches/mihomo/, build_mihomo.py | modules/VPN目标路由自动维护.md |
 | 本地状态事务与恢复 | SQLite, WAL, 强杀恢复, 节点丢失, 批次, 配置版本, 兼容导出, MSIX重定向, 单一用户数据 | core/state_store.py, core/config.py, core/app_paths.py, core/desktop_runtime.py, core/storage_probe.py, core/subscription_store.py, core/routing_tasks.py, core/routing_speedtest.py, main.py, api.py, ui/routing.js | modules/本地状态事务与恢复.md |
 | 代理控制与运行状态 | 代理开关慢, 节点切换, 待机核心, fast_toggle_ready, 配置版本, 路由锁, IPC超时, 回读, 后台快照, 测速渲染, 订阅更新调度, 自动物理出口, 网卡切换 | api.py, core/routing.py, core/routing_api_tasks.py, core/routing_tasks.py, core/routing_environment.py, core/routing_service.py, core/routing_network.py, core/pipe_io.py, core/routing_speedtest.py, core/routing_updates.py, ui/proxy.js, ui/routing.js, routing-service/src/ | modules/代理控制与运行状态.md |
 | CXVPNTools | pywebview, WinForms, worker, vpn_service, 版本化状态流, wait_ui_state, 网络出口, IP, 续期, 开机自启, 系统托盘, 便携EXE, config | main.py, api.py, core/ui_state_stream.py, core/ip_info.py, core/, ui/, build.py | modules/CXVPNTools.md |

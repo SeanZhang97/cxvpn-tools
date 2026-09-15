@@ -17,6 +17,8 @@ SERVICE_RUNTIME = os.path.join(
 
 
 def build_routing_service(force=False):
+    from build_mihomo import verify_installed
+    verify_installed()
     sources = [
         os.path.join(SERVICE_ROOT, 'Cargo.toml'),
         os.path.join(SERVICE_ROOT, 'Cargo.lock'),
@@ -33,7 +35,8 @@ def build_routing_service(force=False):
     cargo = shutil.which('cargo')
     if not cargo:
         candidate = os.path.join(
-            os.path.expanduser('~'), '.cargo', 'bin', 'cargo.exe')
+            os.environ.get('CARGO_HOME') or os.path.join(os.path.expanduser('~'), '.cargo'),
+            'bin', 'cargo.exe')
         cargo = candidate if os.path.isfile(candidate) else ''
     if not cargo:
         raise RuntimeError(

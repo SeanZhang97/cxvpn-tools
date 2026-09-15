@@ -48,8 +48,8 @@ from core.routing_speedtest import (
 SERVICE_ID = 'CXVPNRoutingService'
 # 服务数据目录本轮不迁移，保留旧内部路径以维持已安装服务兼容性。
 LEGACY_SERVICE_DIR_NAME = 'CXVPNManager\\RoutingService'
-MIHOMO_VERSION = 'v1.19.30'
-MIHOMO_SHA256 = '6AC25FCB26AFE8E1BEA24B6E6E80805BF884A33232D12E2D78DFA0B6C529AC14'
+MIHOMO_VERSION = 'v1.19.30-cxvpn.2'
+MIHOMO_SHA256 = '5187346B49D7CEC1E6B2C4A8C02E648720BC37E7CF889B0E9783A4787618436B'
 GEOIP_DATABASE = 'Country.mmdb'
 GEOIP_DATABASE_SHA256 = '4BF15C30737F7CC2807BCBE1ACE44149B18579BEA3B13BF7BEA935A3F2834052'
 WINSW_VERSION = 'v2.12.0'
@@ -906,6 +906,9 @@ def explain_domain(value, domain, vpns=None):
         available = bool(profile and profile.get('status') == 'Connected')
         detail = ('Windows VPN 已连接' if available else
                   'Windows VPN 当前未连接或不存在')
+        if profile and not available:
+            available = True
+            detail = 'Windows VPN 当前未连接，新连接通过已选物理接口直连'
     else:
         outbound_name = '阻止访问'
         detail = '请求将在本机被拒绝'
@@ -987,7 +990,7 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
         if profile.get('ipv4_default_gateway', True) or profile.get('ipv6_default_gateway', True):
             raise RoutingError(f'VPN“{name}”仍启用了远程默认网关，请先在 VPN 配置中关闭 IPv4 和 IPv6 默认网关')
         if profile.get('status') != 'Connected':
-            warnings.append(f'VPN“{name}”当前未连接，命中它的请求会失败，连接后无需重启分流')
+            warnings.append(f'VPN“{name}”当前未连接，命中它的新连接将走物理网络，连接后自动恢复走 VPN')
 
     if _uses_proxy(config):
         enabled = [item for item in config['proxy_providers'] if item['enabled']]
@@ -1106,6 +1109,7 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
         proxies.append({
             'name': proxy_names[name], 'type': 'direct', 'udp': True,
             'interface-name': name,
+            'cxvpn-managed-route': True,
         })
 
     enabled_providers = [
@@ -3151,6 +3155,11 @@ if ($service) {{
         if runtime_mode == 'standby':
             self.log('[routing] 待机核心已就绪，不执行系统接管与出口连通性门控')
             return
+
+        if _target_vpns(config):
+            capability = self._controller_request(config, '/version', timeout=1.5)
+            if capability.get('cxvpn-vpn-routes') != 2:
+                raise RoutingError('当前 Mihomo 不支持 VPN 目标路由自动维护，请更新配套运行时')
 
         referenced = _referenced_group_ids(config)
         manual_targets = dict(_selection.manual_runtime_targets(

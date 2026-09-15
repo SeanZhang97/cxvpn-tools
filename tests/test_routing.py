@@ -1218,7 +1218,7 @@ class RoutingConfigTests(unittest.TestCase):
             warnings = routing.validate_environment(
                 config, [vpn_profile(connected=False)], [{'name': '以太网'}], [])
 
-        self.assertIn('请求会失败', warnings[0])
+        self.assertIn('新连接将走物理网络', warnings[0])
 
     def test_tun_rejects_enabled_system_proxy_with_empty_server(self):
         config = routing.normalize_config(self.base_config())

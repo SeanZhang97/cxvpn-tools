@@ -17,8 +17,8 @@ from core.pipe_io import transfer
 
 
 SERVICE_BINARY = 'CXVPNRoutingHost.exe'
-SERVICE_VERSION = '0.7.0'
-PROTOCOL_VERSION = 6
+SERVICE_VERSION = '0.8.1'
+PROTOCOL_VERSION = 8
 PIPE_NAME = r'\\.\pipe\CXVPNRoutingService.v1'
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 

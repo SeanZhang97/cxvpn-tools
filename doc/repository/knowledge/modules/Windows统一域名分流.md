@@ -3,7 +3,7 @@
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
 界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
 关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置备份, 配置历史, 诊断包, DNS高级模式, nameserver-policy, 托盘快捷操作, 域名分流导航
-最后验证：2026-09-13 | 分支：main
+最后验证：2026-09-15 | 分支：main
 
 ## 职责边界
 
@@ -148,8 +148,26 @@
 
 - `physical` 不是 Mihomo 内置的无约束 `DIRECT`，而是名为 `PHYSICAL`、显式绑定
   `physical_interface` 的自定义 `direct` 出口，确保不借道任意 VPN。
-- 每个 `vpn:<name>` 生成独立 `direct` 出口并绑定 Windows 接口别名。目标 VPN 未连接时
-  该出口失败，不回退到物理网络或代理，避免公司域名泄漏。
+- 每个 `vpn:<name>` 生成独立受管 `direct` 出口。连接前核对真实 VPN 网卡：未连接时
+  绑定已应用物理接口，连接后新连接恢复绑定 VPN；不因已连接 VPN 的目标超时而回退。
+  规则保留 VPN 目标，界面现有说明提示未连接时物理直连，不改写用户规则。
+- Windows VPN 使用 `SplitTunneling=true` 时，接口绑定还要求该接口拥有目标真实 IP 的可达路由。
+  `DOMAIN-SUFFIX` 命中只证明出口选择正确。当前定制核心的受管 VPN 出口会在连接前维护活动路由，
+  详见 [VPN目标路由自动维护](VPN目标路由自动维护.md)；未启用该能力的普通 direct 出口不会补齐路由。
+  缺路由可表现为 Mihomo `connectex ... unreachable network`，浏览器则显示
+  `ERR_CONNECTION_CLOSED` 或 TLS 握手失败。排查应核对 Controller `/rules`、
+  `/dns/query`、目标连接日志及 `Get-NetRoute`，不能把 `198.18.x.x` fake-IP 当作 VPN 路由目标。
+- 同属 `chaoxing.com` 的子域名可能解析到不同公网地址。2026-09-14 实测
+  `office.chaoxing.com` 经 CNAME `gflearn.aichaoxing.com` 解析到
+  `140.210.72.160/162/164/166/168/170`（末段分别取值），不在既有接口路由
+  `45.113.20.0/24` 内。当前机器为这 6 个地址配置独立 `/32` 持久 VPN 路由；
+  这是当前 DNS 快照，不代表超星所有地址，DNS 变化后需重新核对。
+- `Add-VpnConnectionRoute` 写入 VPN 配置后，应同时回读配置与活动路由表。本次已连接的
+  IKEv2 会话未立即载入新增路由，经短暂重连后才出现在活动接口；不能仅以命令成功宣称生效。
+- 固定 v1.19.30 上游 `Direct.DialContext` 使用 `DirectHostResolver`；dialer 在真实 IP
+  确定后执行接口绑定与 socket 连接，Windows 绑定通过 `IP_UNICAST_IF` /
+  `IPV6_UNICAST_IF` 实现。本项目在该基线增加连接前路由租约钩子，沿用原有解析与接口绑定；
+  普通配置测试仍不代表任意目标的真实可达性，路由管理与业务访问需分别验证。
 - `proxy` 使用全部已启用订阅公开组组成的 `PROXY` 组；`proxy:<id>` 使用对应的独立
   `PROXY-<id>` 组。聚合组只在 `PROXY-<id>` 之间执行全局 `url-test`、`fallback` 或 `select`，
   不得直接 `use` 原始 provider，否则会绕过订阅级智能优选、手动节点和故障转移策略。

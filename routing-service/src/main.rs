@@ -8,6 +8,10 @@ mod protocol;
 mod service;
 mod system_proxy;
 mod util;
+mod core_job;
+mod vpn_route_os;
+mod vpn_routes;
+mod vpn_route_ipc;
 
 use std::{fs, path::PathBuf};
 

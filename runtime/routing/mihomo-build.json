@@ -1,0 +1,15 @@
+{
+  "version": "v1.19.30-cxvpn.2",
+  "upstream": "v1.19.30",
+  "source_url": "https://codeload.github.com/MetaCubeX/mihomo/zip/refs/tags/v1.19.30",
+  "source_sha256": "6790545B467FD6E61B6610793F37B64FAC7F59B061F222501F6CC3A7A5DE7C8B",
+  "patch_sha256": "9D6403AC264496AC4FF467517FEC6A672032208683EA005F005D4BB611BBD2D1",
+  "binary_sha256": "5187346B49D7CEC1E6B2C4A8C02E648720BC37E7CF889B0E9783A4787618436B",
+  "compiler": "go version go1.27.0 windows/amd64",
+  "corresponding_source_sha256": "E8BC88B3FC82B12CF8392EA2BBD43BBFB069A028C9327CFB4651809FCE56D29F",
+  "goamd64": "v1",
+  "tags": [
+    "with_gvisor"
+  ],
+  "capability": 2
+}
