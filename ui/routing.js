@@ -26,7 +26,6 @@
   let autoPolicyProviderId = '';
   let nodeRegionFilter = 'all';
   let renderedNodeGroup = '';
-  let historyLoading = false;
   const SETUP_TTL_MS = 15000;
   const TEST_POLL_MS = 750;
   const TEST_POLL_MAX_MS = 5000;
@@ -369,6 +368,7 @@
     provider.selection_mode = provider.selection_mode === 'manual' ? 'manual' : 'auto';
     provider.selected_node = String(provider.selected_node || '');
     provider.auto_update = !!provider.auto_update;
+    provider.speedtest_interval ??= 300;
     const rawPolicy = provider.auto_policy && typeof provider.auto_policy === 'object'
       ? provider.auto_policy : {};
     provider.auto_policy = {
@@ -1053,7 +1053,6 @@
     renderRules();
     renderOverview();
     renderNodes();
-    void loadConfigHistory();
   }
 
   function makeSelect(values, current, className) {
@@ -2328,12 +2327,22 @@
       strategy.onchange = () => { provider.strategy = strategy.value; syncDirty(); renderProviders(); renderNodes(); };
       strategyField.append(strategyTitle, strategy);
       const intervalField = document.createElement('div'); intervalField.className = 'field routing-provider-interval';
-      const intervalLabel = document.createElement('label'); intervalLabel.textContent = '自动更新间隔（分钟）';
+      const intervalLabel = document.createElement('label'); intervalLabel.textContent = '订阅更新间隔（分钟）';
       const interval = document.createElement('input'); interval.type = 'number'; interval.min = '5'; interval.max = '1440'; interval.value = String(Math.round((provider.interval || 3600) / 60));
       // 保留配置入口：关闭自动更新时仍可先设置间隔，之后开启即可直接使用。
       interval.disabled = busy;
       interval.oninput = () => { provider.interval = Math.max(300, Number(interval.value || 60) * 60); syncDirty(); };
-      intervalField.append(intervalLabel, interval); fields.append(nameField, strategyField, intervalField);
+      intervalField.append(intervalLabel, interval);
+      const speedtestField = document.createElement('div'); speedtestField.className = 'field routing-provider-interval';
+      const speedtestLabel = document.createElement('label'); speedtestLabel.textContent = '自动测速间隔（分钟）';
+      const speedtestInterval = document.createElement('input'); speedtestInterval.type = 'number';
+      speedtestInterval.id = `routing-provider-speedtest-${provider.id}`; speedtestLabel.htmlFor = speedtestInterval.id;
+      speedtestInterval.min = '1'; speedtestInterval.max = '1440'; speedtestInterval.step = '1';
+      speedtestInterval.value = String((provider.speedtest_interval ?? 300) / 60);
+      speedtestInterval.disabled = busy;
+      speedtestInterval.oninput = () => { provider.speedtest_interval = Number(speedtestInterval.value) * 60; syncDirty(); };
+      speedtestField.append(speedtestLabel, speedtestInterval);
+      fields.append(nameField, strategyField, intervalField, speedtestField);
 
       const autoUpdateRow = document.createElement('div'); autoUpdateRow.className = 'routing-provider-update-settings';
       const autoUpdateSwitch = document.createElement('label'); autoUpdateSwitch.className = 'switch compact-switch';
@@ -2688,110 +2697,25 @@
       .map(item => item.trim()).filter(Boolean))];
   }
 
-  function downloadJson(result) {
-    if (!result?.ok) throw new Error(result?.msg || '文件生成失败');
-    const blob = new Blob([result.content], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url; link.download = result.filename || 'CXVPN-export.json';
-    document.body.append(link); link.click(); link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  function historySourceLabel(source) {
-    return ({
-      baseline: '应用前基线', manual: '手动应用', backup_restore: '备份恢复',
-      history_restore: '历史回退', desktop_toggle: '托盘启停',
-      desktop_mode: '托盘切换模式', desktop_node: '托盘切换节点',
-    })[source] || source || '配置应用';
-  }
-
-  function renderConfigHistory(items) {
-    const root = byId('routing-config-history');
-    root.replaceChildren();
-    if (!items?.length) {
-      const empty = document.createElement('p');
-      empty.className = 'routing-history-empty'; empty.textContent = '尚无应用记录；首次保存应用后会自动建立基线。';
-      root.append(empty); return;
-    }
-    items.forEach(item => {
-      const row = document.createElement('div');
-      row.className = `routing-history-item${item.success ? '' : ' failed'}`;
-      const date = new Date(item.created_at || '');
-      const timeText = Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString('zh-CN', { hour12: false });
-      const title = document.createElement('strong');
-      title.textContent = `${item.success ? '应用成功' : '应用失败'} · ${historySourceLabel(item.source)}`;
-      const detail = document.createElement('span');
-      detail.textContent = `${timeText} · ${item.provider_count || 0} 个订阅 · ${item.rule_count || 0} 条用户规则 · ${item.capture_mode === 'tun' ? 'TUN' : '系统代理'}`;
-      row.append(title, detail);
-      if (item.restorable) {
-        const restore = document.createElement('button');
-        restore.type = 'button'; restore.className = 'btn mini ghost'; restore.textContent = '回退';
-        restore.onclick = () => restoreHistoryItem(item);
-        row.append(restore);
-      }
-      root.append(row);
-    });
-  }
-
-  async function loadConfigHistory() {
-    if (historyLoading || !byId('routing-config-history')) return;
-    historyLoading = true;
-    try {
-      const result = await backend().get_routing_config_history();
-      if (result?.ok === false) throw new Error(result.msg);
-      renderConfigHistory(result.items || []);
-    } catch (error) {
-      const root = byId('routing-config-history'); root.replaceChildren();
-      const empty = document.createElement('p'); empty.className = 'routing-history-empty';
-      empty.textContent = `历史读取失败：${friendlyError(error)}`; root.append(empty);
-    } finally { historyLoading = false; }
-  }
-
-  async function restoreHistoryItem(item) {
+  async function exportBackup() {
     if (busy) return;
-    const confirmed = await confirmAction({
-      title: '回退到历史配置',
-      message: `将恢复 ${new Date(item.created_at).toLocaleString('zh-CN', { hour12: false })} 的有效分流配置，并立即重新应用。当前配置会先写入历史，是否继续？`,
-      confirmText: '回退并应用', tone: 'notice',
-    });
-    if (!confirmed) return;
-    beginMutation();
-    setBusy(true, 'apply');
+    setBusy(true);
     try {
-      const result = await backend().restore_routing_config_history(item.id);
-      if (result?.ok === false) throw new Error(result.msg);
-      feedback(result.msg || '历史配置已恢复。', 'success');
-      await loadSetup(true, false, true);
-      await loadConfigHistory();
-    } catch (error) { feedback(`回退失败：${friendlyError(error)}`, 'error'); }
+      const result = await backend().export_config_backup(byId('routing-backup-urls').checked);
+      if (result?.cancelled) return;
+      if (!result?.ok || !result.path) throw new Error(result?.msg || '配置文件未保存');
+      feedback(`配置已导出至：${result.path}`, 'success');
+    } catch (error) { feedback(`导出失败：${friendlyError(error)}`, 'error'); }
     finally { setBusy(false); }
   }
 
-  async function exportBackup() {
+  async function importConfig() {
     if (busy) return;
+    setBusy(true);
     try {
-      const result = await backend().export_config_backup(byId('routing-backup-urls').checked);
-      downloadJson(result);
-      feedback(`配置备份已导出；${result.summary?.includes_subscription_urls ? '包含订阅地址，但不含其他凭据' : '不含订阅地址和任何凭据'}。`, 'success');
-    } catch (error) { feedback(`备份失败：${friendlyError(error)}`, 'error'); }
-  }
-
-  async function exportDiagnostics() {
-    if (busy) return;
-    try {
-      const result = await backend().export_routing_diagnostics();
-      downloadJson(result); feedback(`诊断包已导出：${result.summary || '已脱敏'}`, 'success');
-    } catch (error) { feedback(`诊断导出失败：${friendlyError(error)}`, 'error'); }
-  }
-
-  async function restoreBackupFile(file) {
-    if (!file || busy) return;
-    try {
-      if (file.size > 2 * 1024 * 1024) throw new Error('备份文件不能超过 2 MB');
-      const content = await file.text();
-      const preview = await backend().preview_config_restore(content);
-      if (preview?.ok === false) throw new Error(preview.msg);
+      const preview = await backend().preview_config_restore();
+      if (preview?.cancelled) return;
+      if (!preview?.ok) throw new Error(preview?.msg || '配置文件未读取');
       const summary = preview.summary || {};
       const changes = [
         `${summary.provider_count || 0} 个订阅`, `${summary.rule_count || 0} 条用户规则`,
@@ -2799,19 +2723,19 @@
       ].join('、');
       const warnings = (summary.warnings || []).join('；');
       const confirmed = await confirmAction({
-        title: '确认恢复配置备份',
-        message: `已校验备份：${changes}。凭据保留当前本机值；${warnings || '代理启用状态保持不变'}。恢复后会立即预检并应用，是否继续？`,
-        confirmText: '恢复并应用', tone: 'notice',
+        title: '确认导入配置',
+        message: `文件：${preview.path}\n已校验配置：${changes}。凭据保留当前本机值；${warnings || '代理启用状态保持不变'}。${dirty ? '当前未保存的修改将被替换。' : ''}导入后会立即预检并应用，是否继续？`,
+        confirmText: '导入并应用', tone: 'notice',
       });
       if (!confirmed) return;
+      beginMutation();
       setBusy(true, 'apply');
-      const result = await backend().restore_config_backup(content);
+      const result = await backend().restore_config_backup(preview.content);
       if (result?.ok === false) throw new Error(result.msg);
-      feedback(result.msg || '配置备份已恢复。', 'success');
       await loadSetup(true, false, true);
-      await loadConfigHistory();
-    } catch (error) { feedback(`恢复失败：${friendlyError(error)}`, 'error'); }
-    finally { byId('routing-restore-file').value = ''; setBusy(false); }
+      feedback(result.msg || '配置已导入。', 'success');
+    } catch (error) { feedback(`导入失败：${friendlyError(error)}`, 'error'); }
+    finally { setBusy(false); }
   }
 
   function feedback(message, tone = '') {
@@ -2867,7 +2791,6 @@
       'routing-node-search', 'btn-routing-discard', 'routing-bypass-domains',
       'routing-bypass-processes', 'routing-bypass-cn-direct',
       'btn-routing-backup', 'btn-routing-restore',
-      'btn-routing-diagnostic', 'btn-routing-history-refresh',
       'routing-dns-mode', 'routing-dns-enhanced', 'routing-dns-respect-rules',
       'routing-fake-ip-range', 'routing-fake-ip-filter', 'routing-nameserver-policy',
       'btn-routing-dns-validate', 'btn-routing-dns-reset',
@@ -3097,8 +3020,10 @@
       void loadSetup(true, true, true);
       const warningItems = [...(result.warnings || [])];
       const warnings = warningItems.length ? `；${warningItems.join('；')}` : '';
-      feedback(`${result.msg}${warnings}`, warningItems.length ? 'warning' : 'success');
-      toast({ ok: true, msg: result.msg });
+      const message = `${result.msg}${warnings}`;
+      const tone = warningItems.length ? 'warning' : 'success';
+      feedback(message, tone);
+      toast({ ok: true, tone, msg: message });
     } catch (error) {
       feedback(`应用失败：${friendlyError(error)}`, 'error');
       toast({ ok: false, msg: friendlyError(error) });
@@ -3200,12 +3125,9 @@
     byId('routing-node-sort').onchange = renderNodes;
     byId('btn-routing-locate-current').onclick = locateCurrentNode;
     byId('btn-routing-backup').onclick = exportBackup;
-    byId('btn-routing-restore').onclick = () => byId('routing-restore-file').click();
-    byId('btn-routing-diagnostic').onclick = exportDiagnostics;
-    byId('btn-routing-history-refresh').onclick = loadConfigHistory;
+    byId('btn-routing-restore').onclick = importConfig;
     byId('btn-routing-dns-validate').onclick = validateDns;
     byId('btn-routing-dns-reset').onclick = resetDnsRecommended;
-    byId('routing-restore-file').onchange = event => restoreBackupFile(event.target.files?.[0]);
     byId('builtin-rules-search').oninput = renderBuiltinRules;
     byId('builtin-rules-type').onchange = renderBuiltinRules;
     enhanceRoutingSelect(byId('routing-node-sort'), { compact: true });
@@ -3296,6 +3218,7 @@
         },
         auto_update: false,
         interval: 3600,
+        speedtest_interval: 300,
         filter: '',
         exclude_filter: '',
         download_route: 'auto',

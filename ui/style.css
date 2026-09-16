@@ -1106,7 +1106,7 @@ th:last-child { width: 326px; }
 .routing-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(280px, .85fr); gap: 14px; }
 .routing-p1-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 1fr); gap: 14px; margin-top: 14px; }
 .routing-p1-grid > .card { background: linear-gradient(145deg, rgba(255,255,255,.045), rgba(7,11,24,.2)); box-shadow: 0 10px 26px rgba(0,0,0,.18); }
-.routing-dns-card { grid-column: 1 / -1; }
+.routing-dns-card, .routing-bypass-card { grid-column: 1 / -1; }
 .routing-dns-mode-row { display: grid; grid-template-columns: minmax(260px,.65fr) minmax(0,1.35fr); align-items: end; gap: 12px; }
 .routing-dns-summary { min-height: 52px; display: grid; align-content: center; gap: 3px; padding: 9px 12px; border: 1px solid rgba(34,211,238,.18); border-radius: 11px; background: rgba(34,211,238,.04); }
 .routing-dns-summary strong { color: #c9f6fb; font-size: 11.5px; }
@@ -1123,8 +1123,13 @@ th:last-child { width: 326px; }
 .routing-bypass-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .routing-bypass-fields textarea { min-height: 92px; resize: vertical; line-height: 1.5; }
 .routing-bypass-fields small { display: block; margin-top: 5px; color: #6f7d97; font-size: 9.5px; }
-.routing-maintenance-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.routing-maintenance-actions .btn { margin: 0; }
+.routing-config-transfer { margin-top: 14px; padding: 12px 16px; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; }
+.routing-config-transfer summary { cursor: pointer; color: #aab6ce; font-size: 12px; }
+.routing-config-transfer summary:hover { color: #dce4f5; }
+.routing-config-transfer summary:focus-visible { outline: 2px solid var(--acc1); outline-offset: 4px; }
+.routing-config-transfer[open] summary { margin-bottom: 12px; }
+.routing-config-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.routing-config-actions .btn { margin: 0; }
 .routing-backup-option { display: flex; align-items: flex-start; gap: 9px; margin: 12px 0; padding: 10px 11px; border: 1px solid rgba(251,191,36,.14); border-radius: 10px; background: rgba(251,191,36,.035); cursor: pointer; }
 .routing-backup-option input { margin-top: 2px; }
 .routing-backup-option span, .routing-backup-option strong, .routing-backup-option small { display: block; }
@@ -1145,18 +1150,6 @@ th:last-child { width: 326px; }
 .routing-cn-bypass-option { margin-top: 0; }
 .routing-cn-bypass-option small { color: #7895a2; }
 .routing-backup-urls-option small { color: #8b8990; }
-.routing-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 11px; border-top: 1px solid rgba(255,255,255,.065); }
-.routing-history-head strong { font-size: 11.5px; }
-.routing-config-history { display: grid; max-height: 214px; gap: 7px; margin-top: 8px; overflow-y: auto; padding-right: 4px; scrollbar-color: rgba(129,140,248,.52) rgba(8,13,28,.42); scrollbar-width: thin; }
-.routing-config-history::-webkit-scrollbar { width: 8px; }
-.routing-config-history::-webkit-scrollbar-track { border-radius: 999px; background: rgba(8,13,28,.42); }
-.routing-config-history::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: rgba(129,140,248,.52); background-clip: padding-box; }
-.routing-history-item { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px; align-items: center; padding: 9px 10px; border: 1px solid rgba(129,140,248,.12); border-radius: 10px; background: rgba(4,8,20,.35); }
-.routing-history-item strong { overflow: hidden; color: #dce4f5; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
-.routing-history-item span { grid-column: 1; color: #74819b; font-size: 9.5px; }
-.routing-history-item .btn { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
-.routing-history-item.failed strong { color: #fca5a5; }
-.routing-history-empty { margin: 8px 0 0; color: #75819a; font-size: 10px; }
 .routing-toggle-row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   margin-bottom: 14px; padding: 12px 14px; border: 1px solid rgba(99,102,241,.2);
@@ -1291,7 +1284,7 @@ th:last-child { width: 326px; }
 .routing-provider-recovery-actions .btn { margin: 0; }
 .routing-provider-detail > label { display: block; margin-top: 10px; }
 .routing-provider-fields {
-  display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) 150px;
+  display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) repeat(2, 150px);
   gap: 10px;
 }
 .routing-provider-fields .field,
@@ -1502,7 +1495,7 @@ th:last-child { width: 326px; }
 .routing-save-copy small { color: #64718a; font-size: 9.5px; }
 .routing-save-copy:has(#routing-feedback:not(:empty)) #routing-save-hint { display: none; }
 .routing-dirty { display: inline-flex; padding: 3px 7px; border-radius: 999px; color: #fde68a; background: rgba(251,191,36,.1); font-size: 9.5px; }
-#routing-feedback { margin: 0; line-height: 1.4; font-size: 10.5px; }
+#routing-feedback { margin: 0; line-height: 1.4; font-size: 10.5px; overflow-wrap: anywhere; }
 
 .routing-tab-panel > .card,
 .routing-grid > .card { background: linear-gradient(145deg, rgba(255,255,255,.045), rgba(7,11,24,.2)); box-shadow: 0 10px 26px rgba(0,0,0,.18); }
@@ -1517,7 +1510,7 @@ th:last-child { width: 326px; }
   .routing-provider-status { grid-column: 1; grid-row: 2; }
   .routing-provider-actions { grid-column: 2; grid-row: 1 / span 2; }
   .routing-provider-fields { grid-template-columns: 1fr 1fr; }
-  .routing-provider-interval { grid-column: 1 / -1; }
+  .routing-provider-interval { grid-column: auto; }
   .routing-rule-row { grid-template-columns: 30px 110px minmax(170px, 1fr) minmax(180px, 1fr); }
   .routing-rule-actions { grid-column: 2 / -1; }
 }

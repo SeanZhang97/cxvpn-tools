@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import json
+from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from core import config_maintenance
 from core import routing
@@ -30,6 +32,44 @@ def sample_config():
 
 
 class ConfigBackupTests(unittest.TestCase):
+    def test_file_round_trip_preserves_unicode(self):
+        current = sample_config()
+        name = '中文-e\u0301-\U0001f1e8\U0001f1f3'
+        current['routing']['proxy_providers'][0]['name'] = name
+        result = config_maintenance.create_backup(current, True)
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / (name + '.json')
+            saved = config_maintenance.write_backup_file(path, result['content'])
+            content = config_maintenance.read_backup_file(saved)
+            prepared = config_maintenance.prepare_restore(content, current)
+            self.assertEqual(path.read_bytes(), result['content'].encode('utf-8'))
+            self.assertEqual(prepared['candidate']['routing']['proxy_providers'][0]['name'], name)
+            self.assertEqual(list(Path(root).iterdir()), [path])
+
+    def test_failed_replace_preserves_existing_export_and_cleans_temporary(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / '配置.json'
+            path.write_text('原文件', encoding='utf-8')
+            with mock.patch.object(config_maintenance.os, 'replace', side_effect=PermissionError('locked')):
+                with self.assertRaises(PermissionError):
+                    config_maintenance.write_backup_file(path, '新配置')
+            self.assertEqual(path.read_text(encoding='utf-8'), '原文件')
+            self.assertEqual(list(Path(root).iterdir()), [path])
+
+    def test_import_accepts_utf8_bom_and_rejects_invalid_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / '配置.JSON'
+            path.write_bytes(b'\xef\xbb\xbf' + '{"备注":"中文"}'.encode('utf-8'))
+            self.assertEqual(config_maintenance.read_backup_file(path), '{"备注":"中文"}')
+            path.write_bytes(b'x' * (config_maintenance.MAX_IMPORT_BYTES + 1))
+            with self.assertRaisesRegex(routing.RoutingError, '2 MB'):
+                config_maintenance.read_backup_file(path)
+            path.write_bytes(b'\xff')
+            with self.assertRaises(UnicodeDecodeError):
+                config_maintenance.read_backup_file(path)
+            with self.assertRaisesRegex(routing.RoutingError, 'JSON'):
+                config_maintenance.read_backup_file(str(path) + '.txt')
+
     def test_default_backup_omits_credentials_and_subscription_urls(self):
         result = config_maintenance.create_backup(sample_config())
         text = result['content']
@@ -73,42 +113,6 @@ class ConfigBackupTests(unittest.TestCase):
         self.assertTrue(candidate['routing']['enabled'])
         self.assertEqual(candidate['routing']['traffic_mode'], 'global')
         self.assertTrue(prepared['summary']['credentials_preserved'])
-
-    def test_diagnostic_redacts_urls_credentials_and_connection_targets(self):
-        result = config_maintenance.diagnostic_bundle(
-            sample_config(),
-            ['request https://secret.example/path?token=abc',
-             'Authorization: Bearer private-token'],
-            [{'payload': 'proxy https://sub.example/path?key=abc'}],
-            {'secret': 'controller-value', 'mihomo_log': [
-                'connect api.private.example:443 via 203.0.113.8:443']},
-            {'active_connection_count': 2})
-
-        text = result['content']
-        self.assertNotIn('secret.example', text)
-        self.assertNotIn('sub.example', text)
-        self.assertNotIn('private-token', text)
-        self.assertNotIn('controller-value', text)
-        self.assertNotIn('api.private.example', text)
-        self.assertNotIn('203.0.113.8', text)
-        self.assertIn('active_connection_count', text)
-
-
-class ConfigHistoryTests(unittest.TestCase):
-    def test_history_is_bounded_and_only_success_is_restorable(self):
-        with tempfile.TemporaryDirectory() as root:
-            history = config_maintenance.ConfigHistory(root)
-            config = sample_config()['routing']
-            history.record(config, True, 'manual', '成功')
-            history.record(config, False, 'manual', '失败 token=secret')
-
-            items = history.list()
-
-            self.assertEqual(len(items), 2)
-            self.assertFalse(items[0]['restorable'])
-            self.assertNotIn('secret', items[0]['message'])
-            restored = history.load(items[1]['id'])
-            self.assertEqual(restored['proxy_providers'][0]['id'], 'alpha')
 
 
 if __name__ == '__main__':

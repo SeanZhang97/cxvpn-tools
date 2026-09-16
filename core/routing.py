@@ -329,9 +329,9 @@ def windows_manual_proxy_state():
     部分应用直接无法上网）。TUN 门控必须读取原始启用位，不能复用可用性语义。
     """
     try:
-        state = proxy_guard.read_proxy_state()
-    except (OSError, ImportError):
-        return {'enabled': False, 'server': ''}
+        state = proxy_guard.read_proxy_state(strict=True)
+    except (OSError, ValueError, ImportError) as exc:
+        raise RoutingError('无法读取 Windows 手动代理状态') from exc
     return {'enabled': bool(state.get('enable')),
             'server': str(state.get('server') or '')}
 
@@ -425,6 +425,15 @@ def normalize_config(value):
             interval = int(provider.get('interval') or 3600)
         except (TypeError, ValueError):
             interval = 3600
+        raw_speedtest_interval = provider.get('speedtest_interval', 300)
+        try:
+            speedtest_interval = int(raw_speedtest_interval)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RoutingError(f'代理订阅“{name}”的自动测速间隔必须为 1～1440 的整数分钟') from exc
+        if (isinstance(raw_speedtest_interval, bool) or
+                str(raw_speedtest_interval) != str(speedtest_interval) or
+                not 60 <= speedtest_interval <= 86400 or speedtest_interval % 60):
+            raise RoutingError(f'代理订阅“{name}”的自动测速间隔必须为 1～1440 的整数分钟')
         include_filter = str(provider.get('filter') or '').strip()
         exclude_filter = str(provider.get('exclude_filter') or '').strip()
         if len(include_filter) > 200 or len(exclude_filter) > 200:
@@ -460,6 +469,7 @@ def normalize_config(value):
                 provider.get('auto_policy'), name, RoutingError),
             'auto_update': bool(provider.get('auto_update', False)),
             'interval': min(86400, max(300, interval)),
+            'speedtest_interval': speedtest_interval,
             'filter': include_filter,
             'exclude_filter': exclude_filter,
             'download_route': download_route,
@@ -959,9 +969,9 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
                 warnings.append(
                     'Windows 系统代理当前指向本软件端口，'
                     '本次启用 TUN 时会暂时关闭，停止 TUN 后恢复原设置')
-            elif not proxy_server:
+            elif proxy_server.strip() in ('', ':'):
                 raise RoutingError(
-                    '检测到 Windows 系统代理已开启但未配置服务器地址，'
+                    '检测到 Windows 系统代理已开启但服务器地址无效，'
                     '遵循系统代理的应用不会进入 TUN 且可能无法上网；'
                     '请先在 Windows 设置中关闭系统代理后重试')
             else:
@@ -1217,7 +1227,7 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
                     'type': 'fallback',
                     'proxies': [download['upstream'], 'PHYSICAL'],
                     'url': HEALTH_CHECK_URL,
-                    'interval': 300,
+                    'interval': provider.get('speedtest_interval', 300),
                     'timeout': 5000,
                     'lazy': True,
                 })
@@ -1227,7 +1237,7 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
                     'type': 'fallback',
                     'use': [provider_keys[provider['id']]],
                     'url': HEALTH_CHECK_URL,
-                    'interval': 300,
+                    'interval': provider.get('speedtest_interval', 300),
                     'timeout': 5000,
                     'lazy': True,
                     'empty-fallback': 'PHYSICAL',
@@ -1249,10 +1259,13 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
                 generated['proxy-groups'].append(_proxy_group_config(
                     provider_groups[provider['id']],
                     _selection.provider_group_strategy(provider),
+                    speedtest_interval=provider.get('speedtest_interval', 300),
                     provider_keys=[provider_keys[provider['id']]]))
         generated['proxy-groups'].append(_aggregate.build_manual_group(config, provider_keys)
             if _aggregate.is_manual(config) else _proxy_group_config(
             'PROXY', config['proxy_strategy'],
+            speedtest_interval=min((item.get('speedtest_interval', 300)
+                                    for item in enabled_providers), default=300),
             proxy_names=[provider_groups[item['id']]
                          for item in enabled_providers]))
     rules = []
@@ -1283,7 +1296,7 @@ def _proxy_provider_config(provider, path, prefix='', health_check=True,
         'health-check': {
             'enable': bool(health_check),
             'url': HEALTH_CHECK_URL,
-            'interval': 300,
+            'interval': provider.get('speedtest_interval', 300),
             'timeout': 5000,
             'lazy': True,
         },
@@ -1304,7 +1317,7 @@ def _proxy_provider_config(provider, path, prefix='', health_check=True,
 
 
 def _proxy_group_config(name, strategy, *, provider_keys=None,
-                        proxy_names=None):
+                        proxy_names=None, speedtest_interval=300):
     """生成订阅节点组或上层组合组，避免跨层直接展开订阅节点。"""
     if (provider_keys is None) == (proxy_names is None):
         raise ValueError('代理组必须且只能指定一种成员来源')
@@ -1320,7 +1333,7 @@ def _proxy_group_config(name, strategy, *, provider_keys=None,
     if strategy in {'url-test', 'fallback'}:
         group.update({
             'url': HEALTH_CHECK_URL,
-            'interval': 300,
+            'interval': speedtest_interval,
             'timeout': 5000,
             'lazy': True,
         })
@@ -1628,6 +1641,33 @@ class RoutingManager:
             f'WindowBroadcast={bool(result.get("broadcast"))}，'
             f'耗时={elapsed:.2f}秒；代理关闭状态保持不变')
         return False
+
+    def _repair_invalid_proxy(self, reason):
+        """只修复当前用户的空手动代理，不替换合法第三方代理。"""
+        try:
+            state = proxy_guard.read_proxy_state(strict=True)
+            if not proxy_guard.invalid_manual_proxy(state):
+                return
+            started = time.monotonic()
+            self._log_best_effort(
+                f'[routing] {reason}发现无效手动代理，开始备份并修复当前用户 WinINet 设置')
+            if not proxy_guard.repair_invalid_manual_proxy():
+                raise OSError('修复前代理状态已变化')
+            self._refresh_user_proxy_settings('无效手动代理修复后')
+            state = proxy_guard.read_proxy_state(strict=True)
+            if state['enable'] or state['server']:
+                raise OSError('当前用户刷新后手动代理仍未关闭')
+            self._log_best_effort(
+                f'[routing] 无效手动代理修复完成并回读确认，耗时={time.monotonic()-started:.2f}秒')
+        except (OSError, ValueError) as exc:
+            self._log_best_effort(
+                f'[routing] {reason}代理状态确认失败：{type(exc).__name__}: '
+                f'{_sanitize_mihomo_error(exc)}')
+            raise RoutingError('Windows 手动代理状态无法确认，请检查系统代理设置后重试') from exc
+
+    def _confirm_disabled_proxy(self, reason):
+        self._refresh_user_proxy_settings(reason)
+        self._repair_invalid_proxy(reason)
 
     def _service_state(self, allow_powershell=True):
         try:
@@ -2164,7 +2204,7 @@ if ($service) {{
                 'type': 'fallback',
                 'proxies': [download['upstream'], 'PHYSICAL'],
                 'url': HEALTH_CHECK_URL,
-                'interval': 300,
+                'interval': provider.get('speedtest_interval', 300),
                 'timeout': 5000,
                 'lazy': True,
             })
@@ -2174,7 +2214,7 @@ if ($service) {{
                 'type': 'fallback',
                 'use': ['preview'],
                 'url': HEALTH_CHECK_URL,
-                'interval': 300,
+                'interval': provider.get('speedtest_interval', 300),
                 'timeout': 5000,
                 'lazy': True,
                 'empty-fallback': 'PHYSICAL',
@@ -3138,11 +3178,18 @@ if ($service) {{
             })
         return rows
 
+    def _check_native_runtime(self):
+        # 原生 status 只观察退出；tick/rollback 负责清理并保留失败现场。
+        state = self._native_service.status()
+        if isinstance(state, dict) and state.get('runtime_running') is False:
+            raise RoutingError('Mihomo 核心在启动期间已退出')
+
     def _wait_native_ready(self, config, runtime_mode='active'):
         started_at = time.monotonic()
         self.log('[routing] 原生服务已领取配置事务，开始等待 Mihomo Controller（超时 25 秒）')
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
+            self._check_native_runtime()
             if self._controller_version(config):
                 break
             time.sleep(0.25)
@@ -3170,6 +3217,7 @@ if ($service) {{
             for provider_id in referenced
         }
         while pending and time.monotonic() < deadline:
+            self._check_native_runtime()
             for provider_id, (group_name, selected_node) in list(pending.items()):
                 path = f'/proxies/{urllib.parse.quote(group_name, safe="")}'
                 try:
@@ -3407,7 +3455,7 @@ if ($service) {{
                 diagnostics = self._native_service.diagnostics()
                 lines = diagnostics.get('mihomo_log') if isinstance(
                     diagnostics, dict) else []
-                for line in (lines or [])[-3:]:
+                for line in (lines or [])[-30:]:
                     self._log_best_effort(
                         f'[routing] Mihomo 诊断: {_sanitize_mihomo_error(line)}')
             except Exception as diagnostic_error:
@@ -3450,10 +3498,28 @@ if ($service) {{
             config['capture_mode'] == 'system-proxy' and
             service_state.get('installed') and
             service_state.get('backend') == 'native' and
+            service_state.get('service_compatible') is True and
+            not service_state.get('pending_transaction') and
             service_state.get('runtime_running') and
             service_state.get('fast_toggle_ready') and
             service_state.get('runtime_mode') in {'active', 'standby'} and
             not service_state.get('crash_fused'))
+
+    def _fail_fast_toggle(self, message):
+        try:
+            result = self._native_service.set_system_proxy_enabled(False)
+            if isinstance(result, dict) and (
+                    result.get('runtime_mode') not in (None, 'standby') or
+                    result.get('system_proxy_active') not in (None, False)):
+                raise RoutingError('系统代理回退后服务状态不一致')
+            self._confirm_disabled_proxy('系统代理回退后')
+        except (_routing_service.ServiceError, RoutingError) as exc:
+            self._log_best_effort(
+                f'[routing] {message}；系统代理回退失败：{type(exc).__name__}: '
+                f'{_sanitize_mihomo_error(exc)}')
+            raise RoutingError(
+                f'{message}；且系统代理恢复失败，请检查当前运行状态') from exc
+        raise RoutingError(f'{message}，已回退系统代理')
 
     def _fast_toggle_system_proxy(self, config, enabled):
         started_at = time.monotonic()
@@ -3486,13 +3552,7 @@ if ($service) {{
                     # host.  Best-effort force standby before surfacing the
                     # mismatch so a false success cannot leave system traffic
                     # captured by an unverified core.
-                    try:
-                        self._native_service.set_system_proxy_enabled(False)
-                    except _routing_service.ServiceError as rollback_error:
-                        self._log_best_effort(
-                            f'[routing] 系统代理状态回退失败: '
-                            f'{type(rollback_error).__name__}')
-                    raise RoutingError(
+                    self._fail_fast_toggle(
                         f'系统代理{action}后常驻核心状态回读不一致')
         except _routing_service.ServiceError as exc:
             raise RoutingError(
@@ -3506,11 +3566,14 @@ if ($service) {{
             if (isinstance(service_result, dict) and
                     service_result.get('system_proxy_active') is True and
                     windows_system_proxy() != expected):
-                self._log_best_effort(
-                    '[routing] 原生服务已确认系统代理开启，但当前会话回读仍为关闭，'
-                    '补写 WinINET ProxyEnable')
                 try:
-                    proxy_guard.set_proxy_enabled(True)
+                    current = proxy_guard.read_proxy_state(strict=True)
+                    if (not current['enable'] and
+                            current['server'] == f'127.0.0.1:{config["mixed_port"]}'):
+                        self._log_best_effort(
+                            '[routing] 原生服务已确认系统代理开启，当前会话端口一致但启用位关闭，'
+                            '补写 WinINET ProxyEnable')
+                        proxy_guard.set_proxy_enabled(True)
                 except (OSError, ValueError) as exc:
                     self._log_best_effort(
                         f'[routing] 当前会话补写 ProxyEnable 失败：{type(exc).__name__}')
@@ -3525,17 +3588,12 @@ if ($service) {{
                     break
                 time.sleep(0.05)
             if not confirmed:
-                try:
-                    self._native_service.set_system_proxy_enabled(False)
-                except _routing_service.ServiceError:
-                    pass
-                raise RoutingError(
-                    'Windows 系统代理开启后回读不一致，已自动恢复原设置')
+                self._fail_fast_toggle('Windows 系统代理开启后回读不一致')
         self.log(
             f'[routing] Windows 系统代理快切完成：target={action}，耗时 '
             f'{time.monotonic() - started_at:.2f} 秒')
         if not enabled:
-            self._refresh_user_proxy_settings('系统代理关闭后')
+            self._confirm_disabled_proxy('系统代理关闭后')
         return {
             'ok': True,
             'msg': '代理已开启' if enabled else '代理已关闭，节点核心保持待机',
@@ -3573,12 +3631,29 @@ if ($service) {{
                 if item.get('enabled')]
             if installed:
                 if service_state.get('backend') == 'native':
+                    standby_matches = bool(
+                        enabled_providers and service_state.get('service_compatible') is True and
+                        service_state.get('runtime_running') and
+                        service_state.get('runtime_mode') == 'standby' and
+                        service_state.get('system_proxy_active') is False and
+                        not service_state.get('pending_transaction') and
+                        not service_state.get('crash_fused') and
+                        (self.runtime_matches(config, service_state) or
+                         service_state.get('applied_config_signature') ==
+                         self._config_signature(config)))
+                    if standby_matches and self._controller_version(config):
+                        self._repair_invalid_proxy('待机核心复用前')
+                        self._log_best_effort('[routing] 已关闭配置与待机核心一致，保留当前核心')
+                        return {'ok': True, 'msg': '代理已关闭，节点核心保持待机',
+                                'config': config, 'warnings': [], 'standby_pending': False,
+                                'status': self.status(config)}
+                    # stopped 不能证明上次路由/代理快照清理成功；仍由服务幂等收尾。
                     try:
                         self._native_service.stop_runtime()
                     except _routing_service.ServiceError as exc:
                         raise RoutingError(
                             f'关闭统一分流失败：{_sanitize_mihomo_error(exc)}') from exc
-                    self._refresh_user_proxy_settings('系统流量接管停止后')
+                    self._confirm_disabled_proxy('系统流量接管停止后')
                     self.log('[routing] 系统流量接管已停止，Windows 原始路由已恢复')
                     if enabled_providers and not defer_standby:
                         try:
@@ -3608,7 +3683,7 @@ if ($service) {{
                 self._service_state(allow_powershell=False).get(
                     'runtime_mode') == 'standby')
             return {'ok': True,
-                    'msg': ('代理已关闭，节点核心正在后台启动'
+                    'msg': ('代理已关闭'
                             if defer_standby and installed and enabled_providers else
                             '代理已关闭，节点核心保持待机'
                             if standby_started else
@@ -3627,6 +3702,8 @@ if ($service) {{
             config, referenced_provider_ids)
         if selection_error:
             raise RoutingError(selection_error)
+        if config['capture_mode'] == 'tun':
+            self._repair_invalid_proxy('TUN 启用前')
         environment = self._environment.snapshot(config['capture_mode'] == 'tun', fresh=True)
         vpns, interfaces, conflicts = (environment['vpns'], environment['interfaces'],
                                        environment['tun_conflicts'])

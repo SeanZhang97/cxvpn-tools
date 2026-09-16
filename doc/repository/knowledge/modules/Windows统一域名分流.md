@@ -2,8 +2,8 @@
 
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
 界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
-关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置备份, 配置历史, 诊断包, DNS高级模式, nameserver-policy, 托盘快捷操作, 域名分流导航
-最后验证：2026-09-15 | 分支：main
+关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置导入, 配置导出, 文件选择, DNS高级模式, nameserver-policy, 托盘快捷操作, 域名分流导航
+最后验证：2026-09-16 | 分支：main
 
 ## 职责边界
 
@@ -123,26 +123,28 @@
 内置规则，但显式 bypass 和启用的国内 IP 兜底仍保留在 `MATCH` 之前；重复的完全相同规则会按
 首次出现位置合并。
 
-## 配置保护与诊断
+## 配置导入与导出
 
-- `core/config_maintenance.py` 负责本地备份、恢复预览、路由应用历史和诊断脱敏；配置与历史
-  均位于当前用户 LocalAppData。导入文件最大 2 MB，必须声明产品和备份版本，解析和路由
-  规范化通过后才能进入应用事务。
-- 默认备份不包含订阅 URL；用户显式勾选后可包含 URL，但 `creds`、手机号、授权状态、邮箱密码、
-  VLM key、Controller 端口/secret 和自定义订阅上游始终不导出。恢复以当前内存配置为基底，
-  保留所有本机凭据；未携带 URL 的 provider 按 ID 复用当前地址。恢复备份不改变当前
-  `routing.enabled`，避免仅导入配置便意外接管或关闭系统流量。
-- 恢复不是直接覆盖 JSON：UI 先调用 `preview_config_restore` 展示通用字段、路由字段、订阅和规则
-  差异，用户再次确认后才复用 `apply_routing` 的“服务应用 → 原子保存 → 保存失败回滚服务”事务。
-- 最近 12 次应用结果保存在
-  `%LOCALAPPDATA%\CXVPNTools\routing\history`；旧版
-  `%LOCALAPPDATA%\CXVPNManager\routing\history` 在首次启动时合并迁移。
-  成功记录含完整路由配置以支持回退，失败记录
-  只含摘要和脱敏错误；API 只向 UI 返回摘要。首次应用前先写入当前有效基线，历史回退本身也会
-  先建立当前基线并产生新的应用记录。
-- 诊断包是 UTF-8 JSON，包含平台、路由/规则/订阅数量摘要、原生服务诊断、最近应用与 Mihomo
-  日志以及连接数量/流量合计。它不包含活动连接目标、进程路径或规则载荷；输出再次递归移除 URL、
-  Bearer、查询凭据、常见 secret 字段和用户主目录。诊断导出不读取或修改真实网络状态。
+- 域名分流页仅保留默认收起的“配置导入与导出”入口，使用主窗口的
+  `create_file_dialog` 打开 Windows 保存/打开文件窗口，不再触发浏览器 Blob 下载。
+- `Api.export_config_backup` 在用户选择路径后调用
+  `core/config_maintenance.py::write_backup_file`，使用同目录临时文件、UTF-8、
+  `fsync` 与原子替换；只有落盘成功才返回实际保存路径。取消选择不写文件、不提示成功，
+  写入失败保留原有文件；导出的是已保存配置。
+- 默认导出不包含订阅 URL；用户显式勾选后可包含 URL，但 `creds`、手机号、授权状态、邮箱密码、
+  VLM key、Controller 端口/secret 和自定义订阅上游始终不导出。沿用原产品标识与版本 1
+  JSON 格式，已有备份文件仍可导入。
+- `Api.preview_config_restore` 选择 JSON 文件并有界读取，最大 2 MB，接受 UTF-8 BOM；
+  产品标识、版本与路由规范化校验通过后返回文件路径、差异摘要和读取时的内容快照。
+  UI 展示路径和差异，确认后将该内容快照交给 `restore_config_backup`，避免确认期间文件变化。
+- 导入以当前内存配置为基底，保留本机凭据；未携带 URL 的 provider 按 ID 复用当前地址。
+  导入不改变当前 `routing.enabled`。确认后复用 `apply_routing` 的“服务应用 → 原子保存 →
+  保存失败回滚服务”事务；存在未保存草稿时，确认提示会明确告知草稿将被替换。
+- 已移除配置应用历史的生成、查询、手动历史回退和诊断包导出 API、界面与专用实现。
+  旧 `routing/history` 文件不再读写，不主动清理用户目录。配置提交失败的补偿回滚、
+  SQLite 主存储恢复、服务内部诊断和运行日志仍各自按原有职责工作。
+- 文件选择、取消、读取/写入、校验、应用和失败阶段均记录运行日志；导入导出的文件内容和
+  凭据不写入日志。排障通过现有 `run.log`、`startup.log` 与核心/服务日志定位。
 
 ## 出口模型
 
@@ -173,7 +175,12 @@
   不得直接 `use` 原始 provider，否则会绕过订阅级智能优选、手动节点和故障转移策略。
   每个 provider 对节点名添加 `[订阅名] ` 前缀，避免不同订阅同名节点冲突。现有第三方 Clash
   不作为上游 TUN；应关闭其 TUN，直接把订阅交给本模块。
-- `url-test` 每 300 秒检测并以 80ms 容差自动择优；`fallback` 按节点顺序选择首个可用
+- 每个订阅的 `speedtest_interval` 独立控制自动测速，单位为秒，默认 300；界面在“订阅 → 编辑”
+  按整数分钟设置，范围 1～1440。它与“订阅更新间隔（分钟）”（`interval`）、`auto_update` 相互独立。
+  保存应用后，provider 健康检查、普通订阅组、智能优选各层和下载出口故障组均使用该订阅周期；
+  聚合 `PROXY` 组使用已启用订阅中的最短周期。`lazy=true` 保持不变，未使用时可能跳过检测。
+  旧配置缺少字段时沿用 5 分钟；更改周期会改变运行配置签名，但不会失效节点缓存或测速历史。
+- 普通 `url-test` 按配置周期检测并以 80ms 容差自动择优；`fallback` 按节点顺序选择首个可用
   节点。订阅进入手动模式时对应组固定生成为 `select`，持久化的是不含 `[订阅名] ` 前缀的
   原节点名；调用 Controller 时再恢复运行态前缀。手动选择只允许当前安全节点快照内的节点，
   Controller 仍只监听回环地址并要求 Bearer secret。节点偏好与路由出口相互独立：保存手动
@@ -573,7 +580,7 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   对应规则、订阅或节点页。底部保存栏同时承担未保存状态、操作反馈和预检/应用入口。
 - 订阅卡默认折叠，只展示启用状态、策略、更新周期、节点可用数和当前节点；订阅 URL、
   包含/排除正则等低频字段仅在编辑态展示。订阅 URL 在编辑态直接明文显示且不提供显隐开关，
-  但日志、诊断包和默认配置备份仍不得泄露该地址。修改尚未保存时不得用 Controller
+  但日志和默认配置导出仍不得泄露该地址。修改尚未保存时不得用 Controller
   更新旧订阅，必须先“保存并应用”。
 - 每张订阅卡提供“查看节点”入口，进入节点页时优先选择该订阅对应的 `PROXY-<id>` 组。
   未保存或服务未运行时，“预览节点”会启动不含 TUN 和代理监听端口的临时 Mihomo，加载

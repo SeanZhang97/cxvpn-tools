@@ -4,10 +4,10 @@ import datetime
 import json
 import os
 import queue
-import platform
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from contextlib import nullcontext
@@ -188,8 +188,6 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         self.worker._serializable = False
         self.routing = routing.RoutingManager(self.log)
         self.routing._serializable = False
-        self.routing_history = config_maintenance.ConfigHistory()
-        self.routing_history._serializable = False
         self.routing_test_jobs = RoutingTestJobs(self.log)
         self.routing_test_jobs._serializable = False
         self.routing_updates = RoutingUpdateWorker(
@@ -349,14 +347,10 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                             f'[routing] {source}发现代理接管未完整恢复，'
                             f'系统代理={actual_proxy or "关闭"}，'
                             f'核心运行={runtime_ok}，开始恢复代理接管')
-                        if (state.get('installed') and
-                                state.get('backend') == 'native' and
-                                self.routing._can_fast_toggle_system_proxy(
-                                    current, state)):
-                            result = self.routing._fast_toggle_system_proxy(
-                                current, True)
-                        else:
-                            result = self.routing.apply(current)
+                        # 启动恢复也复核运行配置与物理网卡，不能只因核心存活
+                        # 就跳过 apply 中的快切复用条件。
+                        result = self.routing.apply(
+                            current, allow_fast_toggle=True)
                         if not result.get('ok', True):
                             raise routing.RoutingError(
                                 result.get('msg') or '启动时恢复系统代理失败')
@@ -407,7 +401,6 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                     self.log('[routing] 待机核心复核完成：代理保持关闭，临时核心降级可用')
                 else:
                     self.log('[routing] 待机核心复核成功')
-                self._poke_ui_state()
 
         def guarded_reconcile():
             try:
@@ -416,6 +409,12 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                 self.log(
                     f'[routing] 待机核心复核失败：{type(exc).__name__}；'
                     '代理保持关闭，订阅操作将使用临时核心')
+            finally:
+                # 前端按 revision 重读运行态；仅唤醒状态流无法刷新待机结果。
+                # 配置没有变更，不调用 _routing_changed 取消正在运行的测速任务。
+                with self._lock:
+                    self._routing_revision = getattr(self, '_routing_revision', 0) + 1
+                self._poke_ui_state()
 
         thread = threading.Thread(
             target=guarded_reconcile, daemon=True,
@@ -1280,16 +1279,8 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         right.pop('enabled', None)
         return left == right
 
-    def _history_record(self, config, success, source, message):
-        try:
-            self.routing_history.record(
-                config, success, source, message)
-        except Exception as exc:
-            self.log(
-                f'[routing-history] 历史记录写入失败: {type(exc).__name__}')
-
     def _apply_routing_locked(self, value, source, replacement_cfg=None, expected_interface=None):
-        """在持有 _routing_lock 时提交路由和磁盘配置，并维护有效历史。"""
+        """在持有 _routing_lock 时提交路由和磁盘配置，并在保存失败时恢复原分流状态。"""
         self._routing_changed()
         previous_cfg = self._cfg_get()
         previous_routing_raw = json.loads(json.dumps(
@@ -1300,11 +1291,6 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         allow_fast_toggle = self._routing_matches_except_enabled(
             previous_routing, requested)
         try:
-            try:
-                self.routing_history.ensure_baseline(previous_routing)
-            except Exception as exc:
-                self.log(
-                    f'[routing-history] 基线记录失败: {type(exc).__name__}')
             apply_options = {'defer_standby': True, 'allow_fast_toggle': allow_fast_toggle}
             if expected_interface is not None:
                 apply_options.update(allow_fast_toggle=False, expected_interface=expected_interface)
@@ -1336,111 +1322,105 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                         '请保持软件打开并重新应用原配置') from save_exc
                 raise routing.RoutingError(
                     '配置保存失败，已自动恢复原分流状态') from save_exc
+            if not result['config'].get('enabled'):
+                # 只描述已提交的用户操作，不把后续待机任务当作保存结果。
+                result['msg'] = ('配置已保存，代理保持关闭'
+                                 if source == 'manual' else '代理已关闭')
             # 仅在启用 -> 关闭的事务成功提交后清理；启动对账和保存失败回滚
             # 都不能连带修改 Codex 配置。
             if (result.get('ok') and previous_routing['enabled'] and
                     not result['config'].get('enabled')):
                 self._close_codex_after_proxy_disabled(result)
-            routing.subscription_store.prune_cache(
-                result['config'].get('proxy_providers') or [])
-            self._history_record(
-                result['config'], True, source,
-                result.get('msg') or '配置已应用')
+            try:
+                routing.subscription_store.prune_cache(
+                    result['config'].get('proxy_providers') or [])
+            except OSError as exc:
+                # 运行态与配置已经提交，缓存维护失败不能改变结果或阻断待机恢复。
+                self.log(
+                    '[routing] 配置已提交，旧订阅缓存清理失败：'
+                    f'{type(exc).__name__}；保留本次应用结果')
             if standby_pending:
                 self._start_routing_standby_reconcile('代理关闭后')
             self._routing_changed()
             self._poke_ui_state()
             return self._routing_response(result)
         except Exception as exc:
-            try:
-                failed = routing.normalize_config(requested)
-            except Exception:
-                failed = previous_routing
-            self._history_record(failed, False, source, str(exc))
             self._routing_changed()
             self.log(f'[routing] 应用失败: {exc}')
             return self._routing_response({'ok': False, 'msg': str(exc)})
 
+    def _choose_config_file(self, save_filename=''):
+        from webview import FileDialog
+
+        window = self.worker.main_window
+        if window is None:
+            raise RuntimeError('主窗口尚未就绪，请稍后重试')
+        selected = window.create_file_dialog(
+            FileDialog.SAVE if save_filename else FileDialog.OPEN,
+            allow_multiple=False, save_filename=save_filename,
+            file_types=('JSON 配置文件 (*.json)',))
+        return selected[0] if selected else None
+
     def export_config_backup(self, include_subscription_urls=False):
+        started = time.monotonic()
+        self.log('[config] 收到配置导出请求，等待选择保存位置；可取消')
         try:
             result = config_maintenance.create_backup(
                 self._cfg_get(), bool(include_subscription_urls))
-            self.log('[config] 配置备份已生成（不包含登录或服务凭据）')
-            return result
+            path = self._choose_config_file(result['filename'])
+            if not path:
+                self.log('[config] 配置导出已取消')
+                return {'ok': True, 'cancelled': True}
+            self.log(f'[config] 开始写入配置文件: {path}')
+            path = config_maintenance.write_backup_file(path, result['content'])
+            self.log(f'[config] 配置导出成功: {path}，耗时 {time.monotonic() - started:.2f}s')
+            return {'ok': True, 'path': path, 'summary': result['summary']}
         except Exception as exc:
-            self.log(f'[config] 配置备份生成失败: {type(exc).__name__}')
+            self.log(f'[config] 配置导出失败，耗时 {time.monotonic() - started:.2f}s: '
+                     f'{type(exc).__name__}\n{"".join(traceback.format_tb(exc.__traceback__))}')
             return {'ok': False, 'msg': str(exc)}
 
-    def preview_config_restore(self, content):
+    def preview_config_restore(self):
+        started = time.monotonic()
+        self.log('[config] 收到配置导入请求，等待选择 JSON 文件；可取消')
         try:
+            path = self._choose_config_file()
+            if not path:
+                self.log('[config] 配置导入已取消')
+                return {'ok': True, 'cancelled': True}
+            self.log(f'[config] 开始读取并校验配置文件（上限 2 MB）: {path}')
+            content = config_maintenance.read_backup_file(path)
             prepared = config_maintenance.prepare_restore(
                 content, self._cfg_get())
-            return {'ok': True, 'summary': prepared['summary']}
+            self.log(f'[config] 配置文件校验完成，等待确认导入，耗时 {time.monotonic() - started:.2f}s')
+            return {'ok': True, 'summary': prepared['summary'],
+                    'content': content, 'path': os.path.abspath(path)}
         except Exception as exc:
+            self.log(f'[config] 配置文件读取或校验失败，耗时 {time.monotonic() - started:.2f}s: '
+                     f'{type(exc).__name__}\n{"".join(traceback.format_tb(exc.__traceback__))}')
             return {'ok': False, 'msg': str(exc)}
 
     def restore_config_backup(self, content):
+        self.log('[config] 配置导入已确认，等待应用锁')
         with self._routing_lock:
+            self.log('[config] 开始校验并应用导入配置')
             try:
                 prepared = config_maintenance.prepare_restore(
                     content, self._cfg_get())
             except Exception as exc:
+                self.log(f'[config] 配置导入校验失败: {type(exc).__name__}\n'
+                         f'{"".join(traceback.format_tb(exc.__traceback__))}')
                 return {'ok': False, 'msg': str(exc)}
             result = self._apply_routing_locked(
                 prepared['candidate']['routing'], 'backup_restore',
                 prepared['candidate'])
             if result.get('ok'):
-                result['msg'] = '配置备份已恢复；代理启用状态保持不变'
+                result['msg'] = '配置已导入；代理启用状态保持不变'
                 result['restore_summary'] = prepared['summary']
-                self.log('[config] 配置备份恢复成功')
+                self.log('[config] 配置导入成功')
+            else:
+                self.log('[config] 配置导入失败，应用事务未完成')
             return result
-
-    def get_routing_config_history(self):
-        try:
-            return {'ok': True, 'items': self.routing_history.list()}
-        except Exception as exc:
-            return {'ok': False, 'msg': str(exc), 'items': []}
-
-    def restore_routing_config_history(self, record_id):
-        with self._routing_lock:
-            try:
-                historical = self.routing_history.load(record_id)
-            except Exception as exc:
-                return {'ok': False, 'msg': str(exc)}
-            return self._apply_routing_locked(historical, 'history_restore')
-
-    def export_routing_diagnostics(self):
-        try:
-            service = self.routing._service_state(allow_powershell=False)
-            try:
-                native = self.routing._native_service.diagnostics()
-            except Exception as exc:
-                native = {'available': False, 'error': type(exc).__name__}
-            logs_snapshot = self.routing_activity.snapshot('logs')
-            connections_snapshot = self.routing_activity.snapshot('connections')
-            core_logs = ((logs_snapshot.get('snapshot') or {}).get('items') or [])
-            connection_state = connections_snapshot.get('snapshot') or {}
-            activity = {
-                'active_connection_count': len(connection_state.get('active') or []),
-                'closed_connection_count': len(connection_state.get('closed') or []),
-                'upload_total': connection_state.get('upload_total', 0),
-                'download_total': connection_state.get('download_total', 0),
-            }
-            result = config_maintenance.diagnostic_bundle(
-                self._cfg_get(), self.get_logs(), core_logs,
-                {'state': service, 'native': native}, activity,
-                {
-                    'system': platform.system(),
-                    'release': platform.release(),
-                    'machine': platform.machine(),
-                    'python_frozen': bool(getattr(sys, 'frozen', False)),
-                    'mihomo_version': routing.MIHOMO_VERSION,
-                })
-            self.log('[diagnostic] 脱敏诊断包已生成')
-            return result
-        except Exception as exc:
-            self.log(f'[diagnostic] 诊断包生成失败: {type(exc).__name__}')
-            return {'ok': False, 'msg': str(exc)}
 
     def test_sms_email(self):
         """测试已保存的 IMAP 配置，只读打开邮箱而不读取正文。"""

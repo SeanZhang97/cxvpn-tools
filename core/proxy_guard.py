@@ -65,7 +65,7 @@ def _atomic_json(path, payload):
 
 
 # ---------- 注册表读写 ----------
-def read_proxy_state(registry=None):
+def read_proxy_state(registry=None, *, strict=False):
     """读取 HKCU 手动系统代理：enable/server/override/auto_config。"""
     if registry is None:
         import winreg
@@ -75,21 +75,29 @@ def read_proxy_state(registry=None):
         key = registry.OpenKey(
             registry.HKEY_CURRENT_USER, REG_PATH, 0, registry.KEY_READ)
     except OSError:
+        if strict:
+            raise
         return state
     try:
         try:
             state['enable'] = bool(
                 int(registry.QueryValueEx(key, 'ProxyEnable')[0] or 0))
-        except (OSError, TypeError, ValueError):
+        except FileNotFoundError:
             pass
+        except (OSError, TypeError, ValueError):
+            if strict:
+                raise
         for field, name in (('server', 'ProxyServer'),
                             ('override', 'ProxyOverride'),
                             ('auto_config', 'AutoConfigURL')):
             try:
                 state[field] = str(
                     registry.QueryValueEx(key, name)[0] or '').strip()
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError:
+                if strict:
+                    raise
     finally:
         registry.CloseKey(key)
     return state
@@ -107,6 +115,77 @@ def set_proxy_enabled(enabled, registry=None):
                             registry.REG_DWORD, 1 if enabled else 0)
     finally:
         registry.CloseKey(key)
+
+
+def invalid_manual_proxy(state):
+    """只识别已确认的空地址/冒号占位，不猜测其它代理格式是否合法。"""
+    return bool(state.get('enable') and
+                str(state.get('server') or '').strip() in ('', ':'))
+
+
+def _wininet_manual_proxy_flags(flags=None, *, wininet=None):
+    """只读 LAN 标志，或移除手动代理；不触碰 PAC、绕过或命名 RAS 连接。"""
+    import ctypes
+    from ctypes import wintypes
+
+    class Value(ctypes.Union):
+        _fields_ = [('number', wintypes.DWORD), ('string', ctypes.c_void_p),
+                    ('time', wintypes.FILETIME)]
+
+    class Option(ctypes.Structure):
+        _fields_ = [('option', wintypes.DWORD), ('value', Value)]
+
+    class Options(ctypes.Structure):
+        _fields_ = [('size', wintypes.DWORD), ('connection', wintypes.LPWSTR),
+                    ('count', wintypes.DWORD), ('error', wintypes.DWORD),
+                    ('options', ctypes.POINTER(Option))]
+
+    wininet = wininet or ctypes.WinDLL('wininet', use_last_error=True)
+    items = (Option * (1 if flags is None else 2))()
+    settings = Options(ctypes.sizeof(Options), None, len(items), 0, items)
+    if flags is None:
+        # 无效服务器会使联合查询返回 ERROR_INVALID_PARAMETER，因此只查标志。
+        items[0].option = 10  # INTERNET_PER_CONN_FLAGS_UI
+        query = wininet.InternetQueryOptionW
+        query.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID,
+                          ctypes.POINTER(wintypes.DWORD)]
+        query.restype = wintypes.BOOL
+        size = wintypes.DWORD(ctypes.sizeof(settings))
+        if not query(None, 75, ctypes.byref(settings), ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return int(items[0].value.number)
+    items[0].option = 1  # INTERNET_PER_CONN_FLAGS
+    items[0].value.number = flags
+    items[1].option = 2  # INTERNET_PER_CONN_PROXY_SERVER
+    empty = ctypes.create_unicode_buffer('')
+    items[1].value.string = ctypes.cast(empty, ctypes.c_void_p).value
+    setter = wininet.InternetSetOptionW
+    setter.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
+    setter.restype = wintypes.BOOL
+    if not setter(None, 75, ctypes.byref(settings), ctypes.sizeof(settings)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def repair_invalid_manual_proxy(*, registry=None, wininet=None, base=None):
+    """备份并修复当前用户的无效手动代理；合法代理和已关闭状态保持原值。"""
+    before = read_proxy_state(registry, strict=True)
+    if not invalid_manual_proxy(before):
+        return False
+    flags = _wininet_manual_proxy_flags(wininet=wininet)
+    _atomic_json(_file_path(f'proxy-invalid-{time.time_ns()}.json', base), {
+        'reason': 'invalid_manual_proxy', 'state': before, 'wininet_flags': flags,
+    })
+    # 查询和备份期间其它软件可能已接管；不覆盖变化后的用户设置。
+    if (read_proxy_state(registry, strict=True) != before or
+            _wininet_manual_proxy_flags(wininet=wininet) != flags):
+        raise OSError('Windows 代理设置已变化，未修复无效地址')
+    _wininet_manual_proxy_flags(flags & ~2, wininet=wininet)
+    after = read_proxy_state(registry, strict=True)
+    if (after['enable'] or after['server'] or
+            any(after[key] != before[key] for key in ('override', 'auto_config')) or
+            _wininet_manual_proxy_flags(wininet=wininet) != flags & ~2):
+        raise OSError('Windows 无效手动代理修复后回读不一致')
+    return True
 
 
 def refresh_user_proxy_settings(timeout_ms=1000, wininet=None, user32=None):

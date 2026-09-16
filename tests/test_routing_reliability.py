@@ -33,6 +33,13 @@ def snapshot_nodes():
 
 
 class RoutingReliabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(
+            routing.proxy_guard, 'read_proxy_state', return_value={
+                'enable': False, 'server': '', 'override': '', 'auto_config': ''}))
+        self.enterContext(mock.patch.object(
+            routing.proxy_guard, 'refresh_user_proxy_settings', return_value={'ok': True}))
+
     def test_cache_status_treats_file_race_as_unavailable(self):
         item = provider()
         with tempfile.TemporaryDirectory() as root:
@@ -230,7 +237,7 @@ class RoutingReliabilityTests(unittest.TestCase):
             'proxy_provider_url': provider()['url'],
         }, defer_standby=True)
 
-        self.assertEqual(result['msg'], '代理已关闭，节点核心正在后台启动')
+        self.assertEqual(result['msg'], '代理已关闭')
         self.assertTrue(result['standby_pending'])
         manager._native_service.stop_runtime.assert_called_once()
         manager._start_standby_runtime.assert_not_called()
@@ -288,7 +295,7 @@ class RoutingReliabilityTests(unittest.TestCase):
         manager._service_state = mock.Mock(return_value={
             'installed': True, 'state': 'Running', 'backend': 'native',
             'runtime_running': True, 'runtime_mode': 'active',
-            'fast_toggle_ready': True, 'crash_fused': False,
+            'fast_toggle_ready': True, 'crash_fused': False, 'service_compatible': True,
         })
         manager._fast_toggle_system_proxy = mock.Mock(return_value={
             'ok': True, 'msg': '代理已关闭',
@@ -336,7 +343,7 @@ class RoutingReliabilityTests(unittest.TestCase):
         ready = {
             'installed': True, 'backend': 'native', 'runtime_running': True,
             'runtime_mode': 'standby', 'fast_toggle_ready': True,
-            'crash_fused': False,
+            'crash_fused': False, 'service_compatible': True,
         }
 
         self.assertTrue(

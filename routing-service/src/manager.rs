@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -69,6 +69,7 @@ pub struct RuntimeManager {
     owner_sid: String,
     crash_times: Vec<Instant>,
     crash_fused: bool,
+    failed_mihomo_log: Option<Vec<String>>,
 }
 
 impl RuntimeManager {
@@ -86,6 +87,7 @@ impl RuntimeManager {
             owner_sid,
             crash_times: Vec::new(),
             crash_fused: false,
+            failed_mihomo_log: None,
         };
         // v0.3 及更早的 active 系统代理配置本身就是完整运行配置；升级时
         // 可安全补写快切标记。旧 standby 使用精简配置，必须经控制面重建。
@@ -146,16 +148,19 @@ impl RuntimeManager {
                 .as_ref()
                 .map(|item| item.id.clone())
                 .unwrap_or_default();
-            let _ = self.rollback(&id);
-            self.log("配置事务等待提交超时，已自动回滚");
+            match self.rollback(&id) {
+                Ok(_) => self.log("配置事务等待提交超时，已自动回滚"),
+                Err(error) => self.log(&format!(
+                    "配置事务等待提交超时，自动回滚未完成: {}", sanitize_detail(&error))),
+            }
             return;
         }
         let exited = self
             .child
             .as_mut()
-            .and_then(|child| child.try_wait().ok().flatten())
-            .is_some();
-        if exited {
+            .and_then(|child| child.try_wait().ok().flatten().map(|status| (child.id(), status)));
+        if let Some((pid, status)) = exited {
+            self.preserve_failed_mihomo_log();
             self.child = None;
             self.core_job = None;
             if let Ok(mut routes) = self.route_state.lock() {
@@ -163,7 +168,7 @@ impl RuntimeManager {
                     routes.log(&format!("core exit cleanup failed: {error}"));
                 }
             }
-            self.log("Mihomo 进程异常退出");
+            self.log(&format!("Mihomo 进程异常退出：PID={pid}，退出码={:?}", status.code()));
             let _ = system_proxy::restore(&self.base, &self.owner_sid);
             let now = Instant::now();
             self.crash_times
@@ -199,10 +204,8 @@ impl RuntimeManager {
         let running = match self.child.as_mut() {
             Some(child) => match child.try_wait() {
                 Ok(None) => true,
-                Ok(Some(_)) => {
-                    self.child = None;
-                    false
-                }
+                // 退出清理由 tick 统一处理；状态读取不能吞掉异常退出证据。
+                Ok(Some(_)) => false,
                 Err(_) => false,
             },
             None => false,
@@ -246,7 +249,7 @@ impl RuntimeManager {
                 "runtime_running": running,
                 "runtime_enabled": self.marker_path().is_file(),
                 "runtime_mode": self.runtime_mode(),
-                "mihomo_pid": self.child.as_ref().map(|child| child.id()),
+                "mihomo_pid": if running { self.child.as_ref().map(|child| child.id()) } else { None },
                 "pending_transaction": self.pending.as_ref().map(|item| item.id.as_str()),
                 "config_sha256": hash,
                 "applied_capture_mode": capture,
@@ -265,6 +268,7 @@ impl RuntimeManager {
         if self.pending.is_some() || self.preparing.is_some() {
             return Err("已有配置事务，请稍后重试".into());
         }
+        self.failed_mihomo_log = None;
         let id = transaction_id();
         let cancelled = Arc::new(AtomicBool::new(false));
         self.preparing = Some((id.clone(), Arc::clone(&cancelled)));
@@ -396,6 +400,7 @@ impl RuntimeManager {
         })();
 
         if let Err(error) = swap_result {
+            self.preserve_failed_mihomo_log();
             let restored = (|| -> AppResult<()> {
                 self.stop_runtime()?;
                 Self::restore_record(&self.base, &record)?;
@@ -434,6 +439,21 @@ impl RuntimeManager {
 
     fn commit(&mut self, transaction_id: &str) -> AppResult<(String, serde_json::Value)> {
         let pending = self.take_pending(transaction_id)?;
+        let running = match self.child.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(None) => Ok(()),
+                Ok(Some(status)) => Err(format!(
+                    "候选 Mihomo 已退出，不能提交配置：PID={}，退出码={:?}", child.id(), status.code())),
+                Err(error) => Err(format!("无法核对候选 Mihomo 状态，不能提交配置: {error}")),
+            },
+            None => Err("候选 Mihomo 未运行，不能提交配置".to_string()),
+        };
+        if let Err(error) = running {
+            self.preserve_failed_mihomo_log();
+            self.pending = Some(pending);
+            self.log(&error);
+            return Err(error);
+        }
         let root = pending
             .rollback_dir
             .parent()
@@ -456,6 +476,13 @@ impl RuntimeManager {
 
     fn rollback(&mut self, transaction_id: &str) -> AppResult<(String, serde_json::Value)> {
         let pending = self.take_pending(transaction_id)?;
+        // 必须在停止候选和启动旧配置前保存，pending 已取走也不能漏掉现场。
+        self.preserve_failed_mihomo_log();
+        if let Some((pid, status)) = self.child.as_mut()
+            .and_then(|child| child.try_wait().ok().flatten().map(|status| (child.id(), status)))
+        {
+            self.log(&format!("回滚前候选 Mihomo 已退出：PID={pid}，退出码={:?}", status.code()));
+        }
         let stop_result = self.stop_runtime();
         let restore_proxy_result = system_proxy::restore(&self.base, &self.owner_sid);
         if let Err(error) = stop_result {
@@ -502,12 +529,21 @@ impl RuntimeManager {
         if self.pending.is_some() {
             return Err("配置事务尚未提交，不能关闭运行时".to_string());
         }
-        let _ = remove_any(&self.marker_path());
-        let _ = remove_any(&self.mode_path());
+        // 先撤销自动恢复意图；失败时保持现有运行态，不能停后又被 tick 拉起。
+        if let Err(error) = remove_runtime_marker(&self.marker_path(), "运行启用标记") {
+            self.log(&format!("关闭运行时未执行: {error}"));
+            return Err(format!("关闭运行时未执行，现有运行状态已保留: {error}"));
+        }
+        let mode_result = remove_runtime_marker(&self.mode_path(), "运行模式标记");
         let stop_result = self.stop_runtime();
         let restore_result = system_proxy::restore(&self.base, &self.owner_sid);
-        stop_result?;
-        restore_result?;
+        let failures: Vec<String> = [mode_result, stop_result, restore_result]
+            .into_iter().filter_map(Result::err).collect();
+        if !failures.is_empty() {
+            let error = format!("关闭运行时未完成: {}", failures.join("；"));
+            self.log(&sanitize_detail(&error));
+            return Err(error);
+        }
         Ok((
             "Mihomo 运行时已停止".to_string(),
             json!({"runtime_running": false}),
@@ -519,7 +555,8 @@ impl RuntimeManager {
             "服务诊断已读取".to_string(),
             json!({
                 "service_log": read_sanitized_tail(&self.base.join("service.log"), 30),
-                "mihomo_log": read_sanitized_tail(&self.base.join("mihomo.log"), 30),
+                "mihomo_log": self.failed_mihomo_log.clone()
+                    .unwrap_or_else(|| read_sanitized_tail(&self.base.join("mihomo.log"), 30)),
             }),
         ))
     }
@@ -664,24 +701,28 @@ impl RuntimeManager {
         let port = self
             .desired_proxy_port()?
             .ok_or_else(|| "当前配置不是 Windows 系统代理模式".to_string())?;
-        if enabled {
-            atomic_write(&self.mode_path(), b"active")?;
-            let bypass_domains = self.system_proxy_bypass_domains()?;
-            if let Err(error) =
-                system_proxy::activate(&self.base, &self.owner_sid, port, &bypass_domains)
-            {
-                let _ = atomic_write(&self.mode_path(), b"standby");
-                return Err(error);
-            }
-            self.log("Windows 系统代理快速开启，Mihomo 常驻核心未重启");
+        let previous_mode = self.runtime_mode();
+        let bypass_domains = if enabled { self.system_proxy_bypass_domains()? } else { Vec::new() };
+        atomic_write(&self.mode_path(), if enabled { b"active" } else { b"standby" })?;
+        let changed = if enabled {
+            system_proxy::activate(&self.base, &self.owner_sid, port, &bypass_domains)
         } else {
-            atomic_write(&self.mode_path(), b"standby")?;
-            if let Err(error) = system_proxy::restore(&self.base, &self.owner_sid) {
-                let _ = atomic_write(&self.mode_path(), b"active");
-                return Err(error);
-            }
-            self.log("Windows 系统代理快速关闭，Mihomo 常驻核心继续运行");
+            system_proxy::restore(&self.base, &self.owner_sid)
+        };
+        if let Err(error) = changed {
+            // 注册表调用可能部分完成；仅恢复模式标记并不能撤销已写入的代理。
+            let restored = atomic_write(&self.mode_path(), previous_mode.as_bytes())
+                .and_then(|_| self.reconcile_system_proxy());
+            let detail = match restored {
+                Ok(()) => format!("系统代理快速切换失败，已恢复原状态: {error}"),
+                Err(restore_error) => format!(
+                    "系统代理快速切换失败: {error}；原状态恢复未完成: {restore_error}"),
+            };
+            self.log(&sanitize_detail(&detail));
+            return Err(detail);
         }
+        self.log(if enabled { "Windows 系统代理快速开启，Mihomo 常驻核心未重启" }
+            else { "Windows 系统代理快速关闭，Mihomo 常驻核心继续运行" });
         Ok((
             if enabled {
                 "Windows 系统代理已快速开启".to_string()
@@ -714,6 +755,12 @@ impl RuntimeManager {
             Ok(Some(port as u16))
         } else {
             Ok(None)
+        }
+    }
+
+    fn preserve_failed_mihomo_log(&mut self) {
+        if self.failed_mihomo_log.is_none() {
+            self.failed_mihomo_log = Some(read_sanitized_tail(&self.base.join("mihomo.log"), 30));
         }
     }
 
@@ -901,6 +948,15 @@ impl RuntimeManager {
     }
 }
 
+fn remove_runtime_marker(path: &Path, label: &str) -> AppResult<()> {
+    // 标记应为普通文件；异常目录必须保留现场，不使用递归删除。
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("清理{label}失败: {error}")),
+    }
+}
+
 fn restore_one(current: PathBuf, backup: PathBuf, had_value: bool) -> AppResult<()> {
     if backup.exists() {
         remove_any(&current).map_err(|e| format!("清理新版本失败: {e}"))?;
@@ -969,11 +1025,15 @@ pub(crate) fn sanitize_detail(value: &str) -> String {
 }
 
 fn read_sanitized_tail(path: &Path, line_limit: usize) -> Vec<String> {
-    let Ok(data) = fs::read(path) else {
+    let Ok(mut file) = fs::File::open(path) else {
         return Vec::new();
     };
-    let start = data.len().saturating_sub(64 * 1024);
-    let text = String::from_utf8_lossy(&data[start..]);
+    let start = file.metadata().map(|metadata| metadata.len().saturating_sub(64 * 1024)).unwrap_or(0);
+    let mut data = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err() || file.take(64 * 1024).read_to_end(&mut data).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&data);
     let lines: Vec<String> = text
         .lines()
         .map(sanitize_detail)
@@ -992,6 +1052,120 @@ fn read_sanitized_tail(path: &Path, line_limit: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn isolated_manager() -> RuntimeManager {
+        let base = std::env::temp_dir().join(format!("cxvpn-manager-test-{}", transaction_id()));
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("config.json"), b"{}").unwrap();
+        RuntimeManager {
+            core_job: None, route_state: crate::vpn_routes::RouteState::new(&base).unwrap(),
+            base, child: None, pending: None, preparing: None, last_restart: Instant::now(),
+            owner_sid: String::new(), crash_times: Vec::new(), crash_fused: false,
+            failed_mihomo_log: None,
+        }
+    }
+
+    fn add_pending(manager: &mut RuntimeManager) {
+        let rollback_dir = manager.base.join("transactions/test/rollback");
+        fs::create_dir_all(&rollback_dir).unwrap();
+        fs::write(rollback_dir.join("config.json"), b"{}").unwrap();
+        fs::write(manager.pending_record_path(), b"preserve until resolved").unwrap();
+        manager.pending = Some(PendingTransaction {
+            id: "test".into(), rollback_dir, had_config: true, had_data: false,
+            preserve_data: false, had_marker: false, had_mode_marker: false,
+            had_fast_toggle_marker: false, had_system_proxy_bypass: false,
+            deadline: Instant::now() + Duration::from_secs(30),
+        });
+    }
+
+    fn exited_test_child() -> Child {
+        // 普通退出进程，只验证 Child 状态；不启动 Mihomo 或修改系统设置。
+        let mut child = Command::new("cmd.exe").args(["/D", "/C", "exit", "/B", "23"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW).spawn().unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(23));
+        child
+    }
+
+    #[test]
+    fn status_preserves_exited_child_for_lifecycle_cleanup() {
+        let mut manager = isolated_manager();
+        manager.child = Some(exited_test_child());
+        let pid = manager.child.as_ref().unwrap().id();
+        let (_, status) = manager.status().unwrap();
+        assert_eq!(status["runtime_running"], false);
+        assert!(status["mihomo_pid"].is_null());
+        assert_eq!(manager.child.as_ref().unwrap().id(), pid);
+        remove_any(&manager.base).unwrap();
+    }
+
+    #[test]
+    fn stop_rejects_enable_marker_cleanup_failure_without_changing_runtime_mode() {
+        let mut manager = isolated_manager();
+        fs::create_dir(manager.marker_path()).unwrap();
+        fs::write(manager.marker_path().join("evidence"), b"preserve").unwrap();
+        fs::write(manager.mode_path(), b"active").unwrap();
+        let error = manager.stop_runtime_command().unwrap_err();
+        assert!(error.contains("运行启用标记"));
+        assert!(error.contains("现有运行状态已保留"));
+        assert_eq!(fs::read(manager.mode_path()).unwrap(), b"active");
+        assert!(manager.marker_path().join("evidence").is_file());
+        remove_any(&manager.base).unwrap();
+    }
+
+    #[test]
+    fn stop_reports_mode_cleanup_failure_after_disabling_automatic_restart() {
+        let mut manager = isolated_manager();
+        fs::write(manager.marker_path(), b"enabled").unwrap();
+        fs::create_dir(manager.mode_path()).unwrap();
+        fs::write(manager.mode_path().join("evidence"), b"preserve").unwrap();
+        // 无核心、无路由租约、无代理快照，只验证临时标记文件的失败路径。
+        let error = manager.stop_runtime_command().unwrap_err();
+        assert!(error.contains("运行模式标记"));
+        assert!(!manager.marker_path().exists());
+        assert!(manager.mode_path().join("evidence").is_file());
+        assert!(manager.child.is_none());
+        remove_any(&manager.base).unwrap();
+    }
+
+    #[test]
+    fn commit_rejects_missing_or_exited_candidate_without_losing_rollback() {
+        for exited in [false, true] {
+            let mut manager = isolated_manager();
+            add_pending(&mut manager);
+            if exited { manager.child = Some(exited_test_child()); }
+            let error = manager.commit("test").unwrap_err();
+            assert!(error.contains("不能提交"));
+            if exited { assert!(error.contains("Some(23)")); }
+            assert_eq!(manager.pending.as_ref().unwrap().id, "test");
+            assert!(manager.pending_record_path().is_file());
+            assert!(manager.base.join("transactions/test/rollback/config.json").is_file());
+            remove_any(&manager.base).unwrap();
+        }
+    }
+
+    #[test]
+    fn rollback_preserves_failure_log_until_next_apply() {
+        let mut manager = isolated_manager();
+        add_pending(&mut manager);
+        fs::write(manager.base.join("mihomo.log"),
+            "候选失败 e\u{301} 🇨🇳\nfetch https://example.test/sub?token=secret failed\n").unwrap();
+        // 无运行进程、无系统代理快照、无路由租约：仅操作临时事务文件。
+        manager.rollback("test").unwrap();
+        fs::write(manager.base.join("mihomo.log"), "旧配置已恢复\n").unwrap();
+        manager.preserve_failed_mihomo_log();
+        let (_, diagnostics) = manager.diagnostics().unwrap();
+        let lines = diagnostics["mihomo_log"].as_array().unwrap();
+        assert_eq!(lines[0], "候选失败 e\u{301} 🇨🇳");
+        assert!(lines[1].as_str().unwrap().contains("已隐藏 URL"));
+        assert!(!lines[1].as_str().unwrap().contains("example.test"));
+        assert!(!lines[1].as_str().unwrap().contains("secret"));
+        manager.begin_prepare(serde_json::from_value(json!({"op":"apply"})).unwrap()).unwrap();
+        let (_, diagnostics) = manager.diagnostics().unwrap();
+        assert_eq!(diagnostics["mihomo_log"], json!(["旧配置已恢复"]));
+        manager.cancel_preparation();
+        remove_any(&manager.base).unwrap();
+    }
 
     #[test]
     fn reload_only_accepts_rules_mode_and_groups() {
@@ -1037,7 +1211,7 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         let mut manager = RuntimeManager { core_job: None, route_state: crate::vpn_routes::RouteState::new(&base).unwrap(), base:base.clone(), child:None, pending:None,
             preparing:None, last_restart:Instant::now(), owner_sid:String::new(),
-            crash_times:Vec::new(), crash_fused:false };
+            crash_times:Vec::new(), crash_fused:false, failed_mihomo_log:None };
         let first = manager.begin_prepare(serde_json::from_value(json!({"op":"apply"})).unwrap()).unwrap();
         manager.cancel_preparation();
         let second = manager.begin_prepare(serde_json::from_value(json!({"op":"apply"})).unwrap()).unwrap();

@@ -619,22 +619,15 @@
             </div>
           </section>
 
-          <section class="card routing-maintenance-card">
-            <div class="settings-card-head">
-              <span class="settings-symbol">04</span>
-              <div><h3>配置保护与诊断</h3><p>导出安全备份、查看有效配置历史，或生成不含连接目标的脱敏诊断包。</p></div>
-            </div>
-            <div class="routing-maintenance-actions">
-              <button id="btn-routing-backup" type="button" class="btn ghost">导出配置备份</button>
-              <button id="btn-routing-restore" type="button" class="btn ghost">从备份恢复</button>
-              <button id="btn-routing-diagnostic" type="button" class="btn ghost">导出诊断包</button>
-              <input id="routing-restore-file" class="hidden" type="file" accept="application/json,.json">
-            </div>
-            <label class="routing-option-switch routing-backup-urls-option"><span><strong>备份中包含订阅地址</strong><small>默认关闭。订阅 URL 可能包含 Token；登录、VPN、邮箱、VLM 和 Controller 凭据始终不会导出。</small></span><input id="routing-backup-urls" type="checkbox"><i aria-hidden="true"></i></label>
-            <div class="routing-history-head"><strong>配置应用历史</strong><button id="btn-routing-history-refresh" type="button" class="btn mini ghost">刷新</button></div>
-            <div id="routing-config-history" class="routing-config-history"><p class="routing-history-empty">正在读取历史记录…</p></div>
-          </section>
         </div>
+        <details class="routing-config-transfer">
+          <summary>配置导入与导出</summary>
+          <div class="routing-config-actions">
+            <button id="btn-routing-backup" type="button" class="btn ghost">导出配置</button>
+            <button id="btn-routing-restore" type="button" class="btn ghost">导入配置</button>
+          </div>
+          <label class="routing-option-switch routing-backup-urls-option"><span><strong>导出时包含订阅地址</strong><small>默认关闭。订阅 URL 可能包含 Token；登录、VPN、邮箱、VLM 和 Controller 凭据始终不会导出。</small></span><input id="routing-backup-urls" type="checkbox"><i aria-hidden="true"></i></label>
+        </details>
       </div>
 
       <div id="routing-panel-rules" class="routing-tab-panel" role="tabpanel" aria-labelledby="routing-tab-rules" aria-hidden="true" data-routing-panel="rules">

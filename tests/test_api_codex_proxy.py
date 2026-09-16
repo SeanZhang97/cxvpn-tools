@@ -193,7 +193,6 @@ class ApiCodexProxyCloseTests(unittest.TestCase):
         target._routing_lock = threading.Lock()
         target.log = mock.Mock()
         target.routing = mock.Mock()
-        target.routing_history = mock.Mock()
         target._poke_ui_state = mock.Mock()
         target._start_routing_standby_reconcile = mock.Mock()
         target.routing.apply.side_effect = lambda value, **_: {

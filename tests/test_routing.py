@@ -18,6 +18,11 @@ def vpn_profile(name='公司 VPN', connected=True, gateway=False):
 
 
 class RoutingConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(
+            routing.proxy_guard, 'read_proxy_state', return_value={
+                'enable': False, 'server': '', 'override': '', 'auto_config': ''}))
+
     def base_config(self):
         return {
             'enabled': True,
@@ -394,6 +399,7 @@ class RoutingConfigTests(unittest.TestCase):
                 manager.refresh_proxy_provider(config, 'default')
 
     def test_previews_unsaved_provider_without_tun_or_proxy_listener(self):
+        self.enterContext(mock.patch.object(routing, 'windows_system_proxy', return_value=''))
         provider = {
             'id': 'draft', 'name': '未保存订阅',
             'url': 'https://example.test/subscription',
@@ -713,6 +719,7 @@ class RoutingConfigTests(unittest.TestCase):
         process.terminate.assert_called_once()
 
     def test_successful_preview_persists_downloaded_provider_yaml(self):
+        self.enterContext(mock.patch.object(routing, 'windows_system_proxy', return_value=''))
         provider = {
             'id': 'draft', 'name': '未保存订阅',
             'url': 'https://example.test/subscription',
@@ -763,6 +770,7 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(persist.call_args.args[3], '物理网络获取')
 
     def test_failed_preview_keeps_existing_provider_cache(self):
+        self.enterContext(mock.patch.object(routing, 'windows_system_proxy', return_value=''))
         provider = routing.normalize_config({
             'proxy_providers': [{
                 'id': 'draft', 'name': '未保存订阅',
@@ -1227,7 +1235,7 @@ class RoutingConfigTests(unittest.TestCase):
                 routing, 'windows_manual_proxy_state',
                 return_value={'enabled': True, 'server': ''}):
             with self.assertRaisesRegex(
-                    routing.RoutingError, '未配置服务器地址'):
+                    routing.RoutingError, '服务器地址无效'):
                 routing.validate_environment(
                     config, [vpn_profile()], [{'name': '以太网'}], [])
 

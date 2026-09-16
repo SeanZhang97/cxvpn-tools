@@ -5,7 +5,7 @@ import tempfile
 import time
 import unittest
 
-from core import (app_paths, config, config_maintenance, routing_rules,
+from core import (app_paths, config, routing_rules,
                   subscription_store)
 
 
@@ -26,9 +26,6 @@ class AppPathsTest(unittest.TestCase):
         self.assertEqual(
             subscription_store.cache_root(),
             os.path.join(root, 'routing', 'providers'))
-        self.assertEqual(
-            config_maintenance.ConfigHistory().root,
-            os.path.join(root, 'routing', 'history'))
         self.assertEqual(
             routing_rules.RULE_PACK_DIR,
             os.path.join(root, 'rule-packs'))

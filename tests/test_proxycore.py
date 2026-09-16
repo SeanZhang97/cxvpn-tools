@@ -9,6 +9,11 @@ from core import codex_proxy, routing
 
 class ProxyCoreConfirmationTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(mock.patch.object(
+            routing.proxy_guard, 'read_proxy_state', return_value={
+                'enable': False, 'server': '127.0.0.1:17890', 'override': '', 'auto_config': ''}))
+        self.enterContext(mock.patch.object(
+            routing.proxy_guard, 'refresh_user_proxy_settings', return_value={'ok': True}))
         for name in ('sync', 'restore'):
             patcher = mock.patch.object(codex_proxy, name)
             setattr(self, 'codex_' + name, patcher.start())
@@ -88,6 +93,7 @@ class ProxyCoreConfirmationTests(unittest.TestCase):
     def _api_for_startup_reconcile(enabled):
         api = Api.__new__(Api)
         api._routing_standby_thread = None
+        api._lock = threading.Lock()
         api._routing_lock = threading.Lock()
         api._cfg_get = mock.Mock(return_value={
             'routing': routing.normalize_config({
@@ -109,6 +115,7 @@ class ProxyCoreConfirmationTests(unittest.TestCase):
         }
         api.routing._can_fast_toggle_system_proxy.return_value = True
         api.routing._fast_toggle_system_proxy.return_value = {'ok': True}
+        api.routing.apply.return_value = {'ok': True}
         return api
 
     def test_startup_restores_persisted_enabled_proxy_state(self):
@@ -116,8 +123,9 @@ class ProxyCoreConfirmationTests(unittest.TestCase):
         with mock.patch('api.routing.windows_system_proxy', return_value=''):
             api._start_routing_standby_reconcile()
             api._routing_standby_thread.join(1)
-        api.routing._fast_toggle_system_proxy.assert_called_once_with(
-            mock.ANY, True)
+        api.routing.apply.assert_called_once_with(
+            mock.ANY, allow_fast_toggle=True)
+        api.routing._fast_toggle_system_proxy.assert_not_called()
 
     def test_startup_preserves_active_foreign_system_proxy(self):
         api = self._api_for_startup_reconcile(True)

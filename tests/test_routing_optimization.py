@@ -174,7 +174,7 @@ class RoutingOptimizationTests(unittest.TestCase):
         manager._service_state = Mock(return_value={
             'installed': True, 'backend': 'native', 'state': 'Running',
             'runtime_running': True, 'runtime_mode': 'standby',
-            'fast_toggle_ready': True, 'config_sha256': 'ABC'})
+            'fast_toggle_ready': True, 'config_sha256': 'ABC', 'service_compatible': True})
         manager._fast_toggle_system_proxy = Mock()
         with patch.object(routing, 'verify_runtime', side_effect=routing.RoutingError('full apply reached')):
             with self.assertRaisesRegex(routing.RoutingError, 'full apply reached'):

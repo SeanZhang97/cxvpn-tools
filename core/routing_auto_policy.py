@@ -258,6 +258,7 @@ def build_groups(provider, provider_key, public_group_name, health_url,
                  nodes=None):
     """把地区顺序编译为隐藏测速/故障组与有序 fallback 组。"""
     policy = provider['auto_policy']
+    speedtest_interval = provider.get('speedtest_interval', 300)
     groups = []
     stage_groups = []
     for index, stage in enumerate(policy['stages'], 1):
@@ -274,13 +275,14 @@ def build_groups(provider, provider_key, public_group_name, health_url,
             region_fields['tolerance'] = effective_tolerance(
                 policy, nodes, region_pattern)
         region_group = _health_group(
-            region_name, group_type, health_url, **region_fields)
+            region_name, group_type, health_url, interval=speedtest_interval, **region_fields)
         preferred_pattern = stage_preferred_pattern(stage)
         sources = []
         if stage.get('selection_mode') == 'failure':
             pinned_name = f'{base}-PINNED'
             groups.append(_health_group(
                 pinned_name, 'fallback', health_url,
+                interval=speedtest_interval,
                 use=[provider_key],
                 filter=exact_node_pattern(stage.get('preferred_node') or '')))
             sources.append(pinned_name)
@@ -294,7 +296,8 @@ def build_groups(provider, provider_key, public_group_name, health_url,
                 preferred_fields['tolerance'] = effective_tolerance(
                     policy, nodes, preferred_pattern)
             groups.append(_health_group(
-                preferred_name, group_type, health_url, **preferred_fields))
+                preferred_name, group_type, health_url,
+                interval=speedtest_interval, **preferred_fields))
             sources.append(preferred_name)
         groups.append(region_group)
         sources.append(region_name)
@@ -303,7 +306,8 @@ def build_groups(provider, provider_key, public_group_name, health_url,
         else:
             stage_name = f'{base}-FALLBACK'
             groups.append(_health_group(
-                stage_name, 'fallback', health_url, proxies=sources))
+                stage_name, 'fallback', health_url,
+                interval=speedtest_interval, proxies=sources))
             stage_groups.append(stage_name)
     if policy['fallback'] == 'all':
         all_name = f'AUTO-{provider["id"]}-ALL'
@@ -315,11 +319,11 @@ def build_groups(provider, provider_key, public_group_name, health_url,
             all_fields['tolerance'] = effective_tolerance(policy, nodes)
         groups.append(_health_group(
             all_name, 'fallback' if all_failure else 'url-test',
-            health_url, **all_fields))
+            health_url, interval=speedtest_interval, **all_fields))
         stage_groups.append(all_name)
     groups.append(_health_group(
         public_group_name, 'fallback', health_url,
-        proxies=stage_groups, hidden=False))
+        interval=speedtest_interval, proxies=stage_groups, hidden=False))
     return groups
 
 
