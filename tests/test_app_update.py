@@ -228,14 +228,14 @@ class DownloadInstallerTests(unittest.TestCase):
         self.assertTrue(result.get('cancelled'))
         self.assertTrue(_no_forbidden_words(result['msg']))
         updates_dir = os.path.join(self._user_data, 'updates')
-        self.assertEqual(os.listdir(updates_dir), [])
+        self.assertFalse(os.path.exists(updates_dir))
 
     def test_transport_failure_returns_typed_error(self):
         state = app_update.UpdateDownloadState()
         with self._patch_data_root(), \
                 mock.patch('urllib.request.urlopen',
                            side_effect=urllib.error.URLError('reset')):
-            result = app_update.download_installer(self.URL, state=state)
+            result = app_update.download_installer(self.URL, expected_sha256='a' * 64, state=state)
         self.assertFalse(result['ok'])
         self.assertIn('URLError', result['msg'])
         self.assertTrue(_no_forbidden_words(result['msg']))
@@ -249,7 +249,7 @@ class DownloadInstallerTests(unittest.TestCase):
                 mock.patch.object(app_update, 'PROGRESS_REPORT_INTERVAL', 0), \
                 mock.patch('urllib.request.urlopen',
                            return_value=_FakeResponse(payload)):
-            result = app_update.download_installer(self.URL, state=state)
+            result = app_update.download_installer(self.URL, expected_sha256=hashlib.sha256(payload).hexdigest(), state=state)
         self.assertTrue(result['ok'])
         self.assertEqual(state.snapshot()['progress'], 100)
         self.assertGreaterEqual(state.snapshot()['total_bytes'], len(payload))

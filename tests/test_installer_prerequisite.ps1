@@ -7,7 +7,11 @@ $testDir = Join-Path $base ([Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testDir | Out-Null
 $passed = 0
 try {
-    Copy-Item -LiteralPath (Join-Path $root 'installer\run-prerequisite.ps1') -Destination $testDir
+    # Only the temporary test copy mocks Authenticode; production always validates Microsoft signatures.
+    $runnerText = Get-Content -LiteralPath (Join-Path $root 'installer\run-prerequisite.ps1') -Raw -Encoding UTF8
+    $mockSignature = "if (`$Installer -like '*unsigned.exe') { [pscustomobject]@{Status='NotSigned';SignerCertificate=`$null} } else { [pscustomobject]@{Status='Valid';SignerCertificate=[pscustomobject]@{Subject='CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'}} }"
+    $runnerText = $runnerText.Replace('Get-AuthenticodeSignature -LiteralPath $Installer', $mockSignature)
+    [IO.File]::WriteAllText((Join-Path $testDir 'run-prerequisite.ps1'), $runnerText, [Text.UTF8Encoding]::new($true))
     $source = @"
 using System;
 using System.IO;
@@ -24,7 +28,7 @@ public class PrerequisiteFixture {
 "@
     $fixture = Join-Path $testDir 'success.exe'
     Add-Type -TypeDefinition $source -OutputAssembly $fixture -OutputType ConsoleApplication
-    foreach ($name in @('reboot', 'failure', 'timeout')) {
+    foreach ($name in @('reboot', 'failure', 'timeout', 'unsigned')) {
         Copy-Item -LiteralPath $fixture -Destination (Join-Path $testDir ($name + '.exe'))
     }
     $cases = @(
@@ -32,7 +36,9 @@ public class PrerequisiteFixture {
         @{Name='reboot'; Code=3010; BadHash=$false},
         @{Name='failure'; Code=42; BadHash=$false},
         @{Name='timeout'; Code=1460; BadHash=$false},
-        @{Name='success'; Code=9001; BadHash=$true}
+        @{Name='success'; Code=9001; BadHash=$true},
+        @{Name='unsigned'; Code=9001; BadHash=$false},
+        @{Name='failure'; Code=0; BadHash=$false; VerifyOnly=$true}
     )
     foreach ($case in $cases) {
         $binary = Join-Path $testDir ($case.Name + '.exe')
@@ -41,6 +47,7 @@ public class PrerequisiteFixture {
         $runner = Join-Path $testDir 'run-prerequisite.ps1'
         $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $runner + '" -Installer "' + $binary +
             '" -Kind VC -ExpectedSHA256 ' + $hash + ' -TimeoutSeconds 1'
+        if ($case.VerifyOnly) { $arguments += ' -VerifyOnly' }
         $p = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $arguments -WindowStyle Hidden -PassThru
         try {
             if (-not $p.WaitForExit(15000)) { $p.Kill(); throw 'Test worker exceeded 15 seconds' }

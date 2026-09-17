@@ -28,8 +28,6 @@
 import glob
 import os
 import shutil
-import subprocess
-import sys
 
 from core.desktop_runtime import ensure_desktop_runtime
 
@@ -39,6 +37,7 @@ import PyInstaller.__main__
 
 from build_runtime import build_routing_service
 from build_lifecycle import complete_build, prepare_build
+from build_nuitka_cache import compile_cached, environment_identity
 from core.app_paths import migrate_legacy_user_data
 from core.version import APP_VERSION, APP_VERSION_TUPLE
 
@@ -51,7 +50,7 @@ LEGACY_DIST_ROOTS = [
     os.path.join(DIST_DIR, name) for name in LEGACY_APP_NAMES]
 SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
 WORK = os.path.join(BASE, 'build_tmp')
-NUITKA_OUT = os.path.join(WORK, 'nuitka_out')
+NUITKA_OUT = os.path.join(WORK, 'nuitka_cache')
 PYD_STAGE = os.path.join(WORK, 'pyd_stage')
 SPEC_PATH = os.path.join(BASE, APP_NAME + '-protected.spec')
 
@@ -73,31 +72,14 @@ def compile_business_code():
     返回 {模块名: 布署后的 pyd 绝对路径}。任一模块编译失败即中止,
     不允许退回成未保护源码继续打包。
     """
-    shutil.rmtree(NUITKA_OUT, ignore_errors=True)
-    shutil.rmtree(PYD_STAGE, ignore_errors=True)
     os.makedirs(NUITKA_OUT, exist_ok=True)
     os.makedirs(PYD_STAGE, exist_ok=True)
-    for src in PROTECT_SRC:
-        print('[build-protected] Nuitka 编译', os.path.relpath(src, BASE))
-        subprocess.run(
-            [sys.executable, '-m', 'nuitka', '--module', '--no-pyi-file',
-             '--output-dir=' + NUITKA_OUT, src],
-            check=True)
+    identity = environment_identity()
     staged = {}
     for src in PROTECT_SRC:
         mod = module_name(src)
         tail = mod.rsplit('.', 1)[-1]
-        # 兼容点号全名(core.config.*.pyd)与裸名(config.*.pyd)两种产物命名
-        cands = sorted(set(
-            glob.glob(os.path.join(NUITKA_OUT, '**', mod + '.*.pyd'),
-                      recursive=True)
-            + glob.glob(os.path.join(NUITKA_OUT, '**', tail + '.*.pyd'),
-                        recursive=True)))
-        if len(cands) != 1:
-            raise RuntimeError(
-                '业务模块 %s 编译产物定位失败(找到 %d 个): %s'
-                % (mod, len(cands), cands))
-        pyd = cands[0]
+        pyd = compile_cached(src, mod, NUITKA_OUT, identity)
         suffix = os.path.basename(pyd)[len(tail):]
         dest_dir = PYD_STAGE if mod == 'api' \
             else os.path.join(PYD_STAGE, 'core')

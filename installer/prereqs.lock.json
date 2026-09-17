@@ -5,6 +5,7 @@
     {
       "file": "MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
       "kind": "WebView2",
+      "asset_url": "https://github.com/SeanZhang97/cxvpn-tools/releases/download/prerequisites-2026-09-11-x64/MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
       "url": "https://go.microsoft.com/fwlink/?linkid=2124701",
       "sha256": "ebebc5ec130378ff1ab513f3917be791a9cf84f849e970b1695ff01801a9d348",
       "size": 212745424,
@@ -15,6 +16,8 @@
     {
       "file": "VC_redist.x64.exe",
       "kind": "VC",
+      "asset_url": "https://github.com/SeanZhang97/cxvpn-tools/releases/download/prerequisites-2026-09-11-x64/VC_redist.x64.exe",
+      "minimum_version": "14.51.36247.0",
       "url": "https://aka.ms/vc14/vc_redist.x64.exe",
       "sha256": "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c",
       "size": 18731856,

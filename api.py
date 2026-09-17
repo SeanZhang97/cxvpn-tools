@@ -625,7 +625,13 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                 return {'ok': False, 'msg': '升级包正在下载中，请稍候'}
             if phase == 'installing':
                 return {'ok': False, 'msg': '升级正在进行，请稍候'}
-            if phase == 'downloaded':
+            if phase == 'restart_required':
+                return {'ok': False, 'msg': '运行组件要求重启 Windows，请重启后再检查更新'}
+            if phase == 'attention':
+                outcome = app_update.read_install_result(getattr(self, '_app_install_result', ''))
+                if app_update.installer_process_running(outcome) is not False:
+                    return {'ok': False, 'msg': '上次安装进程仍在运行或无法确认，请先检查安装状态'}
+            if phase == 'downloaded' and self._app_download.snapshot().get('version') == str(latest_version or '').strip():
                 return {'ok': True, 'msg': '升级包已就绪，可直接开始升级'}
             version = str(latest_version or '').strip()
             self._app_download.begin(version)
@@ -643,13 +649,20 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         """下载工作线程：消费下载任务并回写终态，避免阻塞其它后台任务。"""
         self.log('[app-update] 后台已领取升级包下载任务，开始执行')
         started = time.monotonic()
-        result = app_update.download_installer(
-            url, expected_sha256=expected_sha256,
-            state=self._app_download,
-            cancel_event=self._app_download_cancel, log=self.log)
+        try:
+            result = app_update.download_installer(
+                url, expected_sha256=expected_sha256,
+                state=self._app_download,
+                cancel_event=self._app_download_cancel, log=self.log)
+        except Exception as exc:
+            self.log('[app-update] 下载任务异常: type=%s' % type(exc).__name__)
+            result = {'ok': False, 'msg': '下载任务异常，请重新检查更新'}
         elapsed = time.monotonic() - started
         if result.get('ok'):
-            app_update.prune_old_installers(result.get('path'))
+            try:
+                app_update.prune_old_installers(result.get('path'))
+            except OSError as exc:
+                self.log('[app-update] 旧升级包清理失败，不影响已验证安装包: type=%s' % type(exc).__name__)
             self.log('[app-update] 升级包下载任务成功: elapsed=%.1fs' % elapsed)
             self._poke_ui_state()
             return
@@ -688,8 +701,13 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             self._app_download.update(
                 phase='installing', speed_bps=0, msg='正在启动升级…')
         fallback_dir = os.path.dirname(os.path.abspath(sys.executable))
-        result = app_update.launch_installer(
-            installer_path, version, fallback_dir=fallback_dir, log=self.log)
+        try:
+            result = app_update.launch_installer(
+                installer_path, version, fallback_dir=fallback_dir, log=self.log,
+                expected_sha256=snapshot.get('sha256', ''))
+        except Exception as exc:
+            self.log('[app-update] 安装启动异常: type=%s' % type(exc).__name__)
+            result = {'ok': False, 'msg': '升级进程启动异常，旧版保持运行'}
         if not result.get('ok'):
             self._app_download.update(
                 phase='failed', progress=0,
@@ -697,6 +715,8 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             self.log('[app-update] 启动升级失败: %s' % result.get('msg'))
             self._poke_ui_state()
             return result
+        self._app_install_result = result.get('result_path', '')
+        self._app_update_guard = result.pop('_guard', None)
         threading.Thread(
             target=self._monitor_app_update_install, args=(version,),
             name='app-update-install-monitor', daemon=True).start()
@@ -705,21 +725,52 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
 
     def _monitor_app_update_install(self, version,
                                     timeout=app_update.INSTALL_MONITOR_TIMEOUT):
-        """跟踪静默安装；超时未完成则把 UI 恢复为可重试状态。"""
+        """跟踪本次安装终态；无法确认进程退出时禁止并发重试。"""
         deadline = time.monotonic() + timeout
+        result_path = getattr(self, '_app_install_result', '')
+        guard = getattr(self, '_app_update_guard', None)
         self.log('[app-update] 升级监控任务已提交: version=%s timeout=%ss' % (
             version, timeout))
         while time.monotonic() < deadline:
             time.sleep(3)
-            if app_update.installed_display_version() == str(version or ''):
+            outcome = app_update.read_install_result(result_path)
+            if guard is not None and guard.poll() is not None and (
+                    not outcome or outcome.get('phase') in {'starting', 'installing'}):
+                outcome = {'version': version, 'phase': 'failed', 'exit_code': guard.returncode}
+            if not outcome or outcome.get('version') != str(version or ''):
+                continue
+            phase = outcome.get('phase')
+            if phase == 'installing':
+                message = '安装器正在处理升级；组件准备完成后才会退出旧版。'
+                if self._app_download.snapshot().get('msg') != message:
+                    self._app_download.update(msg=message)
+                    self._poke_ui_state()
+            if phase == 'completed':
                 self.log(
-                    '[app-update] 新版本 %s 已安装就绪，等待守护进程重启' % version)
+                    '[app-update] 新版本 %s 已安装并启动' % version)
                 return
+            if phase in {'failed', 'timed_out', 'restart_required'}:
+                message = {
+                    'failed': '升级失败或已取消，旧版文件未确认更新，请查看安装日志后重试',
+                    'timed_out': '安装仍未结束，请先检查安装进程，不要重复启动升级',
+                    'restart_required': '组件安装要求重启 Windows，重启后再打开应用',
+                }[phase]
+                with self._app_update_lock:
+                    self._app_download.update(
+                        phase=('attention' if phase == 'timed_out' else
+                               'restart_required' if phase == 'restart_required' else 'failed'),
+                        msg=message, speed_bps=0)
+                self.log('[app-update] 升级返回终态: phase=%s exit=%s' % (
+                    phase, outcome.get('exit_code')))
+                self._poke_ui_state()
+                return
+        unresolved = bool(guard is not None and guard.poll() is None)
         with self._app_update_lock:
-            if self._app_download.snapshot().get('phase') == 'installing':
+            current = self._app_download.snapshot()
+            if current.get('phase') == 'installing' and current.get('version') == version:
                 self._app_download.update(
-                    phase='failed', progress=0,
-                    msg='升级未完成：安装可能被取消或失败，可稍后重试')
+                    phase='attention' if unresolved else 'failed', progress=0,
+                    msg='升级未完成：请先检查安装或授权窗口，再重新检查更新')
                 self._poke_ui_state()
         self.log('[app-update] 升级监控超时: version=%s timeout=%ss' % (
             version, timeout))

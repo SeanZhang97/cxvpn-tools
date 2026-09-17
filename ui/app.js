@@ -951,6 +951,24 @@ function applyAppUpdateState(state) {
   }
   cancelBtn.classList.add('hidden');
   cancelBtn.disabled = true;
+  if (state.phase === 'restart_required') {
+    labelText.textContent = '需要重启 Windows';
+    bar.value = 100;
+    percentText.textContent = '';
+    detailText.textContent = state.msg || '运行组件需要系统重启才能生效';
+    hintText.textContent = '请保存工作，重启 Windows 后再打开应用';
+    appUpdateApplyRequested = false;
+    return;
+  }
+  if (state.phase === 'attention') {
+    labelText.textContent = '请检查安装状态';
+    bar.removeAttribute('value');
+    percentText.textContent = '';
+    detailText.textContent = state.msg || '安装尚未确认结束，请勿重复启动';
+    hintText.textContent = '确认安装进程退出后，可重新检查更新';
+    appUpdateApplyRequested = false;
+    return;
+  }
   if (state.phase === 'downloaded') {
     labelText.textContent = `新版本${version}下载完成`;
     bar.value = 100;

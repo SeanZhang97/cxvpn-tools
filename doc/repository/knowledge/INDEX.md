@@ -22,5 +22,5 @@
 | 短信验证码捕获 | wpndatabase.db, Phone Link, iPhone 快捷指令, IMAP, 邮箱授权码, toast XML, FILETIME | common/Windows短信验证码捕获.md |
 | 超星图标点选验证码 | sprite, iconclick, VLM, 点选坐标, Referer | common/超星图标点选验证码识别.md |
 | Windows VPN 凭据 | RasDialW, RasSetCredentials, RasSetEapUserData, RASEAPF_NonInteractive, EAP-MSCHAPv2, rasdial, 691, 703, Get-VpnConnection, 事件日志 | common/Windows-VPN凭据与RAS-API.md |
-| 打包与分发 | 打包, 分发, 纯净版, zip, build.py, installer/, Inno Setup, 安装器, 离线依赖, WebView2, 依赖环境, 凭据清理 | common/打包与分发.md |
+| 打包与分发 | 打包, 分发, 内容缓存, build_release.py, build_nuitka_cache.py, core/app_update.py, installer/, Inno Setup, 轻量安装包, 共享依赖, WebView2, 升级守护, 签名校验, 离线依赖 | common/打包与分发.md |
 | Git 仓库管理 | Git, GitHub, gitignore, 敏感配置, 构建产物, 运行时二进制 | common/Git仓库管理.md |

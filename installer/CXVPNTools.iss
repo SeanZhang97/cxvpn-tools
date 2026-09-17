@@ -4,7 +4,9 @@
 #define AppBinary SourcePath + "..\dist\CXVPNTools\" + AppExeName
 #define AppVersion GetStringFileInfo(AppBinary, "ProductVersion")
 #define AppFileVersion GetVersionNumbersString(AppBinary)
-#define VCMinVersion GetVersionNumbersString(SourcePath + "prereqs\VC_redist.x64.exe")
+#ifndef VCMinVersion
+  #error Missing locked VC runtime minimum version.
+#endif
 #ifndef WebViewSHA256
   #error Build using installer/build_installer.ps1 to verify signatures and hashes.
 #endif
@@ -25,7 +27,11 @@ DisableDirPage=no
 UsePreviousAppDir=yes
 DisableProgramGroupPage=yes
 OutputDir=..\dist
+#ifdef OfflineBundle
+OutputBaseFilename=CXVPNTools-{#AppVersion}-setup-offline
+#else
 OutputBaseFilename=CXVPNTools-{#AppVersion}-setup
+#endif
 SetupIconFile=..\icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 ArchitecturesAllowed=x64compatible
@@ -44,12 +50,14 @@ UninstallLogging=yes
 Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
 
 [Files]
-; Retained in the installation directory for offline repair.
-Source: "prereqs\VC_redist.x64.exe"; DestDir: "{app}\prereqs"; Flags: ignoreversion
-Source: "prereqs\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; DestDir: "{app}\prereqs"; Flags: ignoreversion
+; Core setup only carries dependency metadata. Optional offline build embeds files.
+#ifdef OfflineBundle
+Source: "prereqs\VC_redist.x64.exe"; Flags: dontcopy
+Source: "prereqs\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; Flags: dontcopy
+#endif
 Source: "run-prerequisite.ps1"; Flags: dontcopy
 Source: "uninstall-service.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
-Source: "prereqs.lock.json"; DestDir: "{app}\prereqs"; Flags: ignoreversion
+Source: "prereqs.lock.json"; Flags: dontcopy
 Source: "..\dist\CXVPNTools\CXVPNTools.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\CXVPNTools\_internal\*"; DestDir: "{app}\_internal"; Flags: recursesubdirs ignoreversion; Excludes: "config.json,config.json.bak,*.log,*.jsonl,*.db,*.sqlite*,webview_data\*,browser_data*\*,captcha_cache\*"
 
@@ -65,6 +73,10 @@ Filename: "{app}\{#AppExeName}"; Description: "启动 CXVPNTools"; Flags: nowait
 var
   DependencyRestart: Boolean;
   DeleteUserData: Boolean;
+  DependencyDownloadPage: TDownloadWizardPage;
+  DependencyDownloadStarted: Int64;
+  DependencyDownloadSize: Int64;
+  DependencyDownloadTimedOut: Boolean;
 
 function GetTickCount64(): Int64;
   external 'GetTickCount64@kernel32.dll stdcall';
@@ -106,7 +118,100 @@ end;
 
 function ConfirmStopRunningApplicationForUpgrade(): Boolean; forward;
 
-function InstallDependency(Name, FileName, Kind, Digest: String): String;
+function DependencyDownloadProgress(const Url, FileName: String;
+  const Progress, ProgressMax: Int64): Boolean;
+begin
+  DependencyDownloadTimedOut := GetTickCount64 - DependencyDownloadStarted > 600000;
+  Result := (not DependencyDownloadTimedOut) and (Progress <= DependencyDownloadSize);
+end;
+
+procedure InitializeWizard;
+begin
+  DependencyDownloadPage := CreateDownloadPage('准备运行组件',
+    '仅下载缺失组件；取消或下载失败不会关闭旧版程序。', @DependencyDownloadProgress);
+  DependencyDownloadPage.ShowBaseNameInsteadOfUrl := True;
+end;
+
+function VerifyDependency(FileName, Kind, Digest: String; Size: Int64): Boolean;
+var
+  Params: String;
+  Code: Integer;
+begin
+  Result := False;
+  if not FileExists(ExpandConstant('{tmp}\') + FileName) then Exit;
+  ExtractTemporaryFile('run-prerequisite.ps1');
+  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+    ExpandConstant('{tmp}\run-prerequisite.ps1') + '" -Installer "' +
+    ExpandConstant('{tmp}\') + FileName + '" -Kind ' + Kind +
+    ' -ExpectedSHA256 ' + Digest + ' -ExpectedSize ' + IntToStr(Size) + ' -VerifyOnly';
+  Log(Kind + ': verifying hash, size and Microsoft signature');
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    Params, '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+end;
+
+function AcquireDependency(FileName, Kind, Digest, AssetURL, FallbackURL: String;
+  Size: Int64): String;
+var
+  Target, CacheDir, CacheFile, Candidate, SourceURL, Failure: String;
+  Index: Integer;
+begin
+  Result := '';
+  Target := ExpandConstant('{tmp}\') + FileName;
+  if VerifyDependency(FileName, Kind, Digest, Size) then Exit;
+#ifdef OfflineBundle
+  ExtractTemporaryFile(FileName);
+  if not VerifyDependency(FileName, Kind, Digest, Size) then
+    Result := Kind + ' 离线组件校验失败。';
+#else
+  CacheDir := ExpandConstant('{localappdata}\CXVPNTools\prerequisites\') + Digest;
+  CacheFile := CacheDir + '\' + FileName;
+  for Index := 0 to 2 do begin
+    if Index = 0 then Candidate := ExpandConstant('{src}\prereqs\') + FileName
+    else if Index = 1 then Candidate := CacheFile
+    else Candidate := ExpandConstant('{app}\prereqs\') + FileName;
+    if FileExists(Candidate) then begin
+      Log(Kind + ': checking local dependency candidate');
+      if FileCopy(Candidate, Target, False) and VerifyDependency(FileName, Kind, Digest, Size) then Exit;
+      DeleteFile(Target);
+    end;
+  end;
+  Failure := '';
+  for Index := 0 to 1 do begin
+    if Index = 0 then SourceURL := AssetURL else SourceURL := FallbackURL;
+    DependencyDownloadPage.Clear;
+    DependencyDownloadPage.Add(SourceURL, FileName, Digest);
+    DependencyDownloadStarted := GetTickCount64;
+    DependencyDownloadSize := Size;
+    DependencyDownloadTimedOut := False;
+    Log(Kind + ': download submitted; source=' + SourceURL + '; deadline=600s');
+    DependencyDownloadPage.Show;
+    try
+      try
+        Log(Kind + ': download received; starting');
+        DependencyDownloadPage.Download;
+        if not VerifyDependency(FileName, Kind, Digest, Size) then
+          RaiseException('组件大小、摘要或 Microsoft 签名校验失败');
+        if ForceDirectories(CacheDir) then FileCopy(Target, CacheFile, False);
+        Log(Kind + ': download and verification completed');
+        Exit;
+      except
+        Failure := GetExceptionMessage;
+        Log(Kind + ': download failed: ' + Failure);
+        DeleteFile(Target);
+        if DependencyDownloadPage.AbortedByUser then begin
+          Result := '已取消组件下载，旧版程序保持运行。';
+          Exit;
+        end;
+      end;
+    finally
+      DependencyDownloadPage.Hide;
+    end;
+  end;
+  Result := Kind + ' 组件准备失败。可将离线组件放在安装包旁的 prereqs 目录后重试。' + #13#10 + Failure;
+#endif
+end;
+
+function InstallDependency(Name, FileName, Kind, Digest: String; Size: Int64): String;
 var
   ResultCode: Integer;
   InstallerPath, Params: String;
@@ -114,12 +219,10 @@ var
 begin
   Result := '';
   Started := GetTickCount64;
-  Log(Name + ': request submitted; source=bundled offline installer; timeout=600s');
+  Log(Name + ': request submitted; source=verified dependency; timeout=600s');
   try
-    WizardForm.StatusLabel.Caption := '正在准备 ' + Name + ' 离线安装包，请稍候...';
+    WizardForm.StatusLabel.Caption := '正在验证 ' + Name + ' 安装包，请稍候...';
     WizardForm.Refresh;
-    Log(Name + ': extracting bundled offline installer');
-    ExtractTemporaryFile(FileName);
     ExtractTemporaryFile('run-prerequisite.ps1');
     InstallerPath := ExpandConstant('{tmp}\') + FileName;
     if CompareText(GetSHA256OfFile(InstallerPath), Digest) <> 0 then
@@ -127,7 +230,8 @@ begin
     WizardForm.StatusLabel.Caption := '正在安装 ' + Name + '，最多等待 10 分钟...';
     Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
       ExpandConstant('{tmp}\run-prerequisite.ps1') + '" -Installer "' + InstallerPath +
-      '" -Kind ' + Kind + ' -ExpectedSHA256 ' + Digest + ' -TimeoutSeconds 600';
+      '" -Kind ' + Kind + ' -ExpectedSHA256 ' + Digest +
+      ' -ExpectedSize ' + IntToStr(Size) + ' -TimeoutSeconds 600';
     Log(Name + ': starting bounded prerequisite worker');
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
@@ -147,19 +251,32 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
+  WizardForm.StatusLabel.Caption := '正在检查本机运行组件...';
+  WizardForm.Refresh;
+  Log('Checking machine-wide prerequisites before closing the running application');
+  if not VCRuntimeInstalled() then begin
+    Result := AcquireDependency('VC_redist.x64.exe', 'VC', '{#VCSHA256}',
+      '{#VCAssetURL}', '{#VCFallbackURL}', {#VCSize});
+    if Result <> '' then Exit;
+  end;
+  if not WebView2Installed() then begin
+    Result := AcquireDependency('MicrosoftEdgeWebView2RuntimeInstallerX64.exe', 'WebView2',
+      '{#WebViewSHA256}', '{#WebViewAssetURL}', '{#WebViewFallbackURL}', {#WebViewSize});
+    if Result <> '' then Exit;
+  end;
   if not ConfirmStopRunningApplicationForUpgrade() then begin
     Result := '用户已取消升级。';
     Exit;
   end;
-  WizardForm.StatusLabel.Caption := '正在检查本机依赖（不下载文件）...';
+  WizardForm.StatusLabel.Caption := '运行组件已就绪，正在准备安装...';
   WizardForm.Refresh;
-  Log('Checking bundled prerequisites (machine-wide registry, x64)');
+  Log('Dependency acquisition completed; entering installation phase');
   if not VCRuntimeInstalled() then begin
     WizardForm.StatusLabel.Caption := '检测到 Visual C++ Runtime 缺失，准备离线安装...';
     WizardForm.Refresh;
     Result := InstallDependency('Visual C++ Runtime', 'VC_redist.x64.exe',
-      'VC', '{#VCSHA256}');
-    if Result <> '' then Exit;
+      'VC', '{#VCSHA256}', {#VCSize});
+    if Result <> '' then begin NeedsRestart := DependencyRestart; Exit; end;
     if not VCRuntimeInstalled() then begin
       Result := 'Visual C++ Runtime 安装后检测未通过，请修复依赖后重试。';
       NeedsRestart := DependencyRestart;
@@ -170,8 +287,8 @@ begin
     WizardForm.StatusLabel.Caption := '检测到 WebView2 Runtime 缺失，准备离线安装...';
     WizardForm.Refresh;
     Result := InstallDependency('WebView2 Runtime', 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe',
-      'WebView2', '{#WebViewSHA256}');
-    if Result <> '' then Exit;
+      'WebView2', '{#WebViewSHA256}', {#WebViewSize});
+    if Result <> '' then begin NeedsRestart := DependencyRestart; Exit; end;
     if not WebView2Installed() then begin
       Result := 'WebView2 Runtime 安装后检测未通过，请修复依赖后重试。';
       NeedsRestart := DependencyRestart;

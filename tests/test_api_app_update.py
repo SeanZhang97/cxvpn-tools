@@ -176,8 +176,8 @@ class InstallMonitorTests(unittest.TestCase):
         target = _build_target()
         target._app_download.begin('1.2.0')
         target._app_download.update(phase='installing')
-        with mock.patch.object(app_update, 'installed_display_version',
-                               return_value='1.2.0'), \
+        with mock.patch.object(app_update, 'read_install_result',
+                               return_value={'version': '1.2.0', 'phase': 'completed'}), \
                 mock.patch('time.sleep') as sleep:
             target._monitor_app_update_install('1.2.0', timeout=10)
         sleep.assert_called_once_with(3)
