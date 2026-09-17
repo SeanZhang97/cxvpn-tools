@@ -25,6 +25,7 @@
   let autoPolicyDraft = null;
   let autoPolicyProviderId = '';
   let nodeRegionFilter = 'all';
+  let nodeTestScope = 'all';
   let renderedNodeGroup = '';
   const SETUP_TTL_MS = 15000;
   const TEST_POLL_MS = 750;
@@ -1453,6 +1454,24 @@
     return routingConfig?.proxy_providers?.find(item => item.id === groupId) || null;
   }
 
+  function batchTestTarget(group) {
+    const selectable = partitionNodes(group?.nodes || []).selectable;
+    const region = nodeTools.regionOptions(selectable)
+      .find(item => item.code === nodeRegionFilter);
+    if (nodeTestScope === 'region' && nodeRegionFilter !== 'all' && region) {
+      const nodes = selectable.filter(node =>
+        nodeTools.regionCode(node) === nodeRegionFilter);
+      return {
+        nodeNames: nodes.map(node => node.name), count: nodes.length,
+        label: `${region.label}节点`, region,
+      };
+    }
+    return {
+      nodeNames: null, count: selectable.length, label: '全部节点',
+      region: null,
+    };
+  }
+
   function mergeTestNodes(existing, incoming) {
     const updates = new Map((incoming || []).map(node => [node.name, node]));
     const merged = (existing || []).map(node => updates.has(node.name)
@@ -1536,7 +1555,8 @@
       pending: '等待测速引擎启动', running: '正在逐个更新节点延迟',
       completed: '测速已完成', cancelled: '测速已停止', error: '测速失败，已保留上次结果',
     };
-    byId('routing-test-progress-title').textContent = `${context.groupName || '当前代理组'} · 节点测速`;
+    byId('routing-test-progress-title').textContent =
+      `${context.groupName || '当前代理组'} · ${context.scopeLabel || '节点'}测速`;
     byId('routing-test-progress-message').textContent = job.error || job.msg || statusLabels[job.status] || '正在处理';
     const progress = byId('routing-test-progress-bar');
     progress.max = Math.max(1, total); progress.value = completed;
@@ -1687,6 +1707,7 @@
     const group = groups.find(item => item.id === groupSelect.value);
     if ((group?.id || '') !== renderedNodeGroup) {
       nodeRegionFilter = 'all';
+      nodeTestScope = 'all';
       renderedNodeGroup = group?.id || '';
     }
     const provider = providerForGroup(group?.id);
@@ -1702,7 +1723,11 @@
     const parts = partitionNodes(group?.nodes || []);
     const previewTested = !!group?.preview && parts.selectable.some(node => node.tested === true);
     const regionOptions = nodeTools.regionOptions(parts.selectable);
-    if (!regionOptions.some(item => item.code === nodeRegionFilter)) nodeRegionFilter = 'all';
+    if (!regionOptions.some(item => item.code === nodeRegionFilter)) {
+      nodeRegionFilter = 'all';
+      nodeTestScope = 'all';
+    }
+    if (nodeRegionFilter === 'all') nodeTestScope = 'all';
     const regionRoot = byId('routing-node-regions');
     regionRoot?.replaceChildren(...regionOptions.map(region => {
       const button = document.createElement('button');
@@ -1714,9 +1739,32 @@
       const label = document.createElement('span'); label.textContent = region.label;
       const count = document.createElement('small'); count.textContent = String(region.count);
       button.append(label, count);
-      button.onclick = () => { nodeRegionFilter = region.code; renderNodes(); };
+      button.onclick = () => {
+        nodeRegionFilter = region.code;
+        nodeTestScope = region.code === 'all' ? 'all' : 'region';
+        renderNodes();
+      };
       return button;
     }));
+    const batchTarget = batchTestTarget(group);
+    const currentRegion = regionOptions.find(item =>
+      item.code === nodeRegionFilter && item.code !== 'all');
+    const regionScope = byId('btn-routing-test-region');
+    const allScope = byId('btn-routing-test-all');
+    const scopeDisabled = busy || !group || activeTest ||
+      (aggregate && group.preview);
+    byId('routing-test-region-count').textContent = String(currentRegion?.count || 0);
+    byId('routing-test-all-count').textContent = String(parts.selectable.length);
+    regionScope.classList.toggle('active', nodeTestScope === 'region');
+    regionScope.setAttribute('aria-pressed', String(nodeTestScope === 'region'));
+    regionScope.disabled = scopeDisabled || !currentRegion;
+    regionScope.title = currentRegion
+      ? `测试当前地区“${currentRegion.label}”的 ${currentRegion.count} 个节点`
+      : '请先选择一个具体地区';
+    allScope.classList.toggle('active', nodeTestScope === 'all');
+    allScope.setAttribute('aria-pressed', String(nodeTestScope === 'all'));
+    allScope.disabled = scopeDisabled || !parts.selectable.length;
+    allScope.title = `测试当前代理组的全部 ${parts.selectable.length} 个节点`;
     const nodeSelection = node => nodeSelectionState(node, group, provider);
     const selectedNames = parts.selectable.filter(node => nodeSelection(node).selected)
       .flatMap(node => [node.name, node.display_name]);
@@ -1727,6 +1775,9 @@
     const metadata = parts.metadata.filter(node => !term
       || `${node.display_name || node.name} ${node.type}`.toLowerCase().includes(term));
     const grid = byId('routing-node-grid');
+    const activeTargetNames = new Set(Array.isArray(context?.targetNames)
+      ? context.targetNames : []);
+    const activeTargetsAll = !Array.isArray(context?.targetNames);
     const existingCards = new Map([...grid.children]
       .filter(card => card.matches('.routing-node[data-node-key]'))
       .map(card => [card.dataset.nodeKey, card]));
@@ -1737,12 +1788,17 @@
       card.dataset.nodeKey = nodeKey;
       const { preferenceName, manualSelected, runtimeSelected, defaultSelected, selected } = nodeSelection(node);
       const owner = provider || nodeTools.nodeOwner(node, routingConfig.proxy_providers);
-      const nodeState = node.state || (node.tested ? 'completed' : activeTest ? 'pending' : '');
+      const activeJobNode = context?.job?.nodes?.find(item => item.name === nodeKey);
+      const testingThisNode = activeTest &&
+        (activeTargetsAll || activeTargetNames.has(nodeKey));
+      const nodeState = activeJobNode?.state ||
+        (testingThisNode ? 'pending' : node.tested ? 'completed' : '');
       card.className = `routing-node${selected ? ' selected' : ''}${nodeState ? ` ${nodeState}` : ''}${node.tested && node.alive === false ? ' offline' : ''}`;
       if (selected) card.setAttribute('aria-current', 'true');
       else card.removeAttribute('aria-current');
       const contentSignature = JSON.stringify([node, selected, manualSelected, runtimeSelected, defaultSelected,
-        busy, preferenceBusy, provider?.id, provider?.enabled, provider?.selection_mode, owner?.id, owner?.enabled, group.preview]);
+        busy, preferenceBusy, provider?.id, provider?.enabled, provider?.selection_mode,
+        owner?.id, owner?.enabled, group.preview, activeTest, testingThisNode]);
       if (card._contentSignature !== contentSignature) {
         card._contentSignature = contentSignature;
         const head = document.createElement('div');
@@ -1784,7 +1840,20 @@
           : aggregate ? '固定全部代理订阅出口；影响所有引用该出口的规则，不改变各订阅的选点'
           : '固定当前订阅出口，不改变全部代理订阅的手动选点';
         choose.onclick = () => saveProxyPreference(group.id, 'manual', preferenceName, null, owner.id);
-        action.append(badge, choose); card.replaceChildren(head, meta, action);
+        const test = document.createElement('button');
+        test.type = 'button'; test.className = 'btn mini ghost routing-node-test';
+        test.classList.toggle('active', testingThisNode);
+        test.textContent = testingThisNode ? '测速中…' : '测速';
+        test.disabled = busy || activeTest || (aggregate && group.preview);
+        test.title = aggregate && group.preview
+          ? '核心未运行时，请在具体订阅中测试此节点'
+          : `仅测试节点“${nodeTools.nodeText(node)}”`;
+        test.onclick = () => testProxyGroup(
+          [node.name], `单节点 · ${nodeTools.nodeText(node)}`);
+        const actionButtons = document.createElement('div');
+        actionButtons.className = 'routing-node-action-buttons';
+        actionButtons.append(test, choose);
+        action.append(badge, actionButtons); card.replaceChildren(head, meta, action);
       }
       const current = grid.children[index];
       if (current !== card) grid.insertBefore(card, current || null);
@@ -1848,11 +1917,13 @@
       byId('routing-node-summary').textContent += ` · 原节点“${provider.selected_node}”已失效，请重新选择。`;
     }
     const groupTest = byId('btn-routing-group-test');
-    groupTest.disabled = busy || !group || activeTest || (aggregate && group.preview);
-    groupTest.textContent = activeTest ? '测速中…'
-      : context?.job || previewTested ? '重新测速' : group?.preview ? '临时全部测速' : '全部测速';
+    groupTest.disabled = busy || !group || activeTest || !batchTarget.count ||
+      (aggregate && group.preview);
+    groupTest.textContent = activeTest ? '测速中…' : '开始测速';
     groupTest.title = aggregate && group.preview ? '核心未运行时，请在具体订阅中执行临时测速'
-      : group?.preview ? '后台启动无 TUN 的 Mihomo，逐节点回显延迟且不接管系统流量' : '后台测试当前运行代理组的全部节点';
+      : group?.preview
+        ? `后台启动无 TUN 的 Mihomo，测试${batchTarget.label}且不接管系统流量`
+        : `后台测试当前运行代理组的${batchTarget.label}（${batchTarget.count} 个）`;
     const autoSelect = byId('btn-routing-auto-select');
     autoSelect.disabled = busy || (!provider && !aggregate) || !!preferenceBusy;
     const smartPolicy = provider?.selection_mode === 'auto' && provider?.auto_policy?.enabled;
@@ -1891,6 +1962,7 @@
     byId('routing-node-search').value = '';
     byId('routing-node-alive').checked = false;
     nodeRegionFilter = 'all';
+    nodeTestScope = 'all';
     byId('routing-node-sort').value = 'current';
     byId('routing-node-sort')._routingWidget?.refresh();
     renderNodes();
@@ -1906,7 +1978,7 @@
     });
   }
 
-  async function testProxyGroup() {
+  async function testProxyGroup(nodeNames = undefined, scopeLabel = '') {
     const groupId = byId('routing-node-group').value;
     if (!groupId || busy || testStartBusy.has(groupId) || testIsActive(testContext(groupId)?.job)) return;
     const group = nodeGroups().find(item => item.id === groupId);
@@ -1916,16 +1988,32 @@
       nodeFeedback('当前订阅已不存在，请返回订阅管理后刷新。', 'error');
       return;
     }
+    const selectedTarget = nodeNames === undefined
+      ? batchTestTarget(group)
+      : {
+        nodeNames: [...new Set((nodeNames || []).map(value => String(value || '').trim()).filter(Boolean))],
+        count: (nodeNames || []).length,
+        label: scopeLabel || '指定节点',
+      };
+    const targets = selectedTarget.nodeNames;
+    if (Array.isArray(targets) && !targets.length) {
+      nodeFeedback('当前测速范围没有可用节点。', 'warning');
+      return;
+    }
+    const targetCount = Array.isArray(targets)
+      ? targets.length : partitionNodes(group.nodes).selectable.length;
+    const testLabel = scopeLabel || selectedTarget.label;
     const signature = provider ? providerPreviewSignature(provider) : '';
     const progress = group?.preview
-      ? '正在启动无 TUN 后台测速任务，节点完成后会立即回显…'
-      : '正在启动后台测速任务，节点完成后会立即回显…';
+      ? `正在启动无 TUN 的${testLabel}后台测速任务，节点完成后会立即回显…`
+      : `正在启动${testLabel}后台测速任务，节点完成后会立即回显…`;
     const previousContext = testContext(groupId);
     const context = {
       jobId: '', groupId, providerId: provider?.id || '', groupName: group.name,
+      scopeLabel: testLabel, targetNames: Array.isArray(targets) ? [...targets] : null,
       kind: group.preview ? 'preview' : 'runtime', signature, previousGroup: clone(group),
       job: {
-        id: '', status: 'pending', total: partitionNodes(group.nodes).selectable.length,
+        id: '', status: 'pending', total: targetCount,
         completed: 0, alive: 0, failed: 0, nodes: [], msg: progress, error: '',
       },
       timer: null, pollFailures: 0, generation: setupGeneration,
@@ -1937,8 +2025,8 @@
         ? await backend().start_preview_routing_test({ ...provider }, {
           physical_interface: byId('routing-interface')?.value || '',
           dns_servers: byId('routing-dns')?.value || '',
-        })
-        : await backend().start_routing_group_test(groupId);
+        }, targets)
+        : await backend().start_routing_group_test(groupId, targets);
       if (result?.ok === false || !result?.job_id || !result?.job) throw new Error(result?.msg || '测速任务启动失败');
       context.jobId = result.job_id;
       if (context.generation !== setupGeneration) {
@@ -3047,7 +3135,16 @@
     byId('btn-routing-test').onclick = testDomainMatch;
     byId('routing-test-domain').onkeydown = event => { if (event.key === 'Enter') testDomainMatch(); };
     byId('btn-routing-nodes-refresh').onclick = refreshNodes;
-    byId('btn-routing-group-test').onclick = testProxyGroup;
+    byId('btn-routing-group-test').onclick = () => testProxyGroup();
+    byId('btn-routing-test-region').onclick = () => {
+      if (nodeRegionFilter === 'all') return;
+      nodeTestScope = 'region';
+      renderNodes();
+    };
+    byId('btn-routing-test-all').onclick = () => {
+      nodeTestScope = 'all';
+      renderNodes();
+    };
     byId('btn-routing-test-cancel').onclick = cancelProxyTest;
     byId('btn-routing-auto-select').onclick = () => {
       const groupId = byId('routing-node-group')?.value || '';
@@ -3132,7 +3229,10 @@
     byId('builtin-rules-type').onchange = renderBuiltinRules;
     enhanceRoutingSelect(byId('routing-node-sort'), { compact: true });
     enhanceRoutingSelect(byId('routing-auto-policy-tolerance-unit'), { compact: true });
-    byId('routing-node-group').onchange = () => { nodeRegionFilter = 'all'; closeAutoPolicy(); renderNodes(); };
+    byId('routing-node-group').onchange = () => {
+      nodeRegionFilter = 'all'; nodeTestScope = 'all';
+      closeAutoPolicy(); renderNodes();
+    };
     document.querySelectorAll('[data-routing-tab]').forEach(button => {
       button.onclick = () => setRoutingTab(button.dataset.routingTab);
       button.onkeydown = event => {

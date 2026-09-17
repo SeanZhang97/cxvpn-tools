@@ -1363,27 +1363,33 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             self.log(f'[routing-task] test_preview_routing_provider失败: {type(exc).__name__}')
             return {'ok': False, 'msg': '订阅或节点操作失败，请重试或查看运行日志'}
 
-    def start_preview_routing_test(self, provider, network=None):
+    def start_preview_routing_test(self, provider, network=None,
+                                   node_names=None):
         provider_copy = json.loads(json.dumps(provider or {}))
         network_copy = json.loads(json.dumps(network or {}))
+        targets = (json.loads(json.dumps(node_names))
+                   if node_names is not None else None)
 
         def runner(progress, cancel_event):
             return self._routing_provider_task(provider_copy.get('id'),
                 lambda config: self.routing.test_preview_proxy_provider(
-                    provider_copy, network_copy, progress, cancel_event))
+                    provider_copy, network_copy, progress, cancel_event,
+                    targets))
 
         return self.routing_test_jobs.start(
             runner, '订阅节点测速',
             lambda exc: (str(exc) if isinstance(exc, routing.RoutingError)
                          else '订阅节点测速发生内部错误，请重试'))
 
-    def start_routing_group_test(self, group_id):
+    def start_routing_group_test(self, group_id, node_names=None):
         target = str(group_id or '').strip().lower()
+        targets = (json.loads(json.dumps(node_names))
+                   if node_names is not None else None)
 
         def runner(progress, cancel_event):
             return self._routing_provider_task(target,
                 lambda config: self.routing.test_proxy_group_stream(
-                    config, target, progress, cancel_event))
+                    config, target, progress, cancel_event, targets))
 
         return self.routing_test_jobs.start(
             runner, '代理组测速',

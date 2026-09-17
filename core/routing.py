@@ -40,6 +40,7 @@ from core.routing_tasks import commit_scope
 from core.routing_environment import EnvironmentCache, bounded_calls
 from core.routing_speedtest import (
     node_healthcheck_path as _node_healthcheck_path,
+    select_test_nodes as _select_test_nodes,
     test_group as _test_group,
     test_nodes as _test_nodes,
 )
@@ -1983,7 +1984,8 @@ if ($service) {{
                                _persist=True, _cache_source='',
                                _run_delay_test=False, _refresh_cache=True,
                                _cache_only=False, _progress=None,
-                               _cancel_event=None, _persist_snapshot=True):
+                               _cancel_event=None, _persist_snapshot=True,
+                               _test_node_names=None):
         """获取订阅；自动模式按缓存状态选择可用的首次下载出口。"""
         source = dict(value) if isinstance(value, dict) else {}
         normalized = normalize_config({
@@ -2004,6 +2006,7 @@ if ($service) {{
             '_progress': _progress,
             '_cancel_event': _cancel_event,
             '_persist_snapshot': _persist_snapshot,
+            '_test_node_names': _test_node_names,
         }
         can_auto_route = (
             route == 'auto' and not _cache_only and _seed_payload is None)
@@ -2150,7 +2153,8 @@ if ($service) {{
                                      _cache_source='', _run_delay_test=False,
                                      _refresh_cache=True, _cache_only=False,
                                      _progress=None, _cancel_event=None,
-                                     _persist_snapshot=True):
+                                     _persist_snapshot=True,
+                                     _test_node_names=None):
         """用内置 Mihomo 获取订阅；成功内容写入 last-known-good 缓存。"""
         source = dict(value) if isinstance(value, dict) else {}
         source['enabled'] = True
@@ -2264,6 +2268,7 @@ if ($service) {{
         refreshed = False
         refresh_warning = ''
         preview_delays = None
+        previous_nodes = {}
         with tempfile.TemporaryDirectory(prefix='cxvpn-provider-preview-') as root:
             config_path = os.path.join(root, 'config.json')
             log_path = os.path.join(root, 'mihomo.log')
@@ -2354,6 +2359,25 @@ if ($service) {{
                         } for item in provider_payload.get('proxies') or []
                             if isinstance(item, dict) and
                             str(item.get('name') or '').strip()]
+                        if _test_node_names is not None:
+                            previous_snapshot = (
+                                subscription_store.load_node_snapshot(provider))
+                            previous_nodes = {
+                                str(item.get('display_name') or
+                                    item.get('name') or ''): item
+                                for item in previous_snapshot.get('nodes') or []
+                            }
+                        preview_nodes = [{
+                            **node,
+                            **({
+                                'delay': previous_nodes[node['name']].get('delay', 0),
+                                'alive': previous_nodes[node['name']].get('alive'),
+                                'tested': previous_nodes[node['name']].get('tested', False),
+                                'tested_at': previous_nodes[node['name']].get('tested_at', 0),
+                            } if node['name'] in previous_nodes else {}),
+                        } for node in preview_nodes]
+                        test_candidates = _select_test_nodes(
+                            preview_nodes, _test_node_names, RoutingError)
                         completed_nodes = {}
 
                         def persist_preview_progress(event):
@@ -2368,7 +2392,7 @@ if ($service) {{
 
                         preview_delays = _test_nodes(
                             self._controller_request, controller_config,
-                            preview_nodes, HEALTH_CHECK_URL, persist_preview_progress,
+                            test_candidates, HEALTH_CHECK_URL, persist_preview_progress,
                             _cancel_event, workers=8)
                 finally:
                     _stop_temporary_process(process, close_job)
@@ -2393,9 +2417,13 @@ if ($service) {{
                 continue
             tested_result = (preview_delays.get(str(item['name']))
                              if isinstance(preview_delays, dict) else None)
-            delay = (tested_result.get('delay', 0)
-                     if isinstance(tested_result, dict) else 0)
-            tested = isinstance(tested_result, dict)
+            previous_result = previous_nodes.get(str(item['name']))
+            resolved_result = (tested_result if isinstance(tested_result, dict)
+                               else previous_result if isinstance(previous_result, dict)
+                               else None)
+            delay = (resolved_result.get('delay', 0)
+                     if isinstance(resolved_result, dict) else 0)
+            tested = bool(resolved_result and resolved_result.get('tested', True))
             nodes.append({
                 'name': str(item['name']),
                 'display_name': str(item['name']),
@@ -2403,7 +2431,7 @@ if ($service) {{
                 'alive': delay > 0 if tested else None,
                 'tested': tested,
                 'delay': delay,
-                'tested_at': (tested_result.get('tested_at', 0)
+                'tested_at': (resolved_result.get('tested_at', 0)
                               if tested else 0),
             })
         if not nodes:
@@ -2490,12 +2518,13 @@ if ($service) {{
             'selection_invalid': _selection.selection_missing(provider, nodes),
         }
 
-    def test_preview_proxy_provider(self, value, network=None, progress=None, cancel_event=None):
+    def test_preview_proxy_provider(self, value, network=None, progress=None,
+                                    cancel_event=None, node_names=None):
         """只使用本地缓存，以无 TUN 临时进程测试预览节点。"""
         return self.preview_proxy_provider(
             value, network, _persist=False, _run_delay_test=True,
             _refresh_cache=False, _cache_only=True, _progress=progress,
-            _cancel_event=cancel_event)
+            _cancel_event=cancel_event, _test_node_names=node_names)
 
     def import_proxy_provider(self, value, content, network=None):
         """导入 Clash/Mihomo provider YAML，作为不依赖外部客户端的首次种子。"""
@@ -2572,11 +2601,12 @@ if ($service) {{
     def test_proxy_group(self, config, group_id):
         return self.test_proxy_group_stream(config, group_id)
 
-    def test_proxy_group_stream(self, config, group_id, progress=None, cancel_event=None):
+    def test_proxy_group_stream(self, config, group_id, progress=None,
+                                cancel_event=None, node_names=None):
         return _test_group(
             self, normalize_config(config), group_id, HEALTH_CHECK_URL,
             RoutingError, _selection.persist_provider_nodes, progress,
-            cancel_event)
+            cancel_event, node_names)
 
     def test_proxy_node(self, config, group_id, node_name):
         normalized = normalize_config(config)

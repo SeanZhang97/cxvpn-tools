@@ -109,6 +109,50 @@ class RoutingSpeedTestTests(unittest.TestCase):
         self.assertTrue(saved[0]['alive'])
         self.assertIsNone(saved[1]['alive'])
 
+    def test_group_test_limits_requests_to_selected_nodes_and_preserves_others(self):
+        nodes = [
+            {'name': 'JP-A', 'delay': 45, 'alive': True, 'tested': True},
+            {'name': 'US-A', 'delay': 80, 'alive': True, 'tested': True},
+        ]
+        manager = mock.Mock()
+        manager._group_identity.return_value = ('PROXY-alpha', '订阅一', 'select')
+        manager.proxy_overview.side_effect = [
+            [{'id': 'alpha', 'nodes': nodes}], []]
+        persist = mock.Mock()
+
+        def selected_only(_request, _config, candidates, _url,
+                          _progress, _cancel, workers):
+            self.assertEqual(workers, 8)
+            self.assertEqual([item['name'] for item in candidates], ['JP-A'])
+            return {'JP-A': {
+                'name': 'JP-A', 'delay': 31, 'alive': True,
+                'tested': True, 'tested_at': 2,
+            }}
+
+        with mock.patch(
+                'core.routing_speedtest.test_nodes', side_effect=selected_only):
+            result = test_group(
+                manager, {}, 'alpha', 'https://example.test/204',
+                RuntimeError, persist, node_names=['JP-A'])
+
+        self.assertEqual([item['name'] for item in result['nodes']], ['JP-A'])
+        saved = persist.call_args.args[2]
+        self.assertEqual(saved[0]['delay'], 31)
+        self.assertEqual(saved[1]['delay'], 80)
+
+    def test_group_test_rejects_stale_selected_node(self):
+        manager = mock.Mock()
+        manager._group_identity.return_value = ('PROXY-alpha', '订阅一', 'select')
+        manager.proxy_overview.return_value = [{
+            'id': 'alpha', 'nodes': [{'name': 'JP-A'}]}]
+
+        with self.assertRaisesRegex(RuntimeError, '节点已变化'):
+            test_group(
+                manager, {}, 'alpha', 'https://example.test/204',
+                RuntimeError, mock.Mock(), node_names=['JP-old'])
+
+        manager._controller_request.assert_not_called()
+
     def test_limits_parallelism_to_eight_workers(self):
         active = 0
         peak = 0

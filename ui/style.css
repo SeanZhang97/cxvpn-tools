@@ -1363,7 +1363,17 @@ th:last-child { width: 326px; }
 }
 .routing-empty p { margin: 0; }
 .routing-empty .btn { margin: 12px 0 0; }
-.routing-node-toolbar { display: grid; grid-template-columns: minmax(180px,.8fr) minmax(220px,1fr) auto auto auto; align-items: end; gap: 10px; }
+.routing-node-toolbar { display: grid; grid-template-columns: minmax(180px,.7fr) minmax(210px,1fr) auto auto auto; align-items: end; gap: 10px; }
+.routing-test-controls { display: flex; align-items: center; gap: 7px; }
+.routing-test-scope { min-height: 40px; display: inline-flex; align-items: stretch; padding: 3px; border: 1px solid rgba(129,140,248,.2); border-radius: 10px; background: rgba(4,8,20,.48); }
+.routing-test-scope button { min-width: 78px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 8px; border: 0; border-radius: 7px; color: #8e9bb2; background: transparent; font: inherit; font-size: 10.5px; white-space: nowrap; cursor: pointer; transition: color .16s, background .16s, box-shadow .16s; }
+.routing-test-scope button:not(.active):hover:not(:disabled) { color: #dce8fb; background: rgba(129,140,248,.08); }
+.routing-test-scope button.active { color: #082032; background: #67e8f9; box-shadow: 0 0 16px rgba(34,211,238,.16); }
+.routing-test-scope button:focus-visible { outline: 2px solid rgba(34,211,238,.65); outline-offset: 2px; }
+.routing-test-scope button:disabled { opacity: .42; cursor: not-allowed; }
+.routing-test-scope small { min-width: 17px; padding: 1px 4px; border-radius: 5px; color: inherit; background: rgba(255,255,255,.06); font-size: 9px; text-align: center; }
+.routing-test-scope button.active small { background: rgba(5,30,46,.12); }
+.routing-test-controls > .btn { min-height: 40px; margin: 0; white-space: nowrap; }
 .routing-auto-policy { margin-top: 12px; padding: 16px; border: 1px solid rgba(34,211,238,.2); border-radius: 13px; background: linear-gradient(145deg,rgba(11,25,48,.92),rgba(10,16,33,.96)); box-shadow: inset 0 1px rgba(255,255,255,.025); }
 .routing-auto-policy-head,.routing-auto-policy-section-head,.routing-auto-policy-actions { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .routing-auto-policy-head h4 { margin: 2px 0 4px; color: #e7f2ff; font-size: 15px; }
@@ -1494,6 +1504,8 @@ th:last-child { width: 326px; }
 .routing-node-action span { min-width: 0; color: #73829d; font-size: 9.5px; }
 .routing-node-action span.on { color: #67e8f9; }
 .routing-node-action .btn { flex: none; margin: 0; }
+.routing-node-action-buttons { flex: none; display: flex; align-items: center; gap: 5px; }
+.routing-node-test.active { border-color: rgba(34,211,238,.42); color: #a5f3fc; background: rgba(34,211,238,.08); }
 .routing-provider-update-settings { display: flex; align-items: center; gap: 11px; margin-top: 10px; padding: 10px 11px; border: 1px solid rgba(129,140,248,.14); border-radius: 10px; background: rgba(99,102,241,.035); }
 .routing-provider-update-settings .switch { margin: 0; }
 .routing-provider-update-settings > div { min-width: 0; display: grid; gap: 3px; }
@@ -1516,6 +1528,8 @@ th:last-child { width: 326px; }
   .routing-p1-grid { grid-template-columns: 1fr; }
   .routing-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .routing-node-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .routing-node-toolbar { grid-template-columns: minmax(180px,.8fr) minmax(220px,1fr) auto auto; }
+  .routing-test-controls { grid-column: 1 / -1; justify-content: flex-end; }
   .routing-provider-head { grid-template-columns: minmax(180px,1fr) auto; }
   .routing-provider-status { grid-column: 1; grid-row: 2; }
   .routing-provider-actions { grid-column: 2; grid-row: 1 / span 2; }
@@ -1532,6 +1546,9 @@ th:last-child { width: 326px; }
   .routing-provider-filters,
   .routing-rule-tools,
   .routing-node-toolbar { grid-template-columns: 1fr; }
+  .routing-test-controls { grid-column: auto; justify-content: stretch; }
+  .routing-test-scope { flex: 1; }
+  .routing-test-scope button { flex: 1; }
   .routing-tabs { grid-template-columns: repeat(4,minmax(145px,1fr)); overflow-x: auto; }
   .routing-tabs button { min-width: 0; }
   .routing-hero { padding: 15px; }

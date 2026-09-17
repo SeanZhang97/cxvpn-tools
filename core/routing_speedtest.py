@@ -149,8 +149,39 @@ def test_nodes(controller_request, controller_config, nodes, health_url,
     return results
 
 
+def select_test_nodes(nodes, node_names, error_type=ValueError):
+    """按运行态节点名选择测速范围，并拒绝过期或不可测速的目标。"""
+    candidates = [dict(node) for node in nodes or []]
+    if node_names is None:
+        return candidates
+    if not isinstance(node_names, (list, tuple)):
+        raise error_type('节点测速范围无效，请刷新后重试')
+    requested = []
+    seen = set()
+    for value in node_names:
+        name = str(value or '').strip()
+        if not name or len(name) > 512 or name in seen:
+            continue
+        seen.add(name)
+        requested.append(name)
+    if not requested:
+        raise error_type('当前测速范围没有可用节点')
+    if len(requested) > 2048:
+        raise error_type('本次测速节点过多，请缩小范围后重试')
+    available = {str(node.get('name') or '') for node in candidates}
+    if any(name not in available for name in requested):
+        raise error_type('测速范围中的节点已变化，请刷新列表后重试')
+    requested_set = set(requested)
+    selected = [node for node in candidates
+                if str(node.get('name') or '') in requested_set]
+    if not any(not is_metadata_node(node) for node in selected):
+        raise error_type('当前测速范围没有可用节点')
+    return selected
+
+
 def test_group(manager, config, group_id, health_url, error_type,
-               persist_nodes, progress=None, cancel_event=None):
+               persist_nodes, progress=None, cancel_event=None,
+               node_names=None):
     """对运行态代理组逐节点测速，并保存订阅组的最新安全快照。"""
     target = str(group_id or '').strip().lower()
     _internal_name, display_name, _strategy = manager._group_identity(
@@ -159,6 +190,13 @@ def test_group(manager, config, group_id, health_url, error_type,
                   if item.get('id') == target), None)
     if not group:
         raise error_type('代理组不存在，或统一分流服务尚未运行')
+    test_candidates = select_test_nodes(
+        group.get('nodes') or [], node_names, error_type)
+    scope_label = ('全部节点' if node_names is None else
+                   f'指定节点 {len(test_candidates)} 个')
+    manager.log(
+        f'[routing-test] 开始执行: group={target}，scope={scope_label}，'
+        '单节点超时=12秒，总期限=120秒')
     collected = {}
 
     def on_progress(event):
@@ -173,15 +211,18 @@ def test_group(manager, config, group_id, health_url, error_type,
             progress(event)
 
     results = test_nodes(
-        manager._controller_request, config, group.get('nodes') or [],
+        manager._controller_request, config, test_candidates,
         health_url, on_progress, cancel_event, workers=8)
     if target != 'all':
         merged = [{**node, **results.get(str(node.get('name') or ''), {})}
                   for node in group.get('nodes') or []]
         persist_nodes(config, target, merged)
+    manager.log(
+        f'[routing-test] 执行结束: group={target}，scope={scope_label}，'
+        f'完成={len(results)}')
     return {
         'ok': True,
-        'msg': f'代理组“{display_name}”测速完成',
+        'msg': f'代理组“{display_name}”测速完成，共 {len(results)} 个节点',
         'nodes': list(results.values()),
         'delays': {name: item.get('delay', 0)
                    for name, item in results.items()},

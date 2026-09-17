@@ -521,6 +521,59 @@ class RoutingConfigTests(unittest.TestCase):
         persist.assert_not_called()
         process.terminate.assert_called_once()
 
+    def test_preview_test_can_limit_scope_and_preserve_unselected_history(self):
+        provider = {
+            'id': 'draft', 'name': '未保存订阅',
+            'url': 'https://example.test/subscription',
+            'enabled': False, 'download_route': 'physical',
+        }
+        manager = routing.RoutingManager()
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+
+        def stage_cache(_provider, destination):
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            with open(destination, 'w', encoding='utf-8') as stream:
+                stream.write('proxies:\n  - name: 日本 A\n    type: vmess\n'
+                             '  - name: 美国 A\n    type: vless\n')
+            return True
+
+        snapshot = {'nodes': [{
+            'name': '日本 A', 'display_name': '日本 A', 'type': 'vmess',
+            'delay': 88, 'alive': True, 'tested': True, 'tested_at': 1,
+        }, {
+            'name': '美国 A', 'display_name': '美国 A', 'type': 'vless',
+            'delay': 99, 'alive': True, 'tested': True, 'tested_at': 1,
+        }]}
+        with mock.patch.object(routing, 'verify_runtime'), \
+                mock.patch.object(routing.subprocess, 'Popen', return_value=process), \
+                mock.patch.object(routing, '_attach_kill_on_close_job',
+                                  return_value=mock.Mock()), \
+                mock.patch.object(subscription_store, 'stage_cache',
+                                  side_effect=stage_cache), \
+                mock.patch.object(subscription_store, 'load_node_snapshot',
+                                  return_value=snapshot), \
+                mock.patch.object(routing._selection, 'persist_provider_nodes',
+                                  return_value=None), \
+                mock.patch.object(manager, '_controller_request', side_effect=[
+                    {'version': 'v1.19.30'},
+                    {'proxies': [
+                        {'name': '日本 A', 'type': 'vmess'},
+                        {'name': '美国 A', 'type': 'vless'},
+                    ]},
+                    {'delay': 57},
+                ]) as request:
+            result = manager.test_preview_proxy_provider(
+                provider, node_names=['日本 A'])
+
+        self.assertEqual(result['nodes'][0]['delay'], 57)
+        self.assertEqual(result['nodes'][1]['delay'], 99)
+        self.assertEqual(
+            sum('/healthcheck?' in call.args[1]
+                for call in request.call_args_list if len(call.args) > 1), 1)
+        process.terminate.assert_called_once()
+
     def test_auto_preview_falls_back_to_detected_windows_proxy(self):
         provider = {
             'id': 'draft', 'name': '科学',
