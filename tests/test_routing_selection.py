@@ -47,6 +47,7 @@ class RoutingSelectionTests(unittest.TestCase):
             manager = routing.RoutingManager()
             manager._data_dir = data_root
             manager._service_state = mock.Mock(return_value={'installed': False})
+            manager._repair_invalid_proxy = mock.Mock()
             with mock.patch.object(routing, 'verify_runtime'), \
                     mock.patch.object(
                         routing, 'windows_manual_proxy_state',
