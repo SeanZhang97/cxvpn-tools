@@ -40,6 +40,7 @@ import PyInstaller.__main__
 from build_runtime import build_routing_service
 from build_lifecycle import complete_build, prepare_build
 from core.app_paths import migrate_legacy_user_data
+from core.version import APP_VERSION, APP_VERSION_TUPLE
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = 'CXVPNTools'
@@ -151,13 +152,32 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=@@APP_NAME@@,
           debug=False, bootloader_ignore_signals=False, strip=False,
           upx=True, console=False, disable_windowed_traceback=False,
           argv_emulation=False, target_arch=None, codesign_identity=None,
-          entitlements_file=None, icon=[@@ICON@@])
+          entitlements_file=None, icon=[@@ICON@@], version=@@VERSION_FILE@@)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True,
                upx_exclude=[], name=@@APP_NAME@@)
 '''
 
 
 def write_spec(staged):
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+        VarFileInfo, VarStruct, VSVersionInfo)
+    version_file = os.path.join(WORK, 'protected-version.txt')
+    version = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=APP_VERSION_TUPLE,
+                          prodvers=APP_VERSION_TUPLE, fileType=1),
+        kids=[StringFileInfo([StringTable('040904B0', [
+            StringStruct('CompanyName', APP_NAME),
+            StringStruct('FileDescription', APP_NAME),
+            StringStruct('FileVersion', '.'.join(map(str, APP_VERSION_TUPLE))),
+            StringStruct('InternalName', APP_NAME + '.exe'),
+            StringStruct('OriginalFilename', APP_NAME + '.exe'),
+            StringStruct('ProductName', APP_NAME),
+            StringStruct('ProductVersion', APP_VERSION),
+        ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])])
+    os.makedirs(WORK, exist_ok=True)
+    with open(version_file, 'w', encoding='utf-8') as stream:
+        stream.write(str(version))
     spec = (_SPEC_TEMPLATE
             .replace('@@BASE@@', repr(BASE))
             .replace('@@APP_NAME@@', repr(APP_NAME))
@@ -167,7 +187,8 @@ def write_spec(staged):
             .replace('@@RULES_SRC@@', repr(SOURCE_RULE_PACK_DIR))
             .replace('@@RT_SRC@@', repr(os.path.join(BASE, 'runtime',
                                                      'routing')))
-            .replace('@@ICON@@', repr(os.path.join(BASE, 'icon.ico'))))
+            .replace('@@ICON@@', repr(os.path.join(BASE, 'icon.ico')))
+            .replace('@@VERSION_FILE@@', repr(version_file)))
     with open(SPEC_PATH, 'w', encoding='utf-8') as f:
         f.write(spec)
 

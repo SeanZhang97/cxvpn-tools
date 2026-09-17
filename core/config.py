@@ -55,6 +55,7 @@ DEFAULT = {
     },
     'browser_data_dir': './browser_data',
     'vlm': {'base': '', 'key': '', 'model': ''},
+    'codex_api': {'base_url': '', 'api_key': ''},
     'routing': {
         'schema_version': 8,
         'enabled': False,
@@ -163,13 +164,16 @@ def save(cfg):
 
 def _export_json(cfg):
     """兼容导出不是主提交点；失败不能触发运行时回滚到已过期配置。"""
+    # Codex API Key 只保存在 SQLite 主库，不复制到兼容 JSON 及其历史。
+    exported = copy.deepcopy(cfg)
+    exported.pop('codex_api', None)
     directory = os.path.dirname(CFG_PATH)
     os.makedirs(directory, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
         prefix='config.', suffix='.tmp', dir=directory)
     try:
         with os.fdopen(descriptor, 'w', encoding='utf-8') as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            json.dump(exported, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
         if os.path.isfile(CFG_PATH):

@@ -65,6 +65,13 @@ class BuildBrandingTest(unittest.TestCase):
             self.assertIn('prepare_build', source, relative)
             self.assertIn('complete_build', source, relative)
 
+    def test_protected_build_embeds_single_source_version(self):
+        source = (ROOT / 'build_protected.py').read_text(encoding='utf-8')
+        self.assertIn('from core.version import APP_VERSION, APP_VERSION_TUPLE', source)
+        self.assertIn("StringStruct('ProductVersion', APP_VERSION)", source)
+        self.assertIn('version=@@VERSION_FILE@@', source)
+        self.assertIn(".replace('@@VERSION_FILE@@', repr(version_file))", source)
+
 
 if __name__ == '__main__':
     unittest.main()

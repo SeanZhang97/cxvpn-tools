@@ -88,6 +88,52 @@ function bind() {
 let codexViewText = '';
 let codexProxyOn = false;
 let codexTransportBusy = false;
+let codexApiBusy = false;
+let codexApiKeyBusy = false;
+let codexOperation = '';
+let codexLastState = null;
+let codexRefreshSequence = 0;
+let codexBaseDirty = false;
+let codexKeyDirty = false;
+
+function updateCodexControls() {
+  const busy = Boolean(codexOperation);
+  const state = codexLastState;
+  const unavailable = !state;
+  const disabled = {
+    'btn-codex-toggle': busy || unavailable || Boolean(state?.parse_error),
+    'btn-codex-api-save': busy || unavailable || Boolean(state?.custom_api_error || state?.custom_api_conflict),
+    'btn-codex-api-restore': busy || unavailable || !state?.custom_api_restore_available,
+    'btn-codex-restart': busy,
+    'codex-wss-enabled': busy || unavailable
+      || ((typeof state?.websocket_enabled !== 'boolean' || state?.transport_conflict)
+        && !state?.transport_restore_available),
+    'codex-api-base-url': busy,
+    'codex-api-key': busy,
+  };
+  Object.entries(disabled).forEach(([id, value]) => {
+    const control = $(id);
+    if (control) control.disabled = Boolean(value);
+  });
+}
+
+function beginCodexOperation(name) {
+  if (codexOperation) return false;
+  codexOperation = name;
+  // 已在途的读取不得以旧结果覆盖写入后的页面状态。
+  codexRefreshSequence++;
+  updateCodexControls();
+  return true;
+}
+
+async function endCodexOperation() {
+  try {
+    await refreshCodexPage();
+  } finally {
+    codexOperation = '';
+    updateCodexControls();
+  }
+}
 
 function renderCodexToggle(state) {
   const toggle = $('btn-codex-toggle');
@@ -104,26 +150,120 @@ function renderCodexTransport(state) {
   const detail = $('codex-transport-detail');
   if (!toggle || !summary) return;
   const known = typeof state.websocket_enabled === 'boolean';
+  const restoreAvailable = Boolean(state.transport_restore_available);
+  const customManaged = Boolean(state.custom_api_managed);
   toggle.checked = state.websocket_enabled === true;
   toggle.indeterminate = !known;
-  toggle.disabled = codexTransportBusy || !known || Boolean(state.transport_conflict);
+  toggle.disabled = codexTransportBusy
+    || (!known && !restoreAvailable)
+    || (Boolean(state.transport_conflict) && !restoreAvailable);
 
   const provider = state.active_provider || '未解析';
   if (state.transport_mode === 'wss_preferred') {
-    summary.textContent = '模型请求优先使用 WSS；连接失败时 Codex 仍可能回退到 HTTPS/SSE。';
+    summary.textContent = '当前传输方式：优先 WebSocket，可回退到 HTTP/SSE。';
   } else if (state.transport_mode === 'http_only') {
-    summary.textContent = '模型请求仅使用加密 HTTPS/SSE，不会先尝试 Responses WebSocket。';
+    summary.textContent = '当前传输方式：仅 HTTP/SSE。';
   } else if (state.transport_mode === 'custom_provider') {
-    summary.textContent = `当前使用自定义 Provider（${provider}），本工具不会自动切换。`;
+    summary.textContent = restoreAvailable
+      ? `当前 Provider：${provider}。开启“优先 WSS”可恢复此前的传输设置。`
+      : `当前 Provider：${provider}。传输方式由该 Provider 决定。`;
   } else if (state.transport_mode === 'conflict') {
-    summary.textContent = '传输配置与恢复记录冲突，请检查配置文件后再操作。';
+    summary.textContent = '当前 Provider 配置与可还原信息不一致，请先查看配置文件。';
   } else if (state.transport_mode === 'invalid_config') {
     summary.textContent = `Codex 配置无法解析：${state.transport_error || '格式错误'}`;
   } else {
-    summary.textContent = '当前配置包含首版不支持的 Provider、profile 或 openai_base_url，未提供切换。';
+    summary.textContent = '当前 Provider 由自定义配置或 Profile 决定，无法在此切换传输方式。';
   }
   if (detail) {
-    detail.textContent = `配置选择：${provider}。切换只影响模型 Responses 请求；保存后需重启 Codex，本工具不会自动结束进程。`;
+    const syncText = customManaged
+      ? '自定义 API 模式下会修改 codex_local_access 的 supports_websockets；'
+      : '此开关仅影响模型请求的传输方式；';
+    detail.textContent = `当前 Provider：${provider}。${syncText}修改后需重启 Codex 生效。`;
+  }
+}
+
+function renderCodexCustomApi(state) {
+  const summary = $('codex-api-summary');
+  const detail = $('codex-api-detail');
+  const base = $('codex-api-base-url');
+  const key = $('codex-api-key');
+  const save = $('btn-codex-api-save');
+  const restore = $('btn-codex-api-restore');
+  if (!summary || !base || !key || !save || !restore) return;
+  const transportHandoffPending = Boolean(
+    state.transport_snapshot_exists || state.transport_managed);
+  save.disabled = codexApiBusy || Boolean(state.custom_api_error)
+    || Boolean(state.custom_api_conflict);
+  restore.disabled = codexApiBusy || !state.custom_api_restore_available;
+  if (!codexBaseDirty && document.activeElement !== base) {
+    base.value = state.custom_api_base_url || '';
+  }
+  key.placeholder = state.custom_api_key_configured
+    ? '正在读取已保存的 API Key…'
+    : '首次保存时必填';
+
+  if (state.custom_api_error) {
+    summary.textContent = `自定义 API 配置无法读取：${state.custom_api_error}`;
+  } else if (state.custom_api_conflict) {
+    summary.textContent = '当前自定义 API 配置与可还原信息不一致。为避免覆盖现有配置，暂时无法保存。';
+  } else if (transportHandoffPending && !state.custom_api_active) {
+    summary.textContent = '可以直接保存；现有传输设置会自动衔接，无需先切换 WSS。';
+  } else if (state.custom_api_managed && state.custom_api_migration_required) {
+    summary.textContent = '检测到旧版双 Provider 配置；再次保存会合并为 codex_local_access。';
+  } else if (state.custom_api_managed && state.custom_api_active
+      && !state.custom_api_openai_auth_required) {
+    summary.textContent = '自定义 API 已启用，但当前配置不会保留 Codex 登录身份；再次保存并重启即可升级。';
+  } else if (state.custom_api_managed && state.custom_api_active) {
+    summary.textContent = `当前 Provider：${state.active_provider || 'codex_local_access'}。自定义 API 已启用，Codex 登录账号会保留。`;
+  } else if (state.custom_api_managed) {
+    summary.textContent = `自定义 API 已保存；当前 Provider：${state.active_provider || '未解析'}。`;
+  } else if (state.custom_api_snapshot_exists) {
+    summary.textContent = '上次自定义 API 配置未完成，可点击“还原原配置”恢复。';
+  } else if (state.custom_api_configured) {
+    summary.textContent = '检测到现有自定义 API 配置。为避免覆盖，请先查看配置文件。';
+  } else {
+    summary.textContent = '尚未配置自定义 API。';
+  }
+  if (detail) {
+    const keyState = state.custom_api_key_stored
+      ? '已保存到 CXVPNTools'
+      : state.custom_api_key_configured
+      ? '已配置'
+      : '未配置';
+    detail.textContent = `API Key：${keyState}。模型请求使用自定义 API Key，保留 ChatGPT 登录身份。已配置时留空可沿用密钥。`;
+  }
+}
+
+async function refreshCodexApiKey(state) {
+  const key = $('codex-api-key');
+  const eye = $('btn-codex-api-eye');
+  if (!key || !eye) return;
+  if (!state.custom_api_key_configured) {
+    if (!codexKeyDirty && document.activeElement !== key) key.value = '';
+    concealSecret(key, eye);
+    return;
+  }
+  if (codexApiKeyBusy || codexKeyDirty || document.activeElement === key || key.value) return;
+  if (!api()?.read_codex_api_key) return;
+  codexApiKeyBusy = true;
+  const sequence = codexRefreshSequence;
+  try {
+    const result = await api().read_codex_api_key();
+    if (sequence !== codexRefreshSequence || codexKeyDirty) return;
+    if (result?.ok && result.key_configured
+        && document.activeElement !== key && !key.value) {
+      key.value = result.api_key || '';
+      concealSecret(key, eye);
+    } else if (!result?.ok) {
+      const detail = $('codex-api-detail');
+      if (detail) detail.textContent = `API Key 已配置，但回显失败：${result?.warning || '无法读取'}`;
+    }
+  } catch (error) {
+    if (sequence !== codexRefreshSequence) return;
+    const detail = $('codex-api-detail');
+    if (detail) detail.textContent = `API Key 已配置，但回显失败：${friendlyError(error)}`;
+  } finally {
+    codexApiKeyBusy = false;
   }
 }
 
@@ -133,42 +273,53 @@ async function refreshCodexPage() {
   const pathInput = $('codex-config-path');
   const detail = $('codex-sync-detail');
   if (!summary || !port || !api()?.get_codex_status) return;
+  const sequence = ++codexRefreshSequence;
   try {
     const state = await api().get_codex_status();
+    if (sequence !== codexRefreshSequence) return;
     if (!state || typeof state !== 'object') {
-      summary.textContent = 'Codex 状态接口返回异常。';
-      return;
+      throw new Error('Codex 状态接口返回异常');
     }
+    codexLastState = state;
     renderCodexToggle(state);
     renderCodexTransport(state);
+    renderCodexCustomApi(state);
+    updateCodexControls();
     port.value = state.mixed_port == null ? '' : String(state.mixed_port);
     if (pathInput) pathInput.value = state.config_path || '';
     let text;
     if (state.parse_error) {
       text = `Codex 配置文件存在但无法解析（${state.parse_error}），开启代理前请先修复。`;
     } else if (!state.config_exists) {
-      text = '尚未发现 Codex 配置文件；点击「开启 Codex 代理」会创建。';
+      text = '未找到 Codex 配置文件；开启 Codex 代理时将自动创建。';
     } else if (!state.synced_fields) {
       if (Array.isArray(state.residual_fields) && state.residual_fields.length) {
-        text = `Codex 配置中检测到 ${state.residual_fields.length} 个代理字段残留（快照缺失）。可点击「开启 Codex 代理」重建快照，或「关闭 Codex 代理」直接移除。`;
+        text = `检测到 ${state.residual_fields.length} 项代理设置，但缺少可还原信息。可重新开启以接管，或关闭以清理。`;
       } else {
-        text = 'Codex 配置文件已找到；点击「开启 Codex 代理」写入代理配置。';
+        text = '已找到 Codex 配置文件，当前未启用 Codex 代理。';
       }
     } else if (Array.isArray(state.deviated_fields) && state.deviated_fields.length) {
-      text = `Codex 代理已开启（${state.synced_fields} 个托管字段）；其中 ${state.deviated_fields.length} 个字段被手动修改，关闭代理时将跳过。`;
+      text = `Codex 代理已开启；${state.deviated_fields.length} 项设置已被手动修改，关闭时会保留这些修改。`;
     } else if (state.last_mixed_port && state.mixed_port !== state.last_mixed_port) {
-      text = `Codex 代理上次开启端口为 ${state.last_mixed_port}，当前端口已变为 ${state.mixed_port}；请手动关闭后重新开启以更新端口。`;
+      text = `Codex 代理仍使用端口 ${state.last_mixed_port}，当前本地端口为 ${state.mixed_port}；请关闭后重新开启以更新。`;
     } else {
-      text = `Codex 代理已开启（端口 ${state.last_mixed_port}）。已运行的 Codex 需要重启才会加载。`;
+      text = `Codex 代理已开启，当前端口为 ${state.last_mixed_port}。修改后需重启 Codex 生效。`;
     }
     summary.textContent = text;
     if (detail) {
       detail.textContent = state.snapshot_exists
-        ? `用户数据目录保留了 ${state.snapshot_fields} 个托管字段的快照；关闭 Codex 代理时会删除这些字段。`
-        : 'Codex 代理尚未开启；开启后会在用户数据目录保留快照，用于关闭时代理字段移除。';
+        ? '可安全还原：关闭时只移除本工具写入且未被手动修改的代理设置。'
+        : '开启后可随时还原；手动修改过的配置会被保留。';
     }
+    await refreshCodexApiKey(state);
   } catch (error) {
+    if (sequence !== codexRefreshSequence) return;
+    codexLastState = null;
+    updateCodexControls();
     summary.textContent = `无法读取 Codex 配置状态：${friendlyError(error)}`;
+    for (const id of ['codex-api-summary', 'codex-transport-summary']) {
+      if ($(id)) $(id).textContent = '状态读取失败，请重新进入此页面后再操作。';
+    }
   }
 }
 
@@ -191,6 +342,7 @@ function setCodexTransportFeedback(payload) {
 }
 
 async function setCodexTransport(enabled) {
+  if (!beginCodexOperation('transport')) return;
   const resultElement = $('codex-transport-result');
   if (resultElement) resultElement.textContent = '';
   codexTransportBusy = true;
@@ -203,14 +355,105 @@ async function setCodexTransport(enabled) {
     setCodexTransportFeedback({ ok: false, warning: `操作失败：${friendlyError(error)}` });
   } finally {
     codexTransportBusy = false;
-    await refreshCodexPage();
+    await endCodexOperation();
+  }
+}
+
+function setCodexApiFeedback(payload, action) {
+  const target = $('codex-api-result');
+  if (!target || !payload) return;
+  const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+  if (!payload.ok) {
+    target.className = 'form-feedback error';
+    target.textContent = payload.warning || `${action}失败`;
+    toast({ ok: false, msg: payload.warning || `${action}失败` });
+    return;
+  }
+  const effect = action === '保存'
+    ? '重启后左下角保留登录账号，模型请求使用自定义 API。'
+    : warnings.length
+      ? '部分配置保持不变，请核对以下提示。'
+      : '已恢复原 Provider；请点击“重启 Codex”同步可见历史任务。';
+  target.className = `form-feedback ${warnings.length ? 'warning' : 'ok'}`;
+  target.textContent = payload.changed
+    ? `${action}完成，${effect}${warnings.length ? ` ${warnings.join('；')}` : ''}`
+    : `${action}完成，配置无需修改。${warnings.length ? ` ${warnings.join('；')}` : ''}`;
+  toast({ ok: true, msg: payload.changed ? `${action}完成，重启 Codex 后生效` : `${action}完成` });
+}
+
+async function saveCodexCustomApi() {
+  const base = $('codex-api-base-url');
+  const key = $('codex-api-key');
+  const save = $('btn-codex-api-save');
+  const restore = $('btn-codex-api-restore');
+  const resultElement = $('codex-api-result');
+  if (!base || !key) return;
+  if (!beginCodexOperation('save')) return;
+  if (resultElement) resultElement.textContent = '';
+  codexApiBusy = true;
+  if (save) save.disabled = true;
+  if (restore) restore.disabled = true;
+  try {
+    const result = await api().save_codex_api_config(base.value, key.value);
+    setCodexApiFeedback(result, '保存');
+    if (result?.ok) {
+      codexBaseDirty = false;
+      codexKeyDirty = false;
+      key.value = '';
+      const eye = $('btn-codex-api-eye');
+      if (eye) concealSecret(key, eye);
+    }
+  } catch (error) {
+    setCodexApiFeedback({ ok: false, warning: `保存失败：${friendlyError(error)}` }, '保存');
+  } finally {
+    codexApiBusy = false;
+    await endCodexOperation();
+  }
+}
+
+async function restoreCodexCustomApi() {
+  if (codexOperation) return;
+  const confirmed = await confirmAction({
+    title: '还原自定义 API',
+    message: '将恢复启用前的 Provider，保留手动修改及本工具保存的地址和密钥。随后请点击“重启 Codex”，将可见历史任务统一同步到恢复后的 Provider，而不是逐条恢复各自最初的 Provider。',
+    confirmText: '还原原配置',
+    tone: 'notice',
+    kicker: 'CODEX API',
+  });
+  if (!confirmed) return;
+  if (!beginCodexOperation('restore')) return;
+  const save = $('btn-codex-api-save');
+  const restore = $('btn-codex-api-restore');
+  const resultElement = $('codex-api-result');
+  if (resultElement) resultElement.textContent = '';
+  codexApiBusy = true;
+  if (save) save.disabled = true;
+  if (restore) restore.disabled = true;
+  try {
+    const result = await api().restore_codex_api_config();
+    setCodexApiFeedback(result, '还原');
+    if (result?.ok) {
+      codexBaseDirty = false;
+      codexKeyDirty = false;
+      const base = $('codex-api-base-url');
+      const key = $('codex-api-key');
+      const eye = $('btn-codex-api-eye');
+      if (base) base.value = '';
+      if (key) key.value = '';
+      if (key && eye) concealSecret(key, eye);
+    }
+  } catch (error) {
+    setCodexApiFeedback({ ok: false, warning: `还原失败：${friendlyError(error)}` }, '还原');
+  } finally {
+    codexApiBusy = false;
+    await endCodexOperation();
   }
 }
 
 function setCodexActionFeedback(payload) {
   if (!payload) return;
   const feedback = (text, tone) => {
-    const target = $('codex-action-result');
+    const target = $('codex-proxy-result');
     if (!target) return;
     target.className = `form-feedback ${tone}`;
     target.textContent = text;
@@ -220,8 +463,8 @@ function setCodexActionFeedback(payload) {
     toast({ ok: false, msg: payload.warning || '操作失败' });
     feedback(payload.warning || '操作失败', 'error');
   } else if (warnings.length) {
-    toast({ ok: false, msg: `已跳过 ${warnings.length} 个被手动修改的字段` });
-    feedback(`完成：已跳过 ${warnings.length} 个被手动修改的字段（保留您的修改）。`, 'warning');
+    toast({ ok: false, msg: '操作完成，请查看提示' });
+    feedback(warnings.join('；'), 'warning');
   } else {
     toast({ ok: true, msg: '操作完成' });
     feedback(
@@ -232,19 +475,25 @@ function setCodexActionFeedback(payload) {
 }
 
 async function runCodexAction(action, confirmOptions) {
-  const resultElement = $('codex-action-result');
+  if (codexOperation) return;
+  const resultElement = $('codex-proxy-result');
   if (resultElement) resultElement.textContent = '';
   if (confirmOptions) {
     const confirmed = await confirmAction(confirmOptions);
     if (!confirmed) return;
   }
+  if (!beginCodexOperation('proxy')) return;
+  if (resultElement) {
+    resultElement.className = 'form-feedback loading';
+    resultElement.textContent = '正在更新代理配置…';
+  }
   try {
     const result = await action();
     setCodexActionFeedback(result);
   } catch (error) {
-    toast({ ok: false, msg: `操作失败：${friendlyError(error)}` });
+    setCodexActionFeedback({ ok: false, warning: `操作失败：${friendlyError(error)}` });
   } finally {
-    void refreshCodexPage();
+    await endCodexOperation();
   }
 }
 
@@ -270,10 +519,71 @@ async function openCodexViewer() {
   }
 }
 
+async function restartCodexApp() {
+  if (codexOperation) return;
+  const confirmed = await confirmAction({
+    title: '重启 Codex',
+    message: '将关闭所有 Codex 窗口并中断正在运行的任务，未提交的输入可能丢失。完全退出后会备份并同步可见历史任务的 Provider，再自动重新打开 Codex。',
+    confirmText: '重启',
+    tone: 'danger',
+    kicker: 'CODEX APP',
+  });
+  if (!confirmed) return;
+  if (!beginCodexOperation('restart')) return;
+  const button = $('btn-codex-restart');
+  const resultElement = $('codex-action-result');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '正在重启…';
+  }
+  if (resultElement) {
+    resultElement.className = 'form-feedback loading';
+    resultElement.textContent = '正在关闭 Codex、同步历史任务 Provider 并重新启动…';
+  }
+  try {
+    const result = await api().restart_codex();
+    if (!result?.ok && result?.app_started) {
+      if (resultElement) {
+        resultElement.className = 'form-feedback warning';
+        resultElement.textContent = result.warning || 'Codex 已启动，但历史任务同步未完成。';
+      }
+      toast({ ok: false, msg: result.warning || 'Codex 已启动，但历史任务同步未完成' });
+      return;
+    }
+    if (!result?.ok) {
+      throw new Error(result?.warning || 'Codex 重启失败');
+    }
+    if (resultElement) {
+      resultElement.className = 'form-feedback ok';
+      resultElement.textContent = result.msg || 'Codex 已重新启动。';
+    }
+    toast({ ok: true, msg: result.msg || 'Codex 已重新启动' });
+  } catch (error) {
+    const message = `重启失败：${friendlyError(error)}`;
+    if (resultElement) {
+      resultElement.className = 'form-feedback error';
+      resultElement.textContent = message;
+    }
+    toast({ ok: false, msg: message });
+  } finally {
+    await endCodexOperation();
+    if (button) {
+      button.disabled = false;
+      button.textContent = '重启 Codex';
+    }
+  }
+}
+
 function bindCodexPage() {
   window.addEventListener('cxvpn:pagechange', event => {
     if (event.detail?.page === 'codex') void refreshCodexPage();
+    else if ($('codex-api-key')) concealSecret($('codex-api-key'), $('btn-codex-api-eye'));
   });
+  const base = $('codex-api-base-url');
+  const key = $('codex-api-key');
+  if (base) base.addEventListener('input', () => { codexBaseDirty = true; });
+  if (key) key.addEventListener('input', () => { codexKeyDirty = true; });
+  updateCodexControls();
   const toggle = $('btn-codex-toggle');
   if (toggle) toggle.onclick = () => {
     if (codexProxyOn) {
@@ -281,7 +591,7 @@ function bindCodexPage() {
         () => api().restore_codex_proxy(),
         {
           title: '关闭 Codex 代理',
-          message: '将删除 Codex 配置中由本工具写入且未被手动修改的代理字段（用户手动改过的字段会保留）。需要重启 Codex 才会生效。',
+          message: '将移除本工具写入且未被手动修改的 Codex 代理设置；手动修改会保留。重启 Codex 后生效。',
           confirmText: '关闭',
           tone: 'notice',
           kicker: 'CODEX CONFIG',
@@ -292,8 +602,14 @@ function bindCodexPage() {
   };
   const view = $('btn-codex-view');
   if (view) view.onclick = () => void openCodexViewer();
+  const restart = $('btn-codex-restart');
+  if (restart) restart.onclick = () => void restartCodexApp();
   const websocket = $('codex-wss-enabled');
   if (websocket) websocket.onchange = () => void setCodexTransport(websocket.checked);
+  const saveApi = $('btn-codex-api-save');
+  if (saveApi) saveApi.onclick = () => void saveCodexCustomApi();
+  const restoreApi = $('btn-codex-api-restore');
+  if (restoreApi) restoreApi.onclick = () => void restoreCodexCustomApi();
 }
 
 function bindSecretToggles() {

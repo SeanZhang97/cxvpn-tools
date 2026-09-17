@@ -454,6 +454,16 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 .settings-page { max-width: 920px; margin: 0 auto; }
 .settings-card { width: 100%; }
 .settings-stack { display: grid; gap: 16px; }
+#page-codex > .settings-card + .settings-card { margin-top: 16px; }
+#page-codex .settings-card-head { margin-bottom: 14px; padding-bottom: 14px; }
+#page-codex .settings-card-head > div { min-width: 0; }
+#page-codex .row { flex-wrap: wrap; }
+#page-codex .muted, #page-codex .form-feedback { overflow-wrap: anywhere; }
+.codex-config-fields { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; }
+.codex-config-fields .field { width: auto; min-width: 0; }
+@media (max-width: 760px) {
+  .codex-config-fields { grid-template-columns: minmax(0, 1fr); }
+}
 .content-page { max-width: 980px; margin: 0 auto; }
 .settings-card-head {
   display: flex; align-items: center; gap: 13px; margin-bottom: 20px; padding-bottom: 18px;

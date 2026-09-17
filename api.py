@@ -15,7 +15,7 @@ from contextlib import nullcontext
 from core import config as cfgmod
 from core import (config_maintenance, ip_info, proxy_guard, ras_cred, routing,
                   sms_receiver, vpn_connect, vpn_os, windows_desktop)
-from core import codex_proxy
+from core import codex_proxy, codex_runtime
 from core import vpn_service
 from core import app_update
 from core.version import APP_NAME, APP_VERSION
@@ -471,6 +471,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
     def _config_for_ui(value):
         """移除只应由后端持有的 Mihomo Controller 连接信息。"""
         result = json.loads(json.dumps(value or {}))
+        result.pop('codex_api', None)
         routing_config = result.get('routing')
         if isinstance(routing_config, dict):
             routing_config.pop('controller_port', None)
@@ -727,7 +728,8 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         if not isinstance(cfg, dict):
             raise ValueError('配置更新必须是对象')
         protected = {
-            'authorization', 'credential_status', 'creds', 'routing'}
+            'authorization', 'credential_status', 'codex_api', 'creds',
+            'routing'}
         if protected.intersection(cfg):
             raise ValueError(
                 '当前界面提交了过期的完整配置，请重启软件后再保存')
@@ -815,13 +817,44 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                 f'{time.monotonic() - started_at:.3f} 秒: {type(exc).__name__}')
             return {'ok': False, 'msg': str(exc)}
 
+    def _local_codex_api_config(self):
+        """读取 CXVPNTools 本机保存值；调用方不得记录返回内容。"""
+        value = self._cfg_get().get('codex_api') or {}
+        if not isinstance(value, dict):
+            return {'base_url': '', 'api_key': ''}
+        base_url = value.get('base_url', '')
+        api_key = value.get('api_key', '')
+        return {
+            'base_url': base_url if isinstance(base_url, str) else '',
+            'api_key': api_key if isinstance(api_key, str) else '',
+        }
+
+    def _persist_codex_api_config(self, base_url, api_key):
+        """写入 SQLite 主配置；兼容 JSON 导出会排除该字段。"""
+        if not isinstance(base_url, str) or not isinstance(api_key, str):
+            raise ValueError('自定义 API 本机配置类型无效')
+        base_url, api_key = base_url.strip(), api_key.strip()
+        if not base_url or not api_key:
+            raise ValueError('自定义 API 本机配置不完整')
+        with self._lock:
+            committed = json.loads(json.dumps(self.cfg))
+            committed['codex_api'] = {
+                'base_url': base_url,
+                'api_key': api_key,
+            }
+            cfgmod.save(committed)
+            self.cfg = committed
+
     def get_codex_status(self):
         """返回 Codex 配置同步状态摘要，不读取或返回配置正文。"""
         try:
+            current_config = self._cfg_get()
             current = routing.normalize_config(
-                self._cfg_get().get('routing') or routing.default_config())
+                current_config.get('routing') or routing.default_config())
+            local_codex_api = self._local_codex_api_config()
             summary = codex_proxy.status(logger=self.log)
             transport = codex_proxy.transport_status(logger=self.log)
+            custom_api = codex_proxy.custom_api_status(logger=self.log)
         except (OSError, ValueError, TypeError, routing.RoutingError) as exc:
             self.log(f'[codex] 读取状态失败：{type(exc).__name__}')
             return {
@@ -842,11 +875,27 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
                 'websocket_enabled': None,
                 'transport_managed': False,
                 'transport_conflict': False,
+                'transport_restore_available': False,
+                'transport_cleanup_pending': False,
                 'active_provider': None,
                 'transport_snapshot_exists': False,
                 'transport_transaction_phase': '',
                 'runtime_state_verified': False,
                 'transport_error': str(exc),
+                'custom_api_configured': False,
+                'custom_api_active': False,
+                'custom_api_managed': False,
+                'custom_api_conflict': False,
+                'custom_api_snapshot_exists': False,
+                'custom_api_restore_available': False,
+                'custom_api_base_url': '',
+                'custom_api_key_configured': False,
+                'custom_api_key_stored': False,
+                'custom_api_openai_auth_required': False,
+                'custom_api_migration_required': False,
+                'custom_api_websocket_enabled': None,
+                'custom_api_transaction_phase': '',
+                'custom_api_error': str(exc),
                 'restart_required_after_change': True,
             }
         return {
@@ -867,11 +916,36 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
             'websocket_enabled': transport.get('websocket_enabled'),
             'transport_managed': bool(transport.get('transport_managed')),
             'transport_conflict': bool(transport.get('transport_conflict')),
+            'transport_restore_available': bool(
+                transport.get('transport_restore_available')),
+            'transport_cleanup_pending': bool(
+                transport.get('transport_cleanup_pending')),
             'active_provider': transport.get('active_provider'),
             'transport_snapshot_exists': bool(transport.get('transport_snapshot_exists')),
             'transport_transaction_phase': transport.get('transport_transaction_phase', ''),
             'runtime_state_verified': bool(transport.get('runtime_state_verified')),
             'transport_error': transport.get('transport_error', ''),
+            'custom_api_configured': bool(custom_api.get('custom_api_configured')),
+            'custom_api_active': bool(custom_api.get('custom_api_active')),
+            'custom_api_managed': bool(custom_api.get('custom_api_managed')),
+            'custom_api_conflict': bool(custom_api.get('custom_api_conflict')),
+            'custom_api_snapshot_exists': bool(custom_api.get('custom_api_snapshot_exists')),
+            'custom_api_restore_available': bool(custom_api.get('custom_api_restore_available')),
+            'custom_api_base_url': (
+                local_codex_api['base_url'] or
+                custom_api.get('custom_api_base_url', '')),
+            'custom_api_key_configured': bool(
+                local_codex_api['api_key'] or
+                custom_api.get('custom_api_key_configured')),
+            'custom_api_key_stored': bool(local_codex_api['api_key']),
+            'custom_api_openai_auth_required': bool(
+                custom_api.get('custom_api_openai_auth_required')),
+            'custom_api_migration_required': bool(
+                custom_api.get('custom_api_migration_required')),
+            'custom_api_websocket_enabled': custom_api.get(
+                'custom_api_websocket_enabled'),
+            'custom_api_transaction_phase': custom_api.get('custom_api_transaction_phase', ''),
+            'custom_api_error': custom_api.get('custom_api_error', ''),
             'restart_required_after_change': True,
         }
 
@@ -889,6 +963,98 @@ class Api(RoutingTaskApi, AggregateSelectionApi):
         self.log(
             f'[codex-transport] UI 请求执行{"完成" if result.get("ok") else "失败"}，'
             f'目标={"优先 WSS" if enabled else "仅 HTTP/SSE"}，'
+            f'耗时={time.monotonic() - started:.2f}秒')
+        return result
+
+    def save_codex_api_config(self, base_url, api_key=''):
+        """保存自定义模型 API；日志不记录地址正文或 API Key。"""
+        started = time.monotonic()
+        self.log(f'[codex-api] UI 保存请求已提交：提供密钥={bool(api_key)}')
+        self.log('[codex-api] UI 保存请求已领取，开始执行')
+        local = self._local_codex_api_config()
+        supplied_key = api_key.strip() if isinstance(api_key, str) else api_key
+        selected_key = supplied_key or local['api_key']
+        result = codex_proxy.save_custom_api(
+            base_url, selected_key, logger=self.log)
+        if result.get('ok'):
+            if not selected_key:
+                revealed = codex_proxy.read_custom_api_key(logger=self.log)
+                if revealed.get('ok'):
+                    selected_key = revealed.get('api_key', '')
+            try:
+                self._persist_codex_api_config(
+                    result.get('base_url') or base_url, selected_key)
+                result['key_stored'] = True
+            except (OSError, ValueError, TypeError) as exc:
+                self.log(
+                    f'[codex-api] Codex 配置已写入，但本机配置保存失败：'
+                    f'{type(exc).__name__}')
+                result.update(
+                    ok=False, key_stored=False,
+                    warning='Codex 配置已写入，但 API Key 保存到 CXVPNTools 失败，请重试保存')
+        if result.get('changed'):
+            result['restart_required_after_change'] = True
+        self.log(
+            f'[codex-api] UI 保存请求执行{"完成" if result.get("ok") else "失败"}，'
+            f'耗时={time.monotonic() - started:.2f}秒')
+        return result
+
+    def read_codex_api_key(self):
+        """为本机 Codex 页面读取已保存密钥；日志不记录密钥正文。"""
+        started = time.monotonic()
+        self.log('[codex-api-key] UI 回显请求已提交')
+        self.log('[codex-api-key] UI 回显请求已领取，开始执行')
+        local = self._local_codex_api_config()
+        if local['api_key']:
+            result = {
+                'ok': True,
+                'key_configured': True,
+                'key_stored': True,
+                'api_key': local['api_key'],
+            }
+        else:
+            result = codex_proxy.read_custom_api_key(logger=self.log)
+            if result.get('ok') and result.get('api_key'):
+                state = codex_proxy.custom_api_status(logger=self.log)
+                base_url = state.get('custom_api_base_url', '')
+                try:
+                    self._persist_codex_api_config(
+                        base_url, result['api_key'])
+                    result['key_stored'] = True
+                except (OSError, ValueError, TypeError) as exc:
+                    self.log(
+                        f'[codex-api-key] API Key 本机迁移失败：'
+                        f'{type(exc).__name__}')
+                    result['key_stored'] = False
+                    result['warning'] = 'API Key 已读取，但保存到 CXVPNTools 失败'
+        self.log(
+            f'[codex-api-key] UI 回显请求执行'
+            f'{"完成" if result.get("ok") else "失败"}，'
+            f'耗时={time.monotonic() - started:.2f}秒')
+        return result
+
+    def restore_codex_api_config(self):
+        """只还原 Codex 配置；CXVPNTools 中保存的地址和密钥保持不变。"""
+        started = time.monotonic()
+        self.log('[codex-api] UI 还原请求已提交')
+        self.log('[codex-api] UI 还原请求已领取，开始执行')
+        result = codex_proxy.restore_custom_api(logger=self.log)
+        if result.get('ok') and result.get('changed'):
+            result['restart_required_after_change'] = True
+        self.log(
+            f'[codex-api] UI 还原请求执行{"完成" if result.get("ok") else "失败"}，'
+            f'耗时={time.monotonic() - started:.2f}秒')
+        return result
+
+    def restart_codex(self):
+        """重启当前用户会话中的 Codex 桌面应用。"""
+        started = time.monotonic()
+        self.log('[codex-runtime] UI 重启请求已提交')
+        self.log('[codex-runtime] UI 重启请求已领取，开始执行')
+        result = codex_runtime.restart_codex(logger=self.log)
+        self.log(
+            f'[codex-runtime] UI 重启请求执行'
+            f'{"完成" if result.get("ok") else "失败"}，'
             f'耗时={time.monotonic() - started:.2f}秒')
         return result
 

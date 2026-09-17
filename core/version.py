@@ -2,8 +2,8 @@
 """应用版本信息的唯一来源。"""
 
 APP_NAME = 'CXVPNTools'
-APP_VERSION = '1.2.4'
-APP_VERSION_TUPLE = (1, 2, 4, 0)
+APP_VERSION = '1.2.5'
+APP_VERSION_TUPLE = (1, 2, 5, 0)
 GITHUB_REPOSITORY = 'SeanZhang97/cxvpn-tools'
 
 

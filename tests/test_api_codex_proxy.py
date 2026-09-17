@@ -6,15 +6,21 @@ from unittest import mock
 
 import api
 
-from core import codex_proxy, routing
+from core import codex_proxy, codex_runtime, routing
 
 
 class ApiCodexProxyTests(unittest.TestCase):
     def instance(self, routing=None):
         target = api.Api.__new__(api.Api)
         target.routing = mock.Mock()
-        target._cfg_get = mock.Mock(return_value={
+        target.cfg = {
             'routing': routing or {'mixed_port': 19000},
+            'codex_api': {'base_url': '', 'api_key': ''},
+        }
+        target._lock = threading.Lock()
+        target._cfg_get = mock.Mock(side_effect=lambda: {
+            key: (dict(value) if isinstance(value, dict) else value)
+            for key, value in target.cfg.items()
         })
         target.log = mock.Mock()
         target._routing_stream_state = ''
@@ -108,7 +114,20 @@ class ApiCodexProxyTests(unittest.TestCase):
                         'transport_mode': 'http_only',
                         'websocket_enabled': False,
                         'transport_managed': True,
-                        'active_provider': codex_proxy.HTTP_PROVIDER_ID}):
+                        'transport_restore_available': True,
+                        'transport_cleanup_pending': False,
+                        'active_provider': codex_proxy.HTTP_PROVIDER_ID}), \
+                mock.patch.object(
+                    codex_proxy, 'custom_api_status',
+                    return_value={
+                         'custom_api_configured': True,
+                         'custom_api_active': True,
+                        'custom_api_managed': True,
+                         'custom_api_migration_required': False,
+                         'custom_api_websocket_enabled': False,
+                        'custom_api_base_url': 'https://api.example.test/v1',
+                        'custom_api_key_configured': True,
+                        'custom_api_openai_auth_required': True}):
             state = target.get_codex_status()
 
         self.assertTrue(state['ok'])
@@ -122,6 +141,15 @@ class ApiCodexProxyTests(unittest.TestCase):
         self.assertEqual('http_only', state['transport_mode'])
         self.assertIs(False, state['websocket_enabled'])
         self.assertTrue(state['transport_managed'])
+        self.assertTrue(state['transport_restore_available'])
+        self.assertFalse(state['transport_cleanup_pending'])
+        self.assertTrue(state['custom_api_managed'])
+        self.assertFalse(state['custom_api_migration_required'])
+        self.assertIs(False, state['custom_api_websocket_enabled'])
+        self.assertTrue(state['custom_api_key_configured'])
+        self.assertFalse(state['custom_api_key_stored'])
+        self.assertTrue(state['custom_api_openai_auth_required'])
+        self.assertNotIn('api_key', state)
 
     def test_set_codex_websocket_requires_strict_boolean(self):
         target = self.instance()
@@ -148,6 +176,112 @@ class ApiCodexProxyTests(unittest.TestCase):
         self.assertIn('开始执行', logged)
         self.assertIn('执行完成', logged)
 
+    def test_custom_api_save_and_restore_are_logged_without_secrets(self):
+        target = self.instance()
+        secret = 'private-test-key'
+        base_url = 'http://192.0.2.20:53142/v1'
+        with mock.patch.object(
+                codex_proxy, 'save_custom_api',
+                return_value={'ok': True, 'changed': True,
+                              'base_url': base_url, 'key_configured': True}) as save, \
+                mock.patch.object(api.cfgmod, 'save') as persist:
+            result = target.save_codex_api_config(base_url, secret)
+
+        self.assertTrue(result['restart_required_after_change'])
+        self.assertTrue(result['key_stored'])
+        save.assert_called_once_with(base_url, secret, logger=target.log)
+        persist.assert_called_once()
+        self.assertEqual(secret, target.cfg['codex_api']['api_key'])
+        logged = ' '.join(call.args[0] for call in target.log.call_args_list)
+        self.assertNotIn(secret, logged)
+        self.assertNotIn(base_url, logged)
+        self.assertIn('请求已提交', logged)
+        self.assertIn('开始执行', logged)
+        self.assertIn('执行完成', logged)
+
+        target.log.reset_mock()
+        with mock.patch.object(
+                codex_proxy, 'restore_custom_api',
+                return_value={'ok': True, 'changed': True, 'warnings': []}) as restore:
+            restored = target.restore_codex_api_config()
+        self.assertTrue(restored['restart_required_after_change'])
+        restore.assert_called_once_with(logger=target.log)
+        self.assertEqual(secret, target.cfg['codex_api']['api_key'])
+
+    def test_custom_api_key_echo_is_local_and_not_logged(self):
+        target = self.instance()
+        secret = 'private-echo-key'
+        target.cfg['codex_api'] = {
+            'base_url': 'https://api.example.test/v1',
+            'api_key': secret,
+        }
+        with mock.patch.object(
+                codex_proxy, 'read_custom_api_key') as reader:
+            result = target.read_codex_api_key()
+
+        self.assertEqual(secret, result['api_key'])
+        self.assertTrue(result['key_stored'])
+        reader.assert_not_called()
+        logged = ' '.join(call.args[0] for call in target.log.call_args_list)
+        self.assertNotIn(secret, logged)
+        self.assertIn('请求已提交', logged)
+        self.assertIn('开始执行', logged)
+        self.assertIn('执行完成', logged)
+
+    def test_custom_api_key_migrates_from_codex_into_local_config(self):
+        target = self.instance()
+        secret = 'migrated-private-key'
+        base_url = 'https://api.example.test/v1'
+        with mock.patch.object(
+                codex_proxy, 'read_custom_api_key',
+                return_value={'ok': True, 'key_configured': True,
+                              'api_key': secret}) as reader, \
+                mock.patch.object(
+                    codex_proxy, 'custom_api_status',
+                    return_value={'custom_api_base_url': base_url}), \
+                mock.patch.object(api.cfgmod, 'save') as persist:
+            result = target.read_codex_api_key()
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['key_stored'])
+        self.assertEqual(secret, target.cfg['codex_api']['api_key'])
+        self.assertEqual(base_url, target.cfg['codex_api']['base_url'])
+        reader.assert_called_once_with(logger=target.log)
+        persist.assert_called_once()
+
+    def test_custom_api_save_reuses_key_stored_in_sqlite(self):
+        target = self.instance()
+        secret = 'stored-private-key'
+        base_url = 'https://api.example.test/v1'
+        target.cfg['codex_api'] = {
+            'base_url': base_url,
+            'api_key': secret,
+        }
+        with mock.patch.object(
+                codex_proxy, 'save_custom_api',
+                return_value={'ok': True, 'changed': False,
+                              'base_url': base_url}) as save, \
+                mock.patch.object(api.cfgmod, 'save'):
+            result = target.save_codex_api_config(base_url, '')
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['key_stored'])
+        save.assert_called_once_with(base_url, secret, logger=target.log)
+
+    def test_restart_codex_delegates_and_logs_lifecycle(self):
+        target = self.instance()
+        with mock.patch.object(
+                codex_runtime, 'restart_codex',
+                return_value={'ok': True, 'msg': 'Codex 已重新启动'}) as restart:
+            result = target.restart_codex()
+
+        self.assertTrue(result['ok'])
+        restart.assert_called_once_with(logger=target.log)
+        logged = ' '.join(call.args[0] for call in target.log.call_args_list)
+        self.assertIn('请求已提交', logged)
+        self.assertIn('开始执行', logged)
+        self.assertIn('执行完成', logged)
+
     def test_status_and_view_never_sync_or_restore_when_routing_enabled(self):
         target = self.instance({'enabled': True, 'mixed_port': 19000})
         with mock.patch.object(codex_proxy, 'sync') as sync, \
@@ -160,6 +294,7 @@ class ApiCodexProxyTests(unittest.TestCase):
                 mock.patch.object(codex_proxy, 'transport_status', return_value={
                     'transport_mode': 'wss_preferred', 'websocket_enabled': True,
                     'active_provider': 'openai'}), \
+                mock.patch.object(codex_proxy, 'custom_api_status', return_value={}), \
                 mock.patch.object(codex_proxy, 'read_config', return_value={'ok': True}):
             for _ in range(2):
                 state = target.get_codex_status()

@@ -1,6 +1,6 @@
 # 知识库索引 INDEX
 
-最后验证: 2026-09-16 | 分支: main
+最后验证: 2026-09-17 | 分支: main
 
 ## modules
 
@@ -12,7 +12,7 @@
 | CXVPNTools | pywebview, WinForms, worker, vpn_service, 版本化状态流, wait_ui_state, 网络出口, IP, 续期, 开机自启, 系统托盘, 便携EXE, config | main.py, api.py, core/ui_state_stream.py, core/ip_info.py, core/, ui/, build.py | modules/CXVPNTools.md |
 | 系统代理残留清扫 | 系统代理残留, proxy_guard, ProxyEnable, 脏标记, 开机自检, 关机清扫, CloseReason, 本地代理端口无人监听 | core/proxy_guard.py, api.py, core/windows_desktop.py, main.py | modules/系统代理残留清扫.md |
 | WebView2 缓存新鲜度保障 | pywebview, bottle, static_file, no-cache, WebView2, 启发式缓存, 固定端口 42001, 版本标记, 升级旧页面 | core/ui_cache.py, main.py, tests/test_ui_cache.py | modules/WebView2缓存新鲜度保障.md |
-| Codex 代理与模型传输配置 | CODEX_HOME, config.toml, mixed_port, 手动启停, WSS, HTTPS/SSE, supports_websockets, model_provider, Provider, 快照恢复, TOML 原子写入 | core/codex_proxy.py, api.py, ui/index.html, ui/app.js | modules/Codex代理配置同步.md |
+| Codex 代理与模型传输配置 | CODEX_HOME, config.toml, state_5.sqlite, rollout, 历史任务, mixed_port, 手动启停, WSS, HTTPS/SSE, 自定义 API, API Key, experimental_bearer_token, supports_websockets, model_provider, Provider, 快照恢复, TOML 原子写入, OpenAI.Codex, MSIX, 重启 Codex | core/codex_proxy.py, core/codex_runtime.py, core/codex_session_provider.py, api.py, ui/index.html, ui/app.js | modules/Codex代理配置同步.md |
 | Windows 统一域名分流 | 网络代理, 快速开关, 系统代理快切, 订阅, 节点, 智能优选, 地区故障转移, 仅故障切换, 延迟容差百分比, 首选节点, 线路关键词, 规则, 本地规则包, rule-packs, 连接, 核心日志, system-proxy, Proxy Guard, routing schema, 节点测速, 手动选点, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 后端遥测中继, 版本化等待, 实时流量, Mihomo, Named Pipe, Windows Service, TUN, DNS分层, DNS高级模式, nameserver-policy, proxy-provider, Windows VPN, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置导入, 配置导出, 文件选择, 托盘快捷操作, 全局快捷键, 轻量模式 | core/routing.py, core/routing_auto_policy.py, core/config_maintenance.py, core/mihomo_telemetry.py, core/mihomo_activity.py, core/routing_rules.py, core/routing_service.py, core/ui_state_stream.py, core/windows_desktop.py, routing-service/, core/routing_speedtest.py, core/routing_selection.py, core/routing_updates.py, core/subscription_store.py, rule-packs/, api.py, main.py, ui/app.js, ui/proxy.js, ui/routing.js, ui/routing_workspace.js, ui/routing_activity.js, ui/routing_nodes.js, ui/routing_telemetry.js, runtime/routing/, build.py, build_protected.py, build_runtime.py | modules/Windows统一域名分流.md |
 
 ## common

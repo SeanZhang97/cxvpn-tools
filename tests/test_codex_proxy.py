@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import json
 import tempfile
 import tomllib
 import unittest
@@ -36,6 +37,11 @@ class CodexProxyTests(unittest.TestCase):
         return os.path.join(
             self.data_root, codex_proxy.TRANSPORT_SNAPSHOT_FILE_NAME)
 
+    @property
+    def custom_api_snapshot_path(self):
+        return os.path.join(
+            self.data_root, codex_proxy.CUSTOM_API_SNAPSHOT_FILE_NAME)
+
     def write_config(self, text):
         os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
         with open(self.config_path, 'w', encoding='utf-8') as stream:
@@ -56,6 +62,14 @@ class CodexProxyTests(unittest.TestCase):
     def set_wss(self, enabled):
         return codex_proxy.set_websocket_enabled(
             enabled, environ=self.environ, data_root=self.data_root)
+
+    def save_custom_api(self, base_url='http://192.0.2.10:53142/v1', api_key='test-key-private'):
+        return codex_proxy.save_custom_api(
+            base_url, api_key, environ=self.environ, data_root=self.data_root)
+
+    def restore_custom_api(self):
+        return codex_proxy.restore_custom_api(
+            environ=self.environ, data_root=self.data_root)
 
     def test_missing_config_creates_target_sections(self):
         result = self.sync()
@@ -439,19 +453,62 @@ class CodexProxyTests(unittest.TestCase):
             parsed['model_providers'][codex_proxy.HTTP_PROVIDER_ID]['name'])
         self.assertFalse(os.path.exists(self.transport_snapshot_path))
 
-    def test_transport_user_changed_active_provider_causes_conflict(self):
+    def test_transport_user_changed_active_provider_can_restore_from_snapshot(self):
         self.write_config('model_provider = "openai"\n')
         self.assertTrue(self.set_wss(False)['ok'])
         self.write_config(self.read_config().replace(
             f'model_provider = "{codex_proxy.HTTP_PROVIDER_ID}"',
             'model_provider = "cm"'))
 
+        state = codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertEqual('custom_provider', state['transport_mode'])
+        self.assertFalse(state['transport_conflict'])
+        self.assertTrue(state['transport_restore_available'])
+
         result = self.set_wss(True)
 
-        self.assertFalse(result['ok'])
-        self.assertEqual('cm', self.parse_config()['model_provider'])
-        self.assertTrue(codex_proxy.transport_status(
-            environ=self.environ, data_root=self.data_root)['transport_conflict'])
+        self.assertTrue(result['ok'])
+        self.assertEqual('openai', self.parse_config()['model_provider'])
+        self.assertFalse(os.path.exists(self.transport_snapshot_path))
+
+    def test_transport_root_already_restored_allows_cleanup(self):
+        self.write_config('model_provider = "openai"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+        self.write_config(self.read_config().replace(
+            f'model_provider = "{codex_proxy.HTTP_PROVIDER_ID}"',
+            'model_provider = "openai"'))
+
+        state = codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertEqual('wss_preferred', state['transport_mode'])
+        self.assertIs(True, state['websocket_enabled'])
+        self.assertTrue(state['transport_cleanup_pending'])
+        self.assertTrue(state['transport_restore_available'])
+
+        result = self.set_wss(True)
+
+        self.assertTrue(result['ok'])
+        self.assertNotIn(
+            codex_proxy.HTTP_PROVIDER_ID,
+            self.parse_config().get('model_providers', {}))
+        self.assertFalse(os.path.exists(self.transport_snapshot_path))
+
+    def test_transport_root_already_restored_can_switch_back_to_http(self):
+        self.write_config('model_provider = "openai"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+        self.write_config(self.read_config().replace(
+            f'model_provider = "{codex_proxy.HTTP_PROVIDER_ID}"',
+            'model_provider = "openai"'))
+
+        result = self.set_wss(False)
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['changed'])
+        self.assertEqual(
+            codex_proxy.HTTP_PROVIDER_ID,
+            self.parse_config()['model_provider'])
+        self.assertTrue(os.path.exists(self.transport_snapshot_path))
 
     def test_transport_restore_remains_available_after_unrelated_profile_change(self):
         self.write_config('model_provider = "openai"\n')
@@ -539,6 +596,426 @@ class CodexProxyTests(unittest.TestCase):
         parsed = self.parse_config()
         self.assertEqual('openai', parsed['model_provider'])
         self.assertNotIn(codex_proxy.HTTP_PROVIDER_ID, parsed.get('model_providers', {}))
+
+    def test_custom_api_save_writes_key_but_snapshot_and_status_are_redacted(self):
+        self.write_config('# 中文 🇨🇳 é\n[other]\nvalue = "保留"\n')
+
+        result = self.save_custom_api()
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['changed'])
+        parsed = self.parse_config()
+        provider = parsed['model_providers'][codex_proxy.CUSTOM_API_PROVIDER_ID]
+        self.assertEqual(codex_proxy.CUSTOM_API_PROVIDER_ID, parsed['model_provider'])
+        self.assertEqual('http://192.0.2.10:53142/v1', provider['base_url'])
+        self.assertEqual('responses', provider['wire_api'])
+        self.assertTrue(provider['requires_openai_auth'])
+        self.assertFalse(provider['supports_websockets'])
+        self.assertEqual('test-key-private', provider['experimental_bearer_token'])
+        self.assertNotIn(
+            codex_proxy.CUSTOM_API_LEGACY_PROVIDER_ID,
+            parsed['model_providers'])
+        with open(self.custom_api_snapshot_path, encoding='utf-8') as stream:
+            snapshot_text = stream.read()
+        self.assertNotIn('test-key-private', snapshot_text)
+        self.assertIn('bearer_token_sha256', snapshot_text)
+        state = codex_proxy.custom_api_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(state['custom_api_managed'])
+        self.assertTrue(state['custom_api_active'])
+        self.assertFalse(state['custom_api_migration_required'])
+        self.assertTrue(state['custom_api_key_configured'])
+        self.assertTrue(state['custom_api_openai_auth_required'])
+        transport = codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertEqual('http_only', transport['transport_mode'])
+        self.assertFalse(transport['websocket_enabled'])
+        self.assertTrue(transport['transport_managed'])
+        self.assertNotIn('test-key-private', repr(state))
+        revealed = codex_proxy.read_custom_api_key(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(revealed['ok'])
+        self.assertTrue(revealed['key_configured'])
+        self.assertEqual('test-key-private', revealed['api_key'])
+        self.assertIn('# 中文 🇨🇳 é', self.read_config())
+
+    def test_custom_api_key_echo_rejects_manually_modified_provider(self):
+        self.assertTrue(self.save_custom_api()['ok'])
+        self.write_config(self.read_config().replace(
+            'experimental_bearer_token = "test-key-private"',
+            'experimental_bearer_token = "manual-key"'))
+
+        result = codex_proxy.read_custom_api_key(
+            environ=self.environ, data_root=self.data_root)
+
+        self.assertFalse(result['ok'])
+        self.assertEqual('', result['api_key'])
+        self.assertIn('已被修改', result['warning'])
+
+    def test_custom_api_save_upgrades_managed_config_to_keep_openai_login(self):
+        self.assertTrue(self.save_custom_api()['ok'])
+        self.write_config(self.read_config().replace(
+            'requires_openai_auth = true\n', ''))
+        with open(self.custom_api_snapshot_path, encoding='utf-8') as stream:
+            snapshot = json.load(stream)
+        snapshot['last_written']['provider'].pop('requires_openai_auth')
+        with open(
+                self.custom_api_snapshot_path, 'w', encoding='utf-8') as stream:
+            json.dump(snapshot, stream)
+
+        before = codex_proxy.custom_api_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(before['custom_api_managed'])
+        self.assertFalse(before['custom_api_conflict'])
+        self.assertFalse(before['custom_api_openai_auth_required'])
+
+        upgraded = self.save_custom_api(api_key='')
+
+        self.assertTrue(upgraded['ok'])
+        provider = self.parse_config()['model_providers'][
+            codex_proxy.CUSTOM_API_PROVIDER_ID]
+        self.assertTrue(provider['requires_openai_auth'])
+        after = codex_proxy.custom_api_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(after['custom_api_managed'])
+        self.assertTrue(after['custom_api_openai_auth_required'])
+
+    def test_custom_api_blank_key_keeps_current_key_and_restore_recovers_original(self):
+        self.write_config(
+            'model_provider = "legacy"\n\n'
+            '[model_providers.legacy]\nname = "Legacy"\n')
+        self.assertTrue(self.save_custom_api(api_key='first-key')['ok'])
+
+        result = self.save_custom_api(
+            base_url='https://api.example.test/v1/', api_key='')
+
+        self.assertTrue(result['ok'])
+        provider = self.parse_config()['model_providers'][codex_proxy.CUSTOM_API_PROVIDER_ID]
+        self.assertEqual('https://api.example.test/v1', provider['base_url'])
+        self.assertEqual('first-key', provider['experimental_bearer_token'])
+        restored = self.restore_custom_api()
+        self.assertTrue(restored['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('legacy', parsed['model_provider'])
+        self.assertEqual('Legacy', parsed['model_providers']['legacy']['name'])
+        self.assertNotIn(codex_proxy.CUSTOM_API_PROVIDER_ID, parsed['model_providers'])
+        self.assertFalse(os.path.exists(self.custom_api_snapshot_path))
+
+    def test_custom_api_restore_preserves_manually_modified_provider(self):
+        self.assertTrue(self.save_custom_api()['ok'])
+        self.write_config(self.read_config().replace(
+            'base_url = "http://192.0.2.10:53142/v1"',
+            'base_url = "https://manual.example/v1"'))
+
+        result = self.restore_custom_api()
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['warnings'])
+        parsed = self.parse_config()
+        self.assertNotIn('model_provider', parsed)
+        self.assertEqual(
+            'https://manual.example/v1',
+            parsed['model_providers'][codex_proxy.CUSTOM_API_PROVIDER_ID]['base_url'])
+        self.assertFalse(os.path.exists(self.custom_api_snapshot_path))
+
+    def test_custom_api_automatically_hands_off_http_transport(self):
+        self.assertTrue(self.set_wss(False)['ok'])
+
+        result = self.save_custom_api()
+
+        self.assertTrue(result['ok'])
+        parsed = self.parse_config()
+        self.assertEqual(codex_proxy.CUSTOM_API_PROVIDER_ID, parsed['model_provider'])
+        self.assertNotIn(
+            codex_proxy.HTTP_PROVIDER_ID, parsed.get('model_providers', {}))
+        self.assertFalse(os.path.exists(self.transport_snapshot_path))
+        self.assertTrue(self.restore_custom_api()['ok'])
+        self.assertEqual('openai', self.parse_config().get('model_provider', 'openai'))
+
+    def test_custom_api_handoff_preserves_current_custom_provider_for_restore(self):
+        self.write_config(
+            'model_provider = "openai"\n\n'
+            '[model_providers.legacy]\nname = "Legacy"\n')
+        self.assertTrue(self.set_wss(False)['ok'])
+        self.write_config(self.read_config().replace(
+            f'model_provider = "{codex_proxy.HTTP_PROVIDER_ID}"',
+            'model_provider = "legacy"'))
+
+        self.assertTrue(self.save_custom_api()['ok'])
+        self.assertTrue(self.restore_custom_api()['ok'])
+
+        parsed = self.parse_config()
+        self.assertEqual('legacy', parsed['model_provider'])
+        self.assertEqual('Legacy', parsed['model_providers']['legacy']['name'])
+
+    def test_custom_api_handoff_rejects_modified_http_provider(self):
+        self.assertTrue(self.set_wss(False)['ok'])
+        self.write_config(self.read_config().replace(
+            'name = "OpenAI HTTP via CXVPN"', 'name = "用户已修改"'))
+        before = self.read_config()
+
+        result = self.save_custom_api()
+
+        self.assertFalse(result['ok'])
+        self.assertIn('手动修改', result['warning'])
+        self.assertEqual(before, self.read_config())
+
+    def test_transport_updates_single_custom_api_provider(self):
+        self.assertTrue(self.save_custom_api()['ok'])
+        result = self.set_wss(True)
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['changed'])
+        parsed = self.parse_config()
+        self.assertTrue(parsed['model_providers'][
+            codex_proxy.CUSTOM_API_PROVIDER_ID]['supports_websockets'])
+        self.assertNotIn(
+            codex_proxy.CUSTOM_API_LEGACY_PROVIDER_ID,
+            parsed['model_providers'])
+        state = codex_proxy.transport_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertEqual('wss_preferred', state['transport_mode'])
+        self.assertTrue(state['websocket_enabled'])
+
+        repeated = self.set_wss(True)
+        self.assertTrue(repeated['ok'])
+        self.assertFalse(repeated['changed'])
+
+    def test_custom_api_overwrites_and_restores_existing_local_provider(self):
+        self.write_config(
+            'model_provider = "codex_local_access"\n\n'
+            '[model_providers.codex_local_access]\n'
+            'name = "Codex API Service"\n'
+            'base_url = "http://localhost:58555/v1"\n'
+            'wire_api = "responses"\n'
+            'requires_openai_auth = true\n'
+            'experimental_bearer_token = "legacy-key"\n'
+            'supports_websockets = false\n')
+
+        saved = self.save_custom_api()
+
+        self.assertTrue(saved['ok'])
+        parsed = self.parse_config()
+        provider = parsed['model_providers'][codex_proxy.CUSTOM_API_PROVIDER_ID]
+        self.assertEqual('http://192.0.2.10:53142/v1', provider['base_url'])
+        self.assertEqual('test-key-private', provider['experimental_bearer_token'])
+        self.assertTrue(provider['requires_openai_auth'])
+
+        restored = self.restore_custom_api()
+
+        self.assertTrue(restored['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('codex_local_access', parsed['model_provider'])
+        provider = parsed['model_providers'][codex_proxy.CUSTOM_API_PROVIDER_ID]
+        self.assertEqual('http://localhost:58555/v1', provider['base_url'])
+        self.assertTrue(provider['requires_openai_auth'])
+        self.assertEqual('legacy-key', provider['experimental_bearer_token'])
+
+    def test_custom_api_never_rewrites_official_openai_provider(self):
+        self.write_config(
+            'model_provider = "openai"\n\n'
+            '[model_providers.openai]\n'
+            'name = "用户的官方渠道覆盖"\n'
+            'base_url = "https://api.openai.com/v1"\n'
+            'wire_api = "responses"\n')
+
+        saved = self.save_custom_api()
+
+        self.assertTrue(saved['ok'])
+        parsed = self.parse_config()
+        self.assertEqual(codex_proxy.CUSTOM_API_PROVIDER_ID, parsed['model_provider'])
+        self.assertEqual(
+            'https://api.openai.com/v1',
+            parsed['model_providers']['openai']['base_url'])
+
+        self.assertTrue(self.set_wss(True)['ok'])
+        parsed = self.parse_config()
+        self.assertEqual(codex_proxy.CUSTOM_API_PROVIDER_ID, parsed['model_provider'])
+        self.assertEqual(
+            'https://api.openai.com/v1',
+            parsed['model_providers']['openai']['base_url'])
+
+        restored = self.restore_custom_api()
+
+        self.assertTrue(restored['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('openai', parsed['model_provider'])
+        self.assertEqual(
+            'https://api.openai.com/v1',
+            parsed['model_providers']['openai']['base_url'])
+        self.assertNotIn(
+            codex_proxy.CUSTOM_API_PROVIDER_ID, parsed['model_providers'])
+        self.assertNotIn(
+            codex_proxy.CUSTOM_API_LEGACY_PROVIDER_ID,
+            parsed['model_providers'])
+
+    def test_custom_api_upgrades_early_single_provider_v1_snapshot(self):
+        provider = codex_proxy._custom_api_provider(
+            'http://192.0.2.10:53142/v1', 'test-key-private')
+        text = 'model_provider = "codex_local_access"\n'
+        text = codex_proxy._append_provider(
+            text, codex_proxy.CUSTOM_API_PROVIDER_ID, provider)
+        self.write_config(text)
+        snapshot = {
+            'version': codex_proxy.CUSTOM_API_LEGACY_SNAPSHOT_VERSION,
+            'config_path': self.config_path,
+            'phase': 'committed',
+            'original_model_provider_exists': True,
+            'original_model_provider': 'openai',
+            'provider_created': True,
+            'last_written': {
+                'model_provider': codex_proxy.CUSTOM_API_PROVIDER_ID,
+                'provider': codex_proxy._custom_api_public_provider(provider),
+                'bearer_token_sha256': codex_proxy._secret_sha256(
+                    'test-key-private'),
+            },
+        }
+        os.makedirs(self.data_root, exist_ok=True)
+        with open(self.custom_api_snapshot_path, 'w', encoding='utf-8') as stream:
+            json.dump(snapshot, stream)
+
+        before = codex_proxy.custom_api_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(before['custom_api_managed'])
+        self.assertFalse(before['custom_api_conflict'])
+        self.assertTrue(before['custom_api_migration_required'])
+        revealed = codex_proxy.read_custom_api_key(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(revealed['ok'])
+        self.assertEqual('test-key-private', revealed['api_key'])
+
+        result = self.save_custom_api(api_key='')
+
+        self.assertTrue(result['ok'])
+        with open(self.custom_api_snapshot_path, encoding='utf-8') as stream:
+            upgraded = json.load(stream)
+        self.assertEqual(
+            codex_proxy.CUSTOM_API_SNAPSHOT_VERSION, upgraded['version'])
+        state = codex_proxy.custom_api_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(state['custom_api_managed'])
+        self.assertFalse(state['custom_api_conflict'])
+        self.assertFalse(state['custom_api_migration_required'])
+
+        self.assertTrue(self.restore_custom_api()['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('openai', parsed['model_provider'])
+        self.assertNotIn(
+            codex_proxy.CUSTOM_API_PROVIDER_ID,
+            parsed.get('model_providers', {}))
+
+    def test_custom_api_repairs_partially_migrated_legacy_snapshot_on_resave(self):
+        original = {
+            'name': 'Codex API Service',
+            'base_url': 'http://localhost:58555/v1',
+            'wire_api': 'responses',
+            'requires_openai_auth': True,
+            'experimental_bearer_token': 'legacy-key',
+            'supports_websockets': False,
+        }
+        primary = codex_proxy._custom_api_provider(
+            'http://192.0.2.10:53142/v1', 'test-key-private')
+        compat = codex_proxy._custom_api_provider(
+            'http://192.0.2.10:53142/v1', 'test-key-private',
+            name='CXVPN Custom API (Legacy Sessions)')
+        text = 'model_provider = "cxvpn_custom_api"\n'
+        text = codex_proxy._append_provider(
+            text, codex_proxy.CUSTOM_API_LEGACY_PROVIDER_ID, primary)
+        text = codex_proxy._append_provider(
+            text, codex_proxy.CUSTOM_API_PROVIDER_ID, compat)
+        self.write_config(text)
+        snapshot = {
+            'version': codex_proxy.CUSTOM_API_LEGACY_SNAPSHOT_VERSION,
+            'config_path': self.config_path,
+            'phase': 'committed',
+            'original_model_provider_exists': True,
+            'original_model_provider': 'codex_local_access',
+            'provider_created': True,
+            'original_compat_provider_exists': True,
+            'original_compat_provider': original,
+            'compat_provider_created': False,
+            'last_written': {
+                'model_provider': 'cxvpn_custom_api',
+                'provider': codex_proxy._custom_api_public_provider(primary),
+                'bearer_token_sha256': codex_proxy._secret_sha256(
+                    'test-key-private'),
+                'compat_provider': codex_proxy._custom_api_public_provider(
+                    compat),
+                'compat_bearer_token_sha256': codex_proxy._secret_sha256(
+                    'test-key-private'),
+            },
+        }
+        os.makedirs(self.data_root, exist_ok=True)
+        with open(self.custom_api_snapshot_path, 'w', encoding='utf-8') as stream:
+            json.dump(snapshot, stream)
+        partial = codex_proxy._remove_provider(
+            self.read_config(), codex_proxy.CUSTOM_API_LEGACY_PROVIDER_ID,
+            '旧版自定义 API Provider')
+        partial = codex_proxy._patch_root_key(
+            partial, 'model_provider', codex_proxy.CUSTOM_API_PROVIDER_ID)
+        self.write_config(partial)
+
+        before = codex_proxy.custom_api_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(before['custom_api_managed'])
+        self.assertFalse(before['custom_api_conflict'])
+        self.assertTrue(before['custom_api_migration_required'])
+        revealed = codex_proxy.read_custom_api_key(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(revealed['ok'])
+        self.assertEqual('test-key-private', revealed['api_key'])
+        result = self.save_custom_api(api_key='')
+
+        self.assertTrue(result['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('codex_local_access', parsed['model_provider'])
+        self.assertNotIn(
+            codex_proxy.CUSTOM_API_LEGACY_PROVIDER_ID,
+            parsed['model_providers'])
+        state = codex_proxy.custom_api_status(
+            environ=self.environ, data_root=self.data_root)
+        self.assertTrue(state['custom_api_managed'])
+        self.assertFalse(state['custom_api_migration_required'])
+        with open(self.custom_api_snapshot_path, encoding='utf-8') as stream:
+            upgraded = json.load(stream)
+        self.assertEqual(codex_proxy.CUSTOM_API_SNAPSHOT_VERSION,
+                         upgraded['version'])
+
+        self.assertTrue(self.restore_custom_api()['ok'])
+        parsed = self.parse_config()
+        self.assertEqual('codex_local_access', parsed['model_provider'])
+        restored = parsed['model_providers'][codex_proxy.CUSTOM_API_PROVIDER_ID]
+        self.assertEqual('http://localhost:58555/v1', restored['base_url'])
+        self.assertEqual('legacy-key', restored['experimental_bearer_token'])
+
+    def test_custom_api_rejects_invalid_input_and_unowned_legacy_id(self):
+        for base_url, api_key in (('ftp://example.test/v1', 'key'),
+                                  ('https://user:pass@example.test/v1', 'key'),
+                                  ('https://example.test/v1?x=1', 'key'),
+                                  ('https://example.test/v1', '')):
+            with self.subTest(base_url=base_url, api_key=api_key):
+                result = self.save_custom_api(base_url, api_key)
+                self.assertFalse(result['ok'])
+                self.assertFalse(os.path.exists(self.config_path))
+        self.write_config(
+            f'[model_providers.{codex_proxy.CUSTOM_API_LEGACY_PROVIDER_ID}]\n'
+            'name = "用户定义"\n')
+        before = self.read_config()
+        result = self.save_custom_api()
+        self.assertFalse(result['ok'])
+        self.assertEqual(before, self.read_config())
+
+    def test_custom_api_write_failure_restores_snapshot_state(self):
+        self.write_config('model_provider = "openai"\n')
+        original = self.read_config()
+        with mock.patch.object(
+                codex_proxy, '_write_config_if_unchanged',
+                side_effect=OSError('中断')):
+            result = self.save_custom_api()
+
+        self.assertFalse(result['ok'])
+        self.assertEqual(original, self.read_config())
+        self.assertFalse(os.path.exists(self.custom_api_snapshot_path))
 
     def parse_config(self):
         with open(self.config_path, 'rb') as stream:

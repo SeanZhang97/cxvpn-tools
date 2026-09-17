@@ -165,6 +165,25 @@ class ProviderTransactionTests(unittest.TestCase):
         restored = json.loads(snapshots[0].read_text(encoding='utf-8'))
         self.assertEqual(restored['phone'], '13800000000')
 
+    def test_codex_api_secret_stays_in_sqlite_not_compat_json(self):
+        secret = 'sqlite-only-codex-key'
+        value = {
+            **self.cfg,
+            'codex_api': {
+                'base_url': 'https://api.example.test/v1',
+                'api_key': secret,
+            },
+        }
+
+        config.save(value)
+
+        stored = state_store.load_config()
+        exported = Path(config.CFG_PATH).read_text(encoding='utf-8')
+        self.assertEqual(secret, stored['codex_api']['api_key'])
+        self.assertNotIn(secret, exported)
+        self.assertNotIn('codex_api', json.loads(exported))
+        self.assertEqual(secret, config.load()['codex_api']['api_key'])
+
     def test_unified_batch_and_restore_without_files_or_network(self):
         with state_store.transaction():
             config.save(self.cfg)

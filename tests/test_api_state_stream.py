@@ -10,6 +10,10 @@ class ApiStateStreamTests(unittest.TestCase):
     def test_ui_config_and_routing_results_hide_controller_fields(self):
         value = {
             'vpn_name': '工作 VPN',
+            'codex_api': {
+                'base_url': 'https://api.example.test/v1',
+                'api_key': '不能进入通用 UI',
+            },
             'routing': {
                 'controller_port': 19090,
                 'controller_secret': '秘密🇯🇵',
@@ -17,6 +21,7 @@ class ApiStateStreamTests(unittest.TestCase):
             },
         }
         safe = api.Api._config_for_ui(value)
+        self.assertNotIn('codex_api', safe)
         self.assertNotIn('controller_port', safe['routing'])
         self.assertNotIn('controller_secret', safe['routing'])
         self.assertEqual(safe['routing']['physical_interface'], '以太网 e\u0301')
