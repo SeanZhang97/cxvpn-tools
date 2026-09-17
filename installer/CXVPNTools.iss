@@ -67,6 +67,7 @@ Name: "{group}\CXVPNTools"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
 Name: "{group}\卸载 CXVPNTools"; Filename: "{uninstallexe}"
 
 [Run]
+Filename: "{app}\{#AppExeName}"; Flags: nowait skipifdoesntexist runasoriginaluser; Check: ShouldAutoRestartApplication
 Filename: "{app}\{#AppExeName}"; Description: "启动 CXVPNTools"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: CanStartApplication
 
 [Code]
@@ -306,6 +307,12 @@ end;
 function CanStartApplication(): Boolean;
 begin
   Result := not DependencyRestart;
+end;
+
+function ShouldAutoRestartApplication(): Boolean;
+begin
+  Result := WizardSilent and CanStartApplication and
+    (CompareText(ExpandConstant('{param:CXVPNAUTORESTART|0}'), '1') = 0);
 end;
 
 function AppIsRunning(): Boolean;

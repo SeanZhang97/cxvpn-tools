@@ -370,22 +370,36 @@ $OutputEncoding = [Console]::OutputEncoding
 function Write-Result([string]$Phase, [string]$Message, [int]$Code = 0) {
   $fields = @{phase=$Phase; version=$TargetVersion; message=$Message; exit_code=$Code}
   if ($null -ne $process) { $fields.installer_pid = $process.Id; $fields.installer_started = $installerStarted }
+  if ($null -ne $application) { $fields.application_pid = $application.Id }
   $json = $fields | ConvertTo-Json -Compress
   $temporary = $ResultPath + '.tmp'
   [IO.File]::WriteAllText($temporary, $json, [Text.UTF8Encoding]::new($false))
   Move-Item -LiteralPath $temporary -Destination $ResultPath -Force
 }
+function Find-UpdatedApplication([string]$ExecutablePath) {
+  $expected = [IO.Path]::GetFullPath($ExecutablePath)
+  foreach ($candidate in @(Get-Process -Name 'CXVPNTools' -ErrorAction SilentlyContinue)) {
+    try {
+      if ([String]::Equals([IO.Path]::GetFullPath($candidate.Path), $expected,
+          [StringComparison]::OrdinalIgnoreCase)) { return $candidate }
+    } catch { }
+  }
+  return $null
+}
 if (-not $RegistryPath) {
   $RegistryPath = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{8D3D2C8E-6F03-4C2A-9B11-5B4F9E7A2B5E}_is1'
 }
 $process = $null
+$application = $null
 $installerStarted = 0
 try {
   Write-Result 'starting' 'Preparing verified installer'
   if ((Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash -ne $ExpectedSHA256) {
     throw 'Installer changed after download'
   }
-  $arguments = '/VERYSILENT /NORESTART /RESTARTEXITCODE=3010'
+  # The installer starts the updated app as the original desktop user. The
+  # unelevated guard remains a fallback and verifies the resulting process.
+  $arguments = '/VERYSILENT /NORESTART /RESTARTEXITCODE=3010 /CXVPNAUTORESTART=1'
   $process = Start-Process -FilePath $Installer -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -PassThru
   $installerStarted = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
   Write-Result 'installing' 'Installer started; preparing dependencies before stopping the old application'
@@ -411,16 +425,26 @@ try {
   if ((Get-Item -LiteralPath $targetExe).VersionInfo.ProductVersion -ne $TargetVersion) {
     throw 'Executable version verification failed'
   }
-  $application = Start-Process -FilePath $targetExe -WorkingDirectory $installDir -PassThru
-  try {
-    if ($application.WaitForExit(5000)) { throw 'Updated application exited during startup' }
-  } finally { $application.Dispose() }
+  $application = Find-UpdatedApplication $targetExe
+  if ($null -eq $application) {
+    $application = Start-Process -FilePath $targetExe -WorkingDirectory $installDir -PassThru
+  }
+  Start-Sleep -Seconds 5
+  $verifiedApplication = Find-UpdatedApplication $targetExe
+  if ($null -eq $verifiedApplication) { throw 'Updated application exited during startup' }
+  if ($verifiedApplication.Id -ne $application.Id) {
+    $application.Dispose()
+    $application = $verifiedApplication
+  } else {
+    $verifiedApplication.Dispose()
+  }
   Write-Result 'completed' 'Verified application restarted'
   exit 0
 } catch {
   Write-Result 'failed' ('Update failed: ' + $_.Exception.GetType().Name) 9001
   exit 1
 } finally {
+  if ($null -ne $application) { $application.Dispose() }
   if ($null -ne $process) { $process.Dispose() }
 }
 '''

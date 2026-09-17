@@ -136,6 +136,12 @@ class HardenedUpdateTests(unittest.TestCase):
         with mock.patch.object(app_update, 'installer_process_running', return_value=None):
             self.assertFalse(target.start_app_update_download(URL, '9.9.9', SHA)['ok'])
 
+    def test_installer_only_auto_restarts_for_update_request(self):
+        installer = Path('installer/CXVPNTools.iss').read_text(encoding='utf-8-sig')
+        self.assertIn('{param:CXVPNAUTORESTART|0}', installer)
+        self.assertIn('Check: ShouldAutoRestartApplication', installer)
+        self.assertIn('Result := WizardSilent and CanStartApplication', installer)
+
 
 @unittest.skipUnless(os.name == 'nt', 'PowerShell Windows fixtures')
 class UpdateGuardFixtureTests(unittest.TestCase):
@@ -151,21 +157,40 @@ function Get-ItemProperty { param($LiteralPath,$ErrorAction)
 function Get-Item { param($LiteralPath)
   @{VersionInfo=@{ProductVersion='9.9.9'}} }
 function Test-Path { param($LiteralPath) $true }
+function Start-Sleep { param($Seconds) }
+function Get-Process { param($Name,$ErrorAction)
+  if ($null -ne $script:runningApplication) { return $script:runningApplication }
+}
+function New-Application([int]$Id) {
+  $item = [pscustomobject]@{Id=$Id;Path=(Join-Path $PSScriptRoot 'CXVPNTools.exe')}
+  $item | Add-Member ScriptMethod Dispose { }
+  return $item
+}
 function Start-Process { param($FilePath,$ArgumentList,$Verb,$WindowStyle,[switch]$PassThru,$WorkingDirectory)
   if ($Scenario -eq 'uac') { throw 'UAC cancelled' }
   $code = switch ($Scenario) { 'reboot' {3010} 'prepare-reboot' {8} 'fail' {42} default {0} }
-  $item = [pscustomobject]@{Id=123;StartTime=[DateTime]::Now;ExitCode=$code;IsInstaller=($Verb -eq 'RunAs')}
+  $isInstaller = ($Verb -eq 'RunAs')
+  $item = [pscustomobject]@{Id=$(if ($isInstaller) {123} else {456});StartTime=[DateTime]::Now;
+    ExitCode=$code;IsInstaller=$isInstaller;Path=$(if ($isInstaller) { $FilePath } else { Join-Path $PSScriptRoot 'CXVPNTools.exe' })}
   $item | Add-Member ScriptMethod WaitForExit {
     param($timeout)
+    if ($this.IsInstaller -and $Scenario -eq 'installer-restart') {
+      $script:runningApplication = New-Application 789
+    }
     if ($this.IsInstaller) { return $Scenario -ne 'timeout' }
     return $Scenario -eq 'early-exit'
   }
   $item | Add-Member ScriptMethod Dispose { }
+  if (-not $isInstaller -and $Scenario -ne 'early-exit') {
+    $script:runningApplication = New-Application 456
+    $item = $script:runningApplication
+  }
   return $item
 }
 & $Guard -TargetVersion '9.9.9' -Installer 'fixture.exe' -ExpectedSHA256 ('a' * 64) -ResultPath $ResultPath
 '''
         cases = {'success': 'completed', 'hash': 'failed', 'uac': 'failed',
+                 'installer-restart': 'completed',
                  'reboot': 'restart_required', 'prepare-reboot': 'restart_required',
                  'fail': 'failed', 'timeout': 'timed_out', 'early-exit': 'failed'}
         with tempfile.TemporaryDirectory() as folder:
@@ -180,7 +205,15 @@ function Start-Process { param($FilePath,$ArgumentList,$Verb,$WindowStyle,[switc
                         '-Guard', str(base / 'guard.ps1'), '-ResultPath', str(result), '-Scenario', scenario],
                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                    self.assertEqual(expected, json.loads(result.read_text(encoding='utf-8-sig'))['phase'])
+                    outcome = json.loads(result.read_text(encoding='utf-8-sig'))
+                    self.assertEqual(expected, outcome['phase'])
+                    if scenario == 'installer-restart':
+                        self.assertEqual(789, outcome['application_pid'])
+
+    def test_guard_requests_installer_restart_and_keeps_fallback(self):
+        self.assertIn('/CXVPNAUTORESTART=1', app_update._UPDATE_GUARD_PS1)
+        self.assertIn('Find-UpdatedApplication $targetExe', app_update._UPDATE_GUARD_PS1)
+        self.assertIn("Start-Process -FilePath $targetExe", app_update._UPDATE_GUARD_PS1)
 
 
 if __name__ == '__main__':
