@@ -1837,6 +1837,7 @@ td .target {
 .browser-empty p { margin-top: 8px; font-size: 13px; }
 
 /* ---------- 帮助 ---------- */
+#page-help > .settings-card + .quickstart-card { margin-top: 14px; }
 .quickstart-card { padding: 22px; }
 .help-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .help-card-head h3 { margin-top: 7px; font-size: 17px; }
