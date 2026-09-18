@@ -170,9 +170,11 @@
   确定后执行接口绑定与 socket 连接，Windows 绑定通过 `IP_UNICAST_IF` /
   `IPV6_UNICAST_IF` 实现。本项目在该基线增加连接前路由租约钩子，沿用原有解析与接口绑定；
   普通配置测试仍不代表任意目标的真实可达性，路由管理与业务访问需分别验证。
-- `proxy` 使用全部已启用订阅公开组组成的 `PROXY` 组；`proxy:<id>` 使用对应的独立
-  `PROXY-<id>` 组。聚合组只在 `PROXY-<id>` 之间执行全局 `url-test`、`fallback` 或 `select`，
-  不得直接 `use` 原始 provider，否则会绕过订阅级智能优选、手动节点和故障转移策略。
+- `proxy` 使用聚合 `PROXY` 组；`proxy:<id>` 使用对应的独立 `PROXY-<id>` 组。
+  聚合自动模式在订阅公开组之间执行全局 `url-test`、`fallback` 或 `select`，不直接
+  `use` 原始 provider，避免绕过订阅策略。聚合手动模式由 `core/routing_aggregate.py`
+  生成独立 `select` 组，通过 provider 和精确节点过滤器固定叶子节点，空组回退 `REJECT`；
+  它不修改该订阅自身的自动或手动选点，也不改写默认出口。
   每个 provider 对节点名添加 `[订阅名] ` 前缀，避免不同订阅同名节点冲突。现有第三方 Clash
   不作为上游 TUN；应关闭其 TUN，直接把订阅交给本模块。
 - 每个订阅的 `speedtest_interval` 独立控制自动测速，单位为秒，默认 300；界面在“订阅 → 编辑”
@@ -186,6 +188,11 @@
   Controller 仍只监听回环地址并要求 Bearer secret。节点偏好与路由出口相互独立：保存手动
   节点或切回自动优选不会隐式修改 `default_outbound`；网络代理首页启停、规则/全局切换同样
   不改写默认出口。
+- 当前节点展示口径（2026-09-18 核对）：`ui/proxy.js` 首页按默认出口选择运行组，
+  `proxy:<id>` 读取订阅组，`proxy` 读取聚合 `all` 组；`ui/routing.js` 分流概览的
+  “当前代理”固定读取 `all` 组，“手动固定”读取 `aggregate_selection`。因此默认出口
+  直接使用某订阅时，两页节点可以不同。概览策略副标题仍读取 `proxy_strategy`，聚合
+  已手动固定时也可能显示“自动测速”，不能据此判断聚合运行组仍是自动模式。
 - 订阅智能优选由 `core/routing_auto_policy.py` 编译。`auto_policy.stages[]` 最多 8 个，
   每项包含地区代码、最多 12 个地区补充关键词和最多 12 个线路优先关键词；关键词按
   字面量安全转成 Go RE2。UI 用逐个添加/删除的标签编辑器维护数组，不接受在同一输入框
