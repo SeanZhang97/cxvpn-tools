@@ -3,7 +3,7 @@
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
 界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
 关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置导入, 配置导出, 文件选择, DNS高级模式, nameserver-policy, 托盘快捷操作, 域名分流导航
-最后验证：2026-09-16 | 分支：main
+最后验证：2026-09-24 | 分支：main
 
 ## 职责边界
 
@@ -491,6 +491,11 @@ CXVPN 自原生路由服务 `0.3.0`、IPC 协议 `3` 起采用与上述基线一
    routing，避免覆盖操作期间发生的其它配置更新。
 
 Windows 服务状态读取失败时使用 `installed=None`、`state=Unknown`，不得推断为“未安装”。
+原生服务 `status` 指令把服务目录运行配置 `config.json` 缺失（首次安装或从未成功应用）
+视为正常初始状态：`system_proxy_active=false` 正常返回，不报“读取运行配置失败”；
+`ensure_installed()` 安装后轮询依赖该容错才能走到首次配置事务。运行配置是每次应用时按
+当前设置现场生成、经 IPC 原子换入服务目录的运行时产物，与用户设置的 SQLite 主存储无关，
+安装器不会也不应预置该文件。
 关闭或保存关闭状态必须先确认服务状态；未知时安全失败，避免服务继续运行但配置显示关闭。
 关闭时通过 IPC 删除运行标记并停止 Mihomo，但保留 Windows Service 与 ProgramData 文件，
 供下次免 UAC 启动；只有旧版 WinSW 服务在迁移前关闭时仍会注销。普通

@@ -238,7 +238,10 @@ impl RuntimeManager {
             })
             .and_then(|row| row.get("interface-name"))
             .and_then(|value| value.as_str());
-        let system_proxy_active = self.desired_proxy_port()?.is_some()
+        // 首次安装或尚未成功应用配置时 config.json 不存在，这是正常初始状态，
+        // 不能让 status 硬失败，否则控制面安装后轮询永远走不到首次应用。
+        let system_proxy_active = self.config_path().is_file()
+            && self.desired_proxy_port()?.is_some()
             && system_proxy::is_active(&self.base);
         Ok((
             "服务状态已读取".to_string(),
@@ -1096,6 +1099,19 @@ mod tests {
         assert_eq!(status["runtime_running"], false);
         assert!(status["mihomo_pid"].is_null());
         assert_eq!(manager.child.as_ref().unwrap().id(), pid);
+        remove_any(&manager.base).unwrap();
+    }
+
+    #[test]
+    fn status_tolerates_missing_runtime_config_on_fresh_install() {
+        // 首次安装时 config.json 尚未生成，status 必须正常返回而不是报错，
+        // 否则控制面安装后轮询会直接中断首次应用流程。
+        let mut manager = isolated_manager();
+        remove_any(&manager.config_path()).unwrap();
+        let (_, status) = manager.status().unwrap();
+        assert_eq!(status["system_proxy_active"], false);
+        assert_eq!(status["config_sha256"], "");
+        assert_eq!(status["runtime_running"], false);
         remove_any(&manager.base).unwrap();
     }
 
