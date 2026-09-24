@@ -28,6 +28,7 @@ from core.routing_tasks import operation_scope
 from core.routing_updates import RoutingUpdateWorker
 from core.routing_network import RoutingNetworkWorker
 from core.ui_state_stream import UiStateStream
+from core.two_factor_api import TwoFactorApi
 from core.worker import Worker
 
 LOG_MAX = 500
@@ -133,10 +134,11 @@ def _safe_console_write(line):
         pass
 
 
-class Api(RoutingTaskApi, AggregateSelectionApi):
+class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
     def __init__(self):
         self.cfg = cfgmod.load()
         self._lock = threading.Lock()
+        self._init_two_factor(cfgmod.BASE)
         self._vpn_action_lock = threading.Lock()
         self._repair_lock = threading.Lock()
         self._routing_lock = threading.Lock()

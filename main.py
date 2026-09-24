@@ -8,6 +8,11 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+if __name__ == '__main__' and '--otp-decode' in sys.argv:
+    from core.two_factor_qr import run_child
+    run_child()
+    raise SystemExit(0)
+
 if __name__ == '__main__' and '--storage-recovery-probe' in sys.argv:
     from core.storage_probe import run as run_storage_probe
     position = sys.argv.index('--storage-recovery-probe')

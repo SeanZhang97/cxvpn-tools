@@ -2840,6 +2840,9 @@ function injectModalClose(root) {
 
 async function closeModal(modal) {
   if (!modal) return;
+  if (modal.id === 'otp-editor' || modal.id === 'otp-transfer') {
+    return window.TwoFactorWorkspace?.closeModal(modal);
+  }
   if (modal.id === 'confirmmodal') {
     finishConfirm(false);
     return;

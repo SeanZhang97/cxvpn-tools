@@ -1,0 +1,4 @@
+# 2FA 增量依赖；安装到项目现有 uv .venv。
+pyotp==2.10.0
+cryptography==50.0.1
+zxing-cpp==3.1.1

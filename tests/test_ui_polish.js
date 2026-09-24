@@ -96,7 +96,7 @@ assert.equal((html.match(/class="nav-icon"/g) || []).length, 13);
 assert.equal((html.match(/<svg class="nav-icon"/g) || []).length, 13);
 assert.match(html, /class="section-icon"[^>]*viewBox="0 0 24 24"/);
 assert.match(html, /class="setting-icon"[^>]*><svg viewBox="0 0 24 24"/);
-assert.equal((html.match(/class="eye"/g) || []).length, 6);
+assert.equal((html.match(/class="eye"/g) || []).length, 7);
 assert.equal((html.match(/class="eye"[^>]*aria-pressed="false"[^>]*><svg/g) || []).length, 6);
 assert.doesNotMatch(html, /class="eye"[^>]*>显示<\/button>/);
 assert.match(routing, /url\.type = 'text'/);

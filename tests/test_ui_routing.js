@@ -22,7 +22,7 @@ assert.deepEqual(
 assert.deepEqual(
   selectInventory.filter(item => !item.smart).map(item => item.id).sort(),
   [
-    'builtin-rules-type', 'connections-sort', 'proxy-log-level', 'proxy-log-order',
+    'builtin-rules-type', 'connections-sort', 'proxy-log-level', 'proxy-log-order', 'otp-algorithm', 'otp-digits',
     'routing-builtin-pack', 'routing-capture-mode', 'routing-default', 'routing-interface',
     'routing-auto-policy-tolerance-unit', 'routing-dns-enhanced', 'routing-dns-mode', 'routing-node-group', 'routing-node-sort',
     'routing-proxy-strategy', 'routing-traffic-mode',
