@@ -40,6 +40,9 @@ MAX_INSTALLER_BYTES = 512 * 1024 * 1024
 PROGRESS_REPORT_INTERVAL = 0.25
 INSTALL_MONITOR_TIMEOUT = 4260
 GUARD_TIMEOUT_SECONDS = 4200
+# 检查更新走系统代理，VPN/代理切换瞬间易出现瞬时故障；重试短间隔兜底。
+CHECK_MAX_ATTEMPTS = 3
+CHECK_RETRY_BACKOFF = (1.0, 2.0)
 
 
 class _DownloadCancelled(Exception):
@@ -87,13 +90,72 @@ class UpdateDownloadState:
             self._fields['updated_at'] = self._fields['started_at']
 
 
-def _request(url, timeout=12):
+def _request(url, timeout=12, direct=False):
     request = urllib.request.Request(url, headers={
         'Accept': 'application/vnd.github+json',
         'User-Agent': USER_AGENT,
     })
+    if direct:
+        # 与 core/routing.py 的 Controller 请求一致：显式禁用系统/环境代理，
+        # 避免更新检查依赖应用自身的代理核心。
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=timeout) as response:
+            return response.read(1024 * 1024)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read(1024 * 1024)
+
+
+def _is_proxy_tunnel_error(exc):
+    """代理拒绝 CONNECT 隧道（如 Tunnel connection failed: 400）。"""
+    detail = getattr(exc, 'reason', None)
+    text = str(detail if detail is not None else exc)
+    return 'tunnel connection failed' in text.lower()
+
+
+def _describe_network_error(exc):
+    """失败原因压缩为单行摘要：类型名 + URLError.reason 等具体原因。"""
+    name = type(exc).__name__
+    detail = getattr(exc, 'reason', None)
+    if detail is None:
+        detail = str(exc)
+    text = ' '.join(str(detail).split())
+    if not text:
+        return name
+    if len(text) > 120:
+        text = text[:117] + '...'
+    return '%s（%s）' % (name, text)
+
+
+def _request_with_retry(url, timeout=12, attempts=CHECK_MAX_ATTEMPTS, log=None):
+    """瞬时网络故障自动重试；最后一次尝试直连兜底，代理隧道被拒时立即转入直连。
+
+    HTTPError 是服务端明确答复，不重试。
+    """
+    attempts = max(1, int(attempts))
+    attempt = 0
+    while True:
+        attempt += 1
+        direct = attempt >= attempts and attempts > 1
+        try:
+            return _request(url, timeout=timeout, direct=direct)
+        except urllib.error.HTTPError:
+            raise
+        except (OSError, urllib.error.URLError) as exc:
+            if attempt >= attempts:
+                raise
+            backoff = CHECK_RETRY_BACKOFF
+            delay = backoff[min(attempt - 1, len(backoff) - 1)]
+            if _is_proxy_tunnel_error(exc):
+                # 重试同一代理无意义，下一次直接进入直连兜底。
+                attempt = attempts - 1
+                if log:
+                    log('[app-update] 系统代理隧道连接失败，改为直连重试: %s'
+                        % _describe_network_error(exc))
+                continue
+            if log:
+                log('[app-update] 检查更新请求失败，%.1f 秒后重试 (%d/%d): %s'
+                    % (delay, attempt, attempts, _describe_network_error(exc)))
+            time.sleep(delay)
 
 
 def _asset_sha256(asset):
@@ -122,7 +184,7 @@ def installer_identity(url):
     return version, parts[1]
 
 
-def _installer_digest(installer, assets):
+def _installer_digest(installer, assets, log=None):
     digest = _asset_sha256(installer)
     if digest:
         return digest
@@ -131,15 +193,15 @@ def _installer_digest(installer, assets):
     expected_url = installer['browser_download_url'] + '.sha256'
     if len(checksums) != 1 or checksums[0].get('browser_download_url') != expected_url:
         return ''
-    content = _request(expected_url).decode('utf-8-sig').strip()
+    content = _request_with_retry(expected_url, log=log).decode('utf-8-sig').strip()
     match = re.fullmatch(r'([0-9a-fA-F]{64})\s+\*?' + re.escape(name), content)
     return match[1].lower() if match else ''
 
 
-def check_latest():
+def check_latest(log=None):
     """读取最新稳定版本；失败时返回可展示的错误而不抛到 UI。"""
     try:
-        payload = json.loads(_request(API_URL).decode('utf-8'))
+        payload = json.loads(_request_with_retry(API_URL, log=log).decode('utf-8'))
         if not isinstance(payload, dict):
             raise ValueError('版本响应无效')
         tag = str(payload.get('tag_name') or '')
@@ -157,7 +219,7 @@ def check_latest():
                 installer = None
             else:
                 installer_identity(url)
-                digest = _installer_digest(installer, assets)
+                digest = _installer_digest(installer, assets, log=log)
         # 不提供未校验的自动执行入口；仍可告知用户有新版本。
         if not digest:
             installer = None
@@ -188,7 +250,7 @@ def check_latest():
                 'msg': f'更新服务返回 HTTP {exc.code}'}
     except (OSError, ValueError, UnicodeError, urllib.error.URLError) as exc:
         return {'ok': False, 'current_version': APP_VERSION,
-                'msg': f'检查更新失败：{type(exc).__name__}'}
+                'msg': '检查更新失败：' + _describe_network_error(exc)}
 
 
 def open_release(url):

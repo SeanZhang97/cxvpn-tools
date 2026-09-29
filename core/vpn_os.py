@@ -7,8 +7,10 @@ import json
 import base64
 import ipaddress
 import os
+import re
 import subprocess
 import tempfile
+from html import unescape as _html_unescape
 
 TYPES = ['Automatic', 'Pptp', 'L2tp', 'Ikev2']
 _USER_PBK = os.path.join(
@@ -19,6 +21,34 @@ _GATEWAY_FIELDS = {
     'Ipv6PrioritizeRemote': 'ipv6_default_gateway',
 }
 
+# Windows PowerShell 5.1 在 stderr 被重定向时，会把进度、错误等记录序列化为
+# CLIXML（以 #< CLIXML 开头），Set-VpnConnection 成功时也会带上大量进度噪声。
+_CLIXML_MARK = '#< CLIXML'
+_CLIXML_ERROR_RE = re.compile(r'<S S="Error">(.*?)</S>', re.DOTALL)
+_CLIXML_ESCAPE_RE = re.compile(r'_x([0-9A-Fa-f]{4})_')
+# 主机渲染的错误尾部会附加“所在位置 行:1 字符: 41”一类的位置行，
+# 本地化文本可能已被 ANSI 代码页损坏，按“两组 键:数字”结构识别。
+_CLIXML_POSITION_RE = re.compile(r'^\S*\s+\S*[:：]\s*\d+\s+\S*[:：]\s*\d+')
+
+
+def _clean_stderr(text):
+    """还原 CLIXML 包装的 stderr：进度等噪声丢弃，仅保留可读错误文本。"""
+    text = (text or '').strip()
+    if not text.startswith(_CLIXML_MARK):
+        return text
+    lines = []
+    for raw in _CLIXML_ERROR_RE.findall(text):
+        value = _CLIXML_ESCAPE_RE.sub(
+            lambda m: chr(int(m.group(1), 16)), raw)
+        for line in _html_unescape(value).splitlines():
+            line = line.strip()
+            if not line or line.startswith('+'):
+                continue
+            if _CLIXML_POSITION_RE.match(line):
+                return '\n'.join(lines).strip()
+            lines.append(line)
+    return '\n'.join(lines).strip()
+
 
 def _ps(script, timeout=30, env=None):
     process_env = None
@@ -28,6 +58,7 @@ def _ps(script, timeout=30, env=None):
     # EncodedCommand avoids the system code page on Windows PowerShell; set both
     # streams explicitly so Chinese adapter and VPN names stay UTF-8 end to end.
     utf8_setup = (
+        "$ProgressPreference = 'SilentlyContinue'; "
         "$utf8 = New-Object System.Text.UTF8Encoding($false); "
         "[Console]::InputEncoding = $utf8; "
         "[Console]::OutputEncoding = $utf8; "
@@ -40,7 +71,8 @@ def _ps(script, timeout=30, env=None):
         capture_output=True, text=True, encoding='utf-8', errors='replace',
         timeout=timeout,
         creationflags=subprocess.CREATE_NO_WINDOW, env=process_env)
-    return r.returncode == 0, (r.stdout or '').strip(), (r.stderr or '').strip()
+    return r.returncode == 0, (r.stdout or '').strip(), \
+        _clean_stderr(r.stderr)
 
 
 def _quote(value):

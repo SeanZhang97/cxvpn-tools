@@ -98,10 +98,83 @@ class CheckLatestTests(unittest.TestCase):
 
         with mock.patch.object(
                 app_update, '_request',
-                side_effect=urllib.error.URLError('timeout')):
+                side_effect=urllib.error.URLError('timeout')), \
+                mock.patch.object(app_update, 'CHECK_RETRY_BACKOFF', (0, 0)):
             result = app_update.check_latest()
         self.assertFalse(result['ok'])
         self.assertIn('URLError', result['msg'])
+        self.assertTrue(_no_forbidden_words(result['msg']))
+
+    def test_network_retry_recovers_transient_failure(self):
+        payload = {'tag_name': 'v1.0.0', 'assets': []}
+        calls = []
+
+        def flaky(url, timeout=12, direct=False):
+            calls.append(url)
+            if len(calls) == 1:
+                raise urllib.error.URLError('connection reset')
+            return b'{}'
+
+        with mock.patch.object(app_update, '_request', side_effect=flaky), \
+                mock.patch.object(app_update, 'CHECK_RETRY_BACKOFF', (0, 0)), \
+                mock.patch('json.loads', return_value=payload):
+            result = app_update.check_latest()
+        self.assertTrue(result['ok'])
+        self.assertEqual(len(calls), 2)
+
+    def test_network_failure_reports_reason_after_retries(self):
+        with mock.patch.object(
+                app_update, '_request',
+                side_effect=urllib.error.URLError('timed out')) as request_mock, \
+                mock.patch.object(app_update, 'CHECK_RETRY_BACKOFF', (0, 0)):
+            result = app_update.check_latest()
+        self.assertFalse(result['ok'])
+        self.assertIn('URLError', result['msg'])
+        self.assertIn('timed out', result['msg'])
+        self.assertEqual(request_mock.call_count, app_update.CHECK_MAX_ATTEMPTS)
+
+    def test_http_error_is_not_retried(self):
+        error = urllib.error.HTTPError(
+            app_update.API_URL, 503, 'Unavailable', None, None)
+        error.close()
+        with mock.patch.object(app_update, '_request', side_effect=error) as request_mock:
+            result = app_update.check_latest()
+        self.assertFalse(result['ok'])
+        self.assertIn('HTTP 503', result['msg'])
+        self.assertEqual(request_mock.call_count, 1)
+
+    def test_proxy_tunnel_failure_falls_back_to_direct(self):
+        payload = {'tag_name': 'v1.0.0', 'assets': []}
+        calls = []
+
+        def tunnel_then_direct(url, timeout=12, direct=False):
+            calls.append(direct)
+            if not direct:
+                raise urllib.error.URLError(
+                    OSError('Tunnel connection failed: 400 Bad Request'))
+            return b'{}'
+
+        with mock.patch.object(app_update, '_request',
+                               side_effect=tunnel_then_direct), \
+                mock.patch('json.loads', return_value=payload):
+            result = app_update.check_latest()
+        self.assertTrue(result['ok'])
+        # 代理隧道被拒后不再重试代理，直接进入直连兜底。
+        self.assertEqual(calls, [False, True])
+
+    def test_direct_fallback_failure_reports_direct_error(self):
+        def always_fail(url, timeout=12, direct=False):
+            if direct:
+                raise urllib.error.URLError('direct timed out')
+            raise urllib.error.URLError(
+                OSError('Tunnel connection failed: 400 Bad Request'))
+
+        with mock.patch.object(app_update, '_request',
+                               side_effect=always_fail), \
+                mock.patch.object(app_update, 'CHECK_RETRY_BACKOFF', (0, 0)):
+            result = app_update.check_latest()
+        self.assertFalse(result['ok'])
+        self.assertIn('direct timed out', result['msg'])
         self.assertTrue(_no_forbidden_words(result['msg']))
 
     def test_open_release_rejects_untrusted_url(self):

@@ -1,7 +1,7 @@
 # Windows VPN 凭据与 RAS API
 
 模块: 通用能力 | 代码路径: `core/ras_cred.py`、`core/eap_connect.py`、`core/vpn_connect.py`、`core/vpn_service.py`、`core/vpn_os.py`
-最后验证: 2026-09-14 | 分支: main
+最后验证: 2026-09-24 | 分支: main
 
 ## 当前事实（Win11 25H2 实测）
 
@@ -97,6 +97,15 @@
 
 ## 诊断手段
 
+- `_ps()` 以 `subprocess` 捕获 PowerShell 子进程输出。Windows PowerShell 5.1
+  在 stderr 被重定向时，会把进度（progress）、错误等非输出流序列化为 CLIXML
+  （`#< CLIXML` 开头）写入 stderr；`Set-VpnConnection` 等 CIM cmdlet 成功时也
+  会带进度记录。`_ps()` 已通过 `$ProgressPreference = 'SilentlyContinue'` 抑制
+  进度流，并用 `_clean_stderr()` 只保留 `<S S="Error">` 的可读错误文本，调用方
+  拿到的 stderr 不再是 XML 原文（2026-09-24 起）。
+- CLIXML 内的中文乱码来自序列化时系统 ANSI 代码页的有损转换，PowerShell 侧已
+  损坏，Python 侧无法还原；CIM cmdlet 的部分失败消息在 Windows 侧就已被损坏
+  （如 VPN 名显示为问号），与 `_ps()` 的 UTF-8 设置无关。
 - RasClient 事件：20221 开始拨号、20223 链路建立、20225 认证成功、20226 终止、
   20227 失败。20221/20225 的 `Dial-in User` 可用于确认软件实际提交了哪个用户名。
 - EAP-MSCHAPv2 认证事件位于

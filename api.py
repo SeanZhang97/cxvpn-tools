@@ -602,13 +602,16 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         return {'name': APP_NAME, 'version': APP_VERSION}
 
     def check_app_update(self, manual=False):
-        result = app_update.check_latest()
+        result = app_update.check_latest(log=self.log)
         if result.get('ok'):
             with self._lock:
                 self.cfg.setdefault('app_update', {})['last_check'] = time.time()
                 cfgmod.save(self.cfg)
-        self.log('[app-update] %s check completed: ok=%s newer=%s manual=%s' %
-                 (APP_VERSION, result.get('ok'), result.get('newer'), manual))
+            self.log('[app-update] %s check completed: ok=%s newer=%s manual=%s' %
+                     (APP_VERSION, result.get('ok'), result.get('newer'), manual))
+        else:
+            self.log('[app-update] 检查更新失败: manual=%s, %s' %
+                     (manual, result.get('msg')))
         return result
 
     def open_app_release(self, url):

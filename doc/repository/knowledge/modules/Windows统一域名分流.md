@@ -170,6 +170,12 @@
   确定后执行接口绑定与 socket 连接，Windows 绑定通过 `IP_UNICAST_IF` /
   `IPV6_UNICAST_IF` 实现。本项目在该基线增加连接前路由租约钩子，沿用原有解析与接口绑定；
   普通配置测试仍不代表任意目标的真实可达性，路由管理与业务访问需分别验证。
+- HTTP/mixed 入站对 CONNECT 无条件立即回 `200 Connection established`（先应答再拨号），
+  节点不可用、规则 REJECT 都不会改变 CONNECT 应答，客户端表现为隧道内 EOF/超时而非
+  非 200 状态码；监听器唯一的 400 路径是非 CONNECT 请求缺 scheme/host
+  （`listener/http/proxy.go`，2026-09-28 以全 REJECT、死节点两组配置实测复核）。
+  因此客户端报 `Tunnel connection failed: 4xx/5xx` 时应答方不是 Mihomo，
+  排查方向是端口被瞬时占用、其它代理软件或过滤层。
 - `proxy` 使用聚合 `PROXY` 组；`proxy:<id>` 使用对应的独立 `PROXY-<id>` 组。
   聚合自动模式在订阅公开组之间执行全局 `url-test`、`fallback` 或 `select`，不直接
   `use` 原始 provider，避免绕过订阅策略。聚合手动模式由 `core/routing_aggregate.py`
