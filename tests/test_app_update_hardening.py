@@ -147,16 +147,24 @@ class HardenedUpdateTests(unittest.TestCase):
 class UpdateGuardFixtureTests(unittest.TestCase):
     def test_guard_exit_codes_and_startup_without_real_installers(self):
         wrapper = r'''
-param([string]$Guard, [string]$ResultPath, [string]$Scenario)
+param([string]$Guard, [string]$ResultPath, [string]$Scenario, [string]$Installer, [string]$ExpectedHash)
 $ErrorActionPreference = 'Stop'
-function Get-FileHash { param($LiteralPath,$Algorithm)
-  @{ Hash = $(if ($Scenario -eq 'hash') { 'b' * 64 } else { 'a' * 64 }) }
-}
+# Get-FileHash 是 Microsoft.PowerShell.Utility 的模块高级函数：模块一经加载，
+# 子脚本（& 调用的守卫）内的调用无法被本脚本定义的同名函数覆盖，
+# 因此改用真实 fixture.exe 文件与真实 SHA-256，hash 场景通过传入错误期望值模拟。
+# 同时注意 Get-FileHash 内部会调用 Test-Path -PathType Container 排除目录，
+# 该内部调用会命中本脚本的 Test-Path mock（动态作用域），因此带 -PathType 的
+# 调用必须用模块限定名回退到真实 cmdlet，否则真实文件会被误判为目录而静默跳过。
 function Get-ItemProperty { param($LiteralPath,$ErrorAction)
   @{DisplayVersion='9.9.9';InstallLocation=$PSScriptRoot} }
 function Get-Item { param($LiteralPath)
   @{VersionInfo=@{ProductVersion='9.9.9'}} }
-function Test-Path { param($LiteralPath) $true }
+function Test-Path { param($LiteralPath,$PathType)
+  if ($null -ne $PathType) {
+    return Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath -PathType $PathType
+  }
+  return $true
+}
 function Start-Sleep { param($Seconds) }
 function Get-Process { param($Name,$ErrorAction)
   if ($null -ne $script:runningApplication) { return $script:runningApplication }
@@ -187,7 +195,7 @@ function Start-Process { param($FilePath,$ArgumentList,$Verb,$WindowStyle,[switc
   }
   return $item
 }
-& $Guard -TargetVersion '9.9.9' -Installer 'fixture.exe' -ExpectedSHA256 ('a' * 64) -ResultPath $ResultPath
+& $Guard -TargetVersion '9.9.9' -Installer $Installer -ExpectedSHA256 $ExpectedHash -ResultPath $ResultPath
 '''
         cases = {'success': 'completed', 'hash': 'failed', 'uac': 'failed',
                  'installer-restart': 'completed',
@@ -197,12 +205,17 @@ function Start-Process { param($FilePath,$ArgumentList,$Verb,$WindowStyle,[switc
             base = Path(folder)
             (base / 'guard.ps1').write_text(app_update._UPDATE_GUARD_PS1, encoding='utf-8-sig')
             (base / 'wrapper.ps1').write_text(wrapper, encoding='utf-8-sig')
+            installer = base / 'fixture.exe'
+            installer.write_bytes(b'fixture')
+            real_sha = hashlib.sha256(b'fixture').hexdigest()
             for scenario, expected in cases.items():
                 with self.subTest(scenario=scenario):
                     result = base / (scenario + '.json')
+                    sha = ('b' * 64) if scenario == 'hash' else real_sha
                     subprocess.run([app_update._powershell_exe(), '-NoProfile', '-NonInteractive',
                         '-ExecutionPolicy', 'Bypass', '-File', str(base / 'wrapper.ps1'),
-                        '-Guard', str(base / 'guard.ps1'), '-ResultPath', str(result), '-Scenario', scenario],
+                        '-Guard', str(base / 'guard.ps1'), '-ResultPath', str(result),
+                        '-Scenario', scenario, '-Installer', str(installer), '-ExpectedHash', sha],
                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                     outcome = json.loads(result.read_text(encoding='utf-8-sig'))
