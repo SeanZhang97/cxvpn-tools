@@ -760,15 +760,62 @@ def _bypass_rules(config):
     return rules
 
 
+def _user_rule_covers_suffix(rule, suffix):
+    """判断用户有序规则是否覆盖国内直连绕过后缀命中的域名范围。"""
+    domain = rule['domain']
+    if rule['match_type'] == 'exact':
+        return domain == suffix or domain.endswith('.' + suffix)
+    if rule['match_type'] == 'suffix':
+        return (domain == suffix or domain.endswith('.' + suffix) or
+                suffix.endswith('.' + domain))
+    # 通配符规则无法精确求集合交集；按固定片段与后缀的同域或父子域关系
+    # 保守判定，宁可多放行进入 Mihomo 也不让绕过遮蔽显式规则。
+    for segment in domain.split('*'):
+        segment = segment.strip('.')
+        if segment and (segment == suffix or
+                        segment.endswith('.' + suffix) or
+                        suffix.endswith('.' + segment)):
+            return True
+    return False
+
+
+def _cn_direct_excluded_suffixes(config):
+    """被用户有序规则覆盖、不得进入系统代理绕过列表的国内直连后缀。"""
+    user_rules = _active_rules(config)
+    if not user_rules:
+        return []
+    try:
+        suffixes = _routing_rules.cn_direct_suffixes()
+    except _routing_rules.RulePackError:
+        # 读取失败由 system_proxy_bypass_domains 统一转成 RoutingError。
+        return []
+    return [
+        suffix for suffix in suffixes
+        if any(_user_rule_covers_suffix(rule, suffix) for rule in user_rules)]
+
+
 def system_proxy_bypass_domains(config):
-    """合并手动域名与国内规则包，供 Windows ProxyOverride 使用。"""
+    """合并手动域名与国内规则包，供 Windows ProxyOverride 使用。
+
+    用户有序域名规则显式指定的出口优先于“国内域名不经过系统代理”
+    自动绕过：被用户规则覆盖的 cn-direct 后缀不进入绕过列表，让这些
+    域名进入 Mihomo 按规则顺序决定出口；其余后缀仍在 Windows 系统
+    代理入口直接绕过。手动补充域名是显式绕过意愿，保持不变。
+    """
     bypass = config.get('system_proxy_bypass') or {}
     domains = list(bypass.get('domains') or [])
     if bypass.get('include_cn_direct'):
         try:
-            domains.extend(_routing_rules.cn_direct_suffixes())
+            suffixes = _routing_rules.cn_direct_suffixes()
         except _routing_rules.RulePackError as exc:
             raise RoutingError(str(exc)) from exc
+        excluded = {
+            suffix.casefold()
+            for suffix in _cn_direct_excluded_suffixes(config)
+        }
+        domains.extend(
+            suffix for suffix in suffixes
+            if suffix.casefold() not in excluded)
     result = []
     seen = set()
     for domain in domains:
@@ -3377,11 +3424,16 @@ if ($service) {{
             system_proxy_domains = system_proxy_bypass_domains(config)
             if config['capture_mode'] == 'system-proxy':
                 manual_count = len(config['system_proxy_bypass']['domains'])
+                delegated_count = (
+                    len(_cn_direct_excluded_suffixes(config))
+                    if config['system_proxy_bypass']['include_cn_direct'] else 0)
                 self._log_best_effort(
                     f'[routing] Windows 系统代理绕过域名已合并：'
                     f'手动={manual_count}，规则包引用='
                     f'{"开启" if config["system_proxy_bypass"]["include_cn_direct"] else "关闭"}，'
-                    f'实际={len(system_proxy_domains)}')
+                    f'实际={len(system_proxy_domains)}'
+                    + (f'，{delegated_count} 个国内后缀被用户有序规则接管、'
+                       f'不绕过系统代理' if delegated_count else ''))
             self._native_service.ensure_installed()
             transaction = self._native_service.apply(
                 config_path, self._native_provider_files(config), runtime_mode,

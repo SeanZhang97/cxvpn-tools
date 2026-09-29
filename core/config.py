@@ -57,7 +57,7 @@ DEFAULT = {
     'vlm': {'base': '', 'key': '', 'model': ''},
     'codex_api': {'base_url': '', 'api_key': ''},
     'routing': {
-        'schema_version': 8,
+        'schema_version': 9,
         'enabled': False,
         'capture_mode': 'system-proxy',
         'traffic_mode': 'rule',

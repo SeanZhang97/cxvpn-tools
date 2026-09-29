@@ -47,7 +47,7 @@ class AggregateSelectionTests(unittest.TestCase):
         old['schema_version'] = 7
         old['proxy_strategy'] = 'fallback'
         normalized = routing.normalize_config(old)
-        self.assertEqual(normalized['schema_version'], 8)
+        self.assertEqual(normalized['schema_version'], 9)
         self.assertEqual(normalized['proxy_strategy'], 'fallback')
         self.assertEqual(normalized['aggregate_selection'], aggregate.default_selection())
 

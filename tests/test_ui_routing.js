@@ -51,7 +51,7 @@ for (const page of ['subscriptions', 'nodes', 'rules', 'connections', 'logs']) {
 }
 assert.match(source, /preview_routing/);
 assert.match(source, /apply_routing/);
-assert.match(source, /schema_version: 8/);
+assert.match(source, /schema_version: 9/);
 assert.match(html, /id="routing-dns-mode"/);
 assert.match(html, /id="routing-dns-advanced"/);
 assert.match(html, /阿里 DNS \+ DNSPod DoH/);

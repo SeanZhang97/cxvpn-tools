@@ -964,6 +964,30 @@
     return Array.isArray(detail?.system_proxy_domains) ? detail.system_proxy_domains : [];
   }
 
+  function userRuleCoversSuffix(rule, suffix) {
+    const domain = String(rule?.domain || '').toLowerCase();
+    const value = String(suffix || '').toLowerCase();
+    if (!domain || !value) return false;
+    if (rule?.match_type === 'exact') {
+      return domain === value || domain.endsWith('.' + value);
+    }
+    if (rule?.match_type === 'suffix') {
+      return domain === value || domain.endsWith('.' + value) || value.endsWith('.' + domain);
+    }
+    return domain.split('*').some(segment => {
+      const anchor = segment.replace(/^\.+|\.+$/g, '');
+      return anchor && (anchor === value || anchor.endsWith('.' + value) || value.endsWith('.' + anchor));
+    });
+  }
+
+  function cnBypassDelegatedSuffixes() {
+    if (routingConfig?.traffic_mode === 'global') return [];
+    const active = (routingConfig?.rules || []).filter(rule => rule.enabled !== false);
+    if (!active.length) return [];
+    return cnSystemProxyDomains().filter(suffix =>
+      active.some(rule => userRuleCoversSuffix(rule, suffix)));
+  }
+
   function renderCnBypassSummary() {
     const target = byId('routing-bypass-cn-direct-summary');
     if (!target) return;
@@ -976,8 +1000,10 @@
     const referenced = routingConfig?.system_proxy_bypass?.include_cn_direct
       ? cnSystemProxyDomains() : [];
     const merged = new Set([...manual, ...referenced].map(item => item.toLocaleLowerCase()));
+    const delegated = new Set(cnBypassDelegatedSuffixes().map(item => item.toLocaleLowerCase()));
+    const effective = [...merged].filter(item => !delegated.has(item));
     target.textContent = routingConfig?.system_proxy_bypass?.include_cn_direct
-      ? `已知的 ${merged.size} 个域名后缀直接绕过系统代理；其余域名解析为中国 IP 时也会直连。`
+      ? `已知的 ${merged.size} 个域名后缀中 ${effective.size} 个直接绕过系统代理${delegated.size ? `，${delegated.size} 个被有序域名规则接管、进入 Mihomo 按规则出口` : ''}；其余域名解析为中国 IP 时也会直连。`
       : `启用后引用 cn-direct-v1 的 ${cnSystemProxyDomains().length} 个域名后缀，并按中国 IP 兜底。`;
   }
 
@@ -2699,7 +2725,7 @@
   function collectConfig() {
     return {
       ...routingConfig,
-      schema_version: 8,
+      schema_version: 9,
       enabled: byId('routing-enabled').checked,
       capture_mode: byId('routing-capture-mode').value,
       traffic_mode: byId('routing-traffic-mode').value,

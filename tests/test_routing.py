@@ -1316,7 +1316,7 @@ class RoutingConfigTests(unittest.TestCase):
 
     def test_system_proxy_mode_ignores_enabled_foreign_proxy(self):
         config = routing.normalize_config({
-            **self.base_config(), 'schema_version': 8,
+            **self.base_config(), 'schema_version': 9,
             'capture_mode': 'system-proxy'})
 
         with mock.patch.object(

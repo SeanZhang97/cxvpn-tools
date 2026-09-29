@@ -33,7 +33,7 @@ class RoutingSchemaTests(unittest.TestCase):
 
     def test_new_install_defaults_to_system_proxy(self):
         value = routing.default_config()
-        self.assertEqual(value['schema_version'], 8)
+        self.assertEqual(value['schema_version'], 9)
         self.assertEqual(value['capture_mode'], 'system-proxy')
         self.assertEqual(value['builtin_rule_pack'], 'cn-direct-v1')
         self.assertEqual(value['dns_mode'], 'simple')
@@ -46,7 +46,7 @@ class RoutingSchemaTests(unittest.TestCase):
         })
         self.assertEqual(value['capture_mode'], 'tun')
         self.assertEqual(value['builtin_rule_pack'], 'off')
-        self.assertEqual(value['schema_version'], 8)
+        self.assertEqual(value['schema_version'], 9)
         self.assertEqual(value['dns_mode'], 'advanced')
 
     def test_config_load_migrates_legacy_without_changing_path(self):
@@ -333,6 +333,120 @@ class RoutingSchemaTests(unittest.TestCase):
                 'GEOIP,CN,PHYSICAL',
                 'MATCH,PHYSICAL',
             ])
+
+    def test_user_ordered_rules_take_priority_over_cn_bypass(self):
+        """用户有序规则指定的出口优先于“国内域名不经过系统代理”。"""
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'physical_interface': 'Ethernet',
+            'builtin_rule_pack': 'cn-direct-v1',
+            'rules': [{
+                'match_type': 'suffix', 'domain': 'chaoxing.com',
+                'outbound': 'vpn:中经云PPTP',
+            }],
+            'system_proxy_bypass': {'include_cn_direct': True},
+        })
+        with mock.patch.object(
+                routing_rules, 'cn_direct_suffixes',
+                return_value=['cn', 'chaoxing.com', 'baidu.com']):
+            self.assertEqual(routing.system_proxy_bypass_domains(config), [
+                'cn', 'baidu.com'])
+            explained = routing.explain_domain(config, 'cxapi.chaoxing.com')
+            self.assertEqual(explained['source'], 'user')
+            self.assertEqual(explained['outbound'], 'vpn:中经云PPTP')
+            self.assertEqual(
+                routing.explain_domain(config, 'www.baidu.com')['source'],
+                'bypass')
+            rules = routing.build_mihomo_config(config, [])['rules']
+            self.assertIn('DOMAIN-SUFFIX,chaoxing.com,VPN-1', rules)
+            self.assertLess(
+                rules.index('DOMAIN-SUFFIX,chaoxing.com,VPN-1'),
+                rules.index('GEOIP,CN,PHYSICAL'))
+
+    def test_cn_bypass_exclusion_covers_exact_wildcard_and_keeps_manual(self):
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'physical_interface': 'Ethernet',
+            'builtin_rule_pack': 'off',
+            'rules': [{
+                'match_type': 'exact', 'domain': 'cxapi.chaoxing.com',
+                'outbound': 'vpn:中经云PPTP',
+            }, {
+                'match_type': 'wildcard', 'domain': '*.mooc1.chaoxing.com',
+                'outbound': 'block',
+            }],
+            'system_proxy_bypass': {
+                'include_cn_direct': True,
+                'domains': ['baidu.com'],
+            },
+        })
+        with mock.patch.object(
+                routing_rules, 'cn_direct_suffixes',
+                return_value=['chaoxing.com', 'baidu.com', 'deepseek.com']):
+            self.assertEqual(routing.system_proxy_bypass_domains(config), [
+                'baidu.com', 'deepseek.com'])
+            self.assertEqual(
+                routing.explain_domain(config, 'cxapi.chaoxing.com')['source'],
+                'user')
+            self.assertEqual(
+                routing.explain_domain(
+                    config, 'video.mooc1.chaoxing.com')['source'], 'user')
+            self.assertEqual(
+                routing.explain_domain(config, 'www.baidu.com')['source'],
+                'bypass')
+
+    def test_cn_bypass_exclusion_applies_to_parent_suffix_rules(self):
+        """用户后缀规则覆盖更大范围时同样排除绕过，反之不扩散。"""
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'rules': [{
+                'match_type': 'suffix', 'domain': 'com',
+                'outbound': 'block',
+            }],
+            'system_proxy_bypass': {'include_cn_direct': True},
+        })
+        with mock.patch.object(
+                routing_rules, 'cn_direct_suffixes',
+                return_value=['chaoxing.com']):
+            # suffix chaoxing.com 会命中 com 后缀规则的域名范围之外，
+            # 但 com 规则覆盖 chaoxing.com 及其子域，必须排除绕过。
+            self.assertEqual(
+                routing.explain_domain(
+                    config, 'cxapi.chaoxing.com')['source'], 'user')
+
+    def test_cn_bypass_exclusion_skipped_in_global_mode(self):
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'traffic_mode': 'global',
+            'rules': [{
+                'match_type': 'suffix', 'domain': 'chaoxing.com',
+                'outbound': 'vpn:中经云PPTP',
+            }],
+            'system_proxy_bypass': {'include_cn_direct': True},
+        })
+        with mock.patch.object(
+                routing_rules, 'cn_direct_suffixes',
+                return_value=['chaoxing.com']):
+            self.assertEqual(
+                routing.system_proxy_bypass_domains(config), ['chaoxing.com'])
+            self.assertEqual(
+                routing.explain_domain(
+                    config, 'cxapi.chaoxing.com')['source'], 'bypass')
+
+    def test_cn_bypass_exclusion_respects_disabled_rules(self):
+        config = routing.normalize_config({
+            **routing.default_config(),
+            'rules': [{
+                'match_type': 'suffix', 'domain': 'chaoxing.com',
+                'outbound': 'vpn:中经云PPTP', 'enabled': False,
+            }],
+            'system_proxy_bypass': {'include_cn_direct': True},
+        })
+        with mock.patch.object(
+                routing_rules, 'cn_direct_suffixes',
+                return_value=['chaoxing.com']):
+            self.assertEqual(
+                routing.system_proxy_bypass_domains(config), ['chaoxing.com'])
 
     def test_rejects_path_like_bypass_process(self):
         with self.assertRaisesRegex(routing.RoutingError, '进程名称无效'):
