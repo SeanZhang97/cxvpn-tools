@@ -38,7 +38,7 @@ class VpnRouteCapabilityTests(unittest.TestCase):
             with self.assertRaisesRegex(routing.RoutingError, '不支持 VPN'):
                 manager._wait_native_ready(self.config())
 
-    def test_rule_explanation_keeps_vpn_rule_and_reports_physical_fallback(self):
+    def test_rule_explanation_keeps_vpn_rule_and_reports_connection_state(self):
         cfg = self.config()
         name = cfg['rules'][0]['outbound'][4:]
         result = routing.explain_domain(cfg, 'mooc.chaoxing.com', [{'name': name, 'status': 'Disconnected'}])
@@ -48,41 +48,46 @@ class VpnRouteCapabilityTests(unittest.TestCase):
         active = routing.explain_domain(cfg, 'mooc.chaoxing.com', [{'name': name, 'status': 'Connected'}])
         self.assertIn('VPN 已连接', active['detail'])
 
-    def test_fallback_is_opt_in_per_rule_and_survives_utf8_roundtrip(self):
+    def test_disconnected_vpn_resolves_rule_to_physical_by_default(self):
         config = self.config()
-        self.assertFalse(config['rules'][0]['physical_fallback'])
-        config['rules'].append({
-            'match_type': 'exact', 'domain': 'public.example.com',
-            'outbound': config['rules'][0]['outbound'], 'physical_fallback': True,
-        })
-        config = routing.normalize_config(json.loads(json.dumps(config, ensure_ascii=False)))
-        generated = routing.build_mihomo_config(config, [])
-        proxies = {p['name']: p for p in generated['proxies']}
-        self.assertNotIn('cxvpn-physical-fallback', proxies['VPN-1'])
-        self.assertNotIn('cxvpn-physical-fallback', proxies['PHYSICAL'])
-        self.assertTrue(proxies['VPN-1-FALLBACK']['cxvpn-managed-route'])
-        self.assertTrue(proxies['VPN-1-FALLBACK']['cxvpn-physical-fallback'])
-        self.assertEqual(proxies['VPN-1-FALLBACK']['interface-name'],
-                         config['rules'][0]['outbound'][4:])
+        name = config['rules'][0]['outbound'][4:]
+        for vpns in ([{'name': name, 'status': 'Disconnected'}], [],
+                      [{'name': name, 'status': 'Connecting'}]):
+            with self.subTest(vpns=vpns):
+                generated = routing.build_mihomo_config(config, vpns)
+                self.assertIn('DOMAIN-SUFFIX,chaoxing.com,PHYSICAL', generated['rules'])
+                self.assertNotIn('DOMAIN-SUFFIX,chaoxing.com,VPN-1', generated['rules'])
+                self.assertFalse(any(p.get('cxvpn-physical-fallback') for p in generated['proxies']))
+        generated = routing.build_mihomo_config(
+            config, [{'name': name, 'status': 'Connected'}])
         self.assertIn('DOMAIN-SUFFIX,chaoxing.com,VPN-1', generated['rules'])
-        self.assertIn('DOMAIN,public.example.com,VPN-1-FALLBACK', generated['rules'])
-        for options in ({'standby': True}, {}):
-            if not options:
-                config['traffic_mode'] = 'global'
-            inactive = routing.build_mihomo_config(config, [], **options)
-            self.assertFalse(any(p.get('cxvpn-physical-fallback') for p in inactive['proxies']))
+        self.assertNotIn('DOMAIN-SUFFIX,chaoxing.com,PHYSICAL', generated['rules'])
+        # 组合字符与 emoji 出口经 JSON 序列化往返后仍生成同样的 VPN 规则。
+        roundtrip = routing.normalize_config(json.loads(
+            json.dumps(config, ensure_ascii=False)))
+        generated = routing.build_mihomo_config(
+            roundtrip, [{'name': name, 'status': 'Connected'}])
+        self.assertIn('DOMAIN-SUFFIX,chaoxing.com,VPN-1', generated['rules'])
 
-    def test_disabled_and_non_vpn_rules_cannot_authorize_fallback(self):
-        cfg = self.config()
-        cfg['rules'][0].update(physical_fallback=True, enabled=False)
-        self.assertFalse(any(p.get('cxvpn-physical-fallback') for p in
-                             routing.build_mihomo_config(cfg, [])['proxies']))
-        cfg['rules'][0].update(outbound='physical', enabled=True)
-        self.assertFalse(routing.normalize_config(cfg)['rules'][0]['physical_fallback'])
-        for value in ('false', 1, None):
-            cfg['rules'][0]['physical_fallback'] = value
-            with self.subTest(value=value), self.assertRaises(routing.RoutingError):
-                routing.normalize_config(cfg)
+    def test_legacy_physical_fallback_field_is_stripped_by_normalize(self):
+        for value in (True, False, 1, None, 'false'):
+            with self.subTest(value=value):
+                cfg = self.config()
+                cfg['rules'][0]['physical_fallback'] = value
+                normalized = routing.normalize_config(
+                    json.loads(json.dumps(cfg, ensure_ascii=False)))
+                self.assertNotIn('physical_fallback', normalized['rules'][0])
+                self.assertEqual(normalized['rules'][0]['outbound'],
+                                 self.config()['rules'][0]['outbound'])
+
+    def test_vpn_connection_signature_limits_to_requested_names(self):
+        rows = [{'name': 'A', 'status': 'Connected'},
+                {'name': 'B', 'status': 'Disconnected'}]
+        self.assertEqual(routing._vpn_connection_signature(rows),
+                         {'A': True, 'B': False})
+        self.assertEqual(routing._vpn_connection_signature(rows, ['B', 'C']),
+                         {'B': False, 'C': False})
+        self.assertEqual(routing._vpn_connection_signature(None, ['A']), {'A': False})
 
     def test_authorization_entry_uses_physical_before_broad_vpn_rule(self):
         for mode in ('rule', 'global'):

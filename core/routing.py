@@ -703,16 +703,12 @@ def normalize_config(value):
         if key in seen:
             raise RoutingError(f'存在重复域名规则：{domain}')
         seen.add(key)
-        fallback = rule.get('physical_fallback', False)
-        if not isinstance(fallback, bool):
-            raise RoutingError(f'第 {index + 1} 条规则的物理回退开关无效')
         normalized_rules.append({
             'id': str(rule.get('id') or f'rule-{index + 1}'),
             'enabled': enabled,
             'match_type': match_type,
             'domain': domain,
             'outbound': outbound,
-            'physical_fallback': fallback and outbound.startswith('vpn:'),
         })
     result['rules'] = normalized_rules
     enabled_provider_ids = {
@@ -881,6 +877,17 @@ def _target_vpns(config):
     values = [config.get('default_outbound', '')]
     values.extend(rule['outbound'] for rule in _active_rules(config))
     return sorted({value[4:] for value in values if value.startswith('vpn:')})
+
+
+def _vpn_connection_signature(vpns, names=None):
+    """提取 VPN 连接状态签名；names 限定关注名单，未登记的名称按未连接处理。"""
+    signature = {
+        str(row.get('name') or ''): row.get('status') == 'Connected'
+        for row in (vpns or [])
+    }
+    if names is None:
+        return signature
+    return {name: signature.get(name, False) for name in names}
 
 
 def _uses_proxy(config):
@@ -1193,18 +1200,12 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
             'interface-name': name,
             'cxvpn-managed-route': True,
         })
-    fallback_rules = {
-        (rule['match_type'], rule['domain'], rule['outbound'])
-        for rule in _active_rules(config)
-        if rule.get('physical_fallback') and rule['outbound'].startswith('vpn:')
-    } if config.get('traffic_mode') != 'global' and not standby else set()
-    for name in targets:
-        if any(outbound == f'vpn:{name}' for _, _, outbound in fallback_rules):
-            proxies.append({
-                'name': proxy_names[name] + '-FALLBACK', 'type': 'direct', 'udp': True,
-                'interface-name': name, 'cxvpn-managed-route': True,
-                'cxvpn-physical-fallback': True,
-            })
+    # VPN 状态前置：未连接的 VPN 出口默认解析为物理直连，状态翻转由
+    # RoutingVpnWorker 监控并热重载，不再依赖逐请求回退。
+    connected_vpns = {
+        name for name, connected in _vpn_connection_signature(vpns).items()
+        if connected
+    }
 
     enabled_providers = [
         item for item in config.get('proxy_providers', []) if item['enabled']]
@@ -1222,6 +1223,8 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
             return provider_groups[value[6:]]
         if value == 'block':
             return 'REJECT'
+        if value[4:] not in connected_vpns:
+            return 'PHYSICAL'
         return proxy_names[value[4:]]
 
     dns_source = config if config.get('dns_mode') == 'advanced' else default_config()
@@ -1361,12 +1364,7 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
             if parts[0] == 'MATCH':
                 parts[1] = target_name(parts[1])
             elif len(parts) >= 3 and parts[2] != 'PHYSICAL':
-                kind = {'DOMAIN': 'exact', 'DOMAIN-SUFFIX': 'suffix',
-                        'DOMAIN-WILDCARD': 'wildcard'}.get(parts[0])
-                fallback = (kind, parts[1], parts[2]) in fallback_rules
                 parts[2] = target_name(parts[2])
-                if fallback:
-                    parts[2] += '-FALLBACK'
             rules.append(','.join(parts))
     generated['rules'] = rules
     return generated
@@ -1678,6 +1676,7 @@ class RoutingManager:
         self._native_service = _routing_service.RoutingServiceClient()
         self._runtime_signature = ''
         self._runtime_sha256 = ''
+        self._runtime_vpns = None
         self._environment = EnvironmentCache(
             lambda: vpn_os.list_vpns(), lambda: list_physical_interfaces(),
             lambda: list_tun_conflicts(), self._log_best_effort)
@@ -3728,14 +3727,16 @@ if ($service) {{
             'status': self.status(config),
         }
 
-    def apply(self, value, defer_standby=False, allow_fast_toggle=False, expected_interface=None):
+    def apply(self, value, defer_standby=False, allow_fast_toggle=False,
+              expected_interface=None, expected_vpns=None):
         config = normalize_config(value)
         self.log(
             f'[routing] 收到分流应用请求：enabled={config["enabled"]}，'
             f'mode={config["traffic_mode"]}，规则 {len(config["rules"])} 条')
         service_state = self._service_state()
+        # VPN 状态基线复核必须重新生成配置；快路径只切系统代理开关。
         can_fast_toggle = bool(
-            allow_fast_toggle and
+            allow_fast_toggle and expected_vpns is None and
             self._can_fast_toggle_system_proxy(config, service_state) and
             (not config['enabled'] or self.runtime_matches(config, service_state)))
         if can_fast_toggle and config['enabled'] and not config['physical_interface']:
@@ -3837,6 +3838,11 @@ if ($service) {{
         warnings = validate_environment(resolved, vpns, interfaces, conflicts)
         if expected_interface is not None and resolved['physical_interface'] != expected_interface:
             raise RoutingError('物理网络再次变化，本次自动切换已取消，保留现有运行态')
+        if expected_vpns is not None:
+            expected_state = {str(name): bool(value)
+                              for name, value in expected_vpns.items()}
+            if _vpn_connection_signature(vpns, _target_vpns(config)) != expected_state:
+                raise RoutingError('VPN 连接状态再次变化，本次自动切换已取消，保留现有运行态')
         excludes, resolve_warnings = _resolve_vpn_server_routes(
             vpns, set(_target_vpns(config)))
         warnings.extend(resolve_warnings)
@@ -3854,6 +3860,8 @@ if ($service) {{
         self._install(
             config_path, config,
             fast_toggle_ready=config['capture_mode'] == 'system-proxy')
+        # 记录生成本次运行态时的 VPN 连接状态，供 RoutingVpnWorker 对账。
+        self._runtime_vpns = _vpn_connection_signature(vpns)
         self.log(f'[routing] 统一分流已启动，规则 {len(config["rules"])} 条')
         return {
             'ok': True,

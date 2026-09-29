@@ -159,6 +159,7 @@ class ProxyCoreConfirmationTests(unittest.TestCase):
         api.worker.is_alive.return_value = False
         api.routing_updates = mock.Mock()
         api.routing_network = mock.Mock()
+        api.routing_vpn = mock.Mock()
         api._start_routing_standby_reconcile = mock.Mock()
         with mock.patch('api.proxy_guard.startup_check', return_value='127.0.0.1:17890'):
             api.start()

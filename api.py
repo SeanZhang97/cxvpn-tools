@@ -27,6 +27,7 @@ from core.routing_aggregate import AggregateSelectionApi
 from core.routing_tasks import operation_scope
 from core.routing_updates import RoutingUpdateWorker
 from core.routing_network import RoutingNetworkWorker
+from core.routing_vpn import RoutingVpnWorker
 from core.ui_state_stream import UiStateStream
 from core.two_factor_api import TwoFactorApi
 from core.worker import Worker
@@ -201,6 +202,11 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
             lambda value, target: self._apply_routing_locked(
                 value, '自动物理出口切换', expected_interface=target), self.log)
         self.routing_network._serializable = False
+        self.routing_vpn = RoutingVpnWorker(
+            self._cfg_get, self.routing, self._routing_lock,
+            lambda value, expected: self._apply_routing_locked(
+                value, 'VPN 状态自动切换', expected_vpns=expected), self.log)
+        self.routing_vpn._serializable = False
         self.routing_telemetry = MihomoTelemetryRelay(
             self._cfg_get, self.routing, self.log, self._poke_ui_state)
         self.routing_telemetry._serializable = False
@@ -297,6 +303,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
             self.worker.start()
         self.routing_updates.start()
         self.routing_network.start()
+        self.routing_vpn.start()
         state_stream = getattr(self, '_ui_state_stream', None)
         if state_stream is not None:
             state_stream.start()
@@ -583,6 +590,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         self._ui_state_stream.stop()
         self.routing_updates.stop()
         self.routing_network.stop()
+        self.routing_vpn.stop()
         self.worker.stop()
         # 正常退出即视为优雅结束，清除脏标记；仅系统关机路径会在此前
         # 由 _os_shutdown_cleanup 先清扫代理（用户点击退出的场景不碰代理）。
@@ -1507,7 +1515,8 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         right.pop('enabled', None)
         return left == right
 
-    def _apply_routing_locked(self, value, source, replacement_cfg=None, expected_interface=None):
+    def _apply_routing_locked(self, value, source, replacement_cfg=None,
+                               expected_interface=None, expected_vpns=None):
         """在持有 _routing_lock 时提交路由和磁盘配置，并在保存失败时恢复原分流状态。"""
         self._routing_changed()
         previous_cfg = self._cfg_get()
@@ -1522,6 +1531,8 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
             apply_options = {'defer_standby': True, 'allow_fast_toggle': allow_fast_toggle}
             if expected_interface is not None:
                 apply_options.update(allow_fast_toggle=False, expected_interface=expected_interface)
+            if expected_vpns is not None:
+                apply_options.update(allow_fast_toggle=False, expected_vpns=expected_vpns)
             result = self.routing.apply(requested, **apply_options)
             standby_pending = bool(result.pop('standby_pending', False))
             save_exc = None

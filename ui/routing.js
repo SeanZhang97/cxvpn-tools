@@ -2579,8 +2579,7 @@
       outbound.disabled = busy;
       outbound.onchange = () => {
         rule.outbound = outbound.value;
-        if (!outbound.value.startsWith('vpn:')) rule.physical_fallback = false;
-        syncDirty(); renderRules();
+        syncDirty();
       };
 
       const actions = document.createElement('div');
@@ -2611,21 +2610,6 @@
       };
       actions.append(enabled, up, down, remove);
       row.append(order, match, domain, outbound, actions);
-      if (String(rule.outbound || '').startsWith('vpn:')) {
-        const fallback = document.createElement('label');
-        fallback.className = 'routing-filter-check routing-rule-fallback';
-        fallback.title = '仅在公网目标的 TCP 连接建立失败时重试；内网地址、UDP 和已发送的数据不回退。';
-        const input = document.createElement('input'); input.type = 'checkbox';
-        input.checked = rule.physical_fallback === true;
-        input.disabled = busy || rule.enabled === false;
-        input.setAttribute('aria-label', `第 ${index + 1} 条规则 VPN 连接失败时尝试物理网络`);
-        input.onchange = () => { rule.physical_fallback = input.checked; syncDirty(); };
-        const mark = document.createElement('i'); mark.setAttribute('aria-hidden', 'true');
-        mark.innerHTML = '<svg viewBox="0 0 24 24"><path d="m7.5 12.5 3 3 6.5-7"/></svg>';
-        const label = document.createElement('span'); label.textContent = 'VPN 连接失败时尝试物理网络';
-        fallback.append(input, mark, label);
-        row.append(fallback);
-      }
       root.append(row);
       enhanceRoutingSelect(match, { compact: true });
       enhanceRoutingSelect(outbound, { compact: true });

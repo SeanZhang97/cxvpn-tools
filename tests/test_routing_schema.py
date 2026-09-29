@@ -360,7 +360,10 @@ class RoutingSchemaTests(unittest.TestCase):
             self.assertEqual(
                 routing.explain_domain(config, 'www.baidu.com')['source'],
                 'bypass')
-            rules = routing.build_mihomo_config(config, [])['rules']
+            # VPN 连接状态下用户规则保持 VPN 出口，验证其优先于 cn bypass；
+            # 未连接时解析为 PHYSICAL 的默认行为由 test_vpn_routes_config 覆盖。
+            rules = routing.build_mihomo_config(
+                config, [{'name': '中经云PPTP', 'status': 'Connected'}])['rules']
             self.assertIn('DOMAIN-SUFFIX,chaoxing.com,VPN-1', rules)
             self.assertLess(
                 rules.index('DOMAIN-SUFFIX,chaoxing.com,VPN-1'),

@@ -360,74 +360,53 @@ const ruleApi = ruleContext.window.ruleTest;
 const vpnOutbound = 'vpn:中经云 e\u0301 🇯🇵';
 const makeRule = (id, values = {}) => ({ id, domain: `${id}.example`, outbound: vpnOutbound, ...values });
 const rows = () => ruleElement('routing-rules').children;
-const fallbackInput = row => row.querySelectorAll('.routing-rule-fallback')[0]?.children[0];
 const rowOutbound = row => row.querySelectorAll('.routing-outbound')[0];
 
 ruleApi.initialize([
-  makeRule('default'), makeRule('allowed', { physical_fallback: true }),
+  makeRule('default'), makeRule('legacy', { physical_fallback: true }),
   makeRule('disabled', { enabled: false, physical_fallback: true }),
   makeRule('physical', { outbound: 'physical' }), makeRule('block', { outbound: 'block' }),
   makeRule('proxy', { outbound: 'proxy:alpha' }),
 ]);
-assert.equal(fallbackInput(rows()[0]).checked, false, 'existing VPN rules must not opt into physical fallback');
-assert.equal(fallbackInput(rows()[1]).checked, true);
-assert.equal(fallbackInput(rows()[2]).checked, true);
-assert.equal(fallbackInput(rows()[2]).disabled, true, 'disabled rule must disable its fallback control');
-for (const row of rows().slice(3)) assert.equal(fallbackInput(row), undefined);
 for (const row of rows()) {
+  assert.equal(row.querySelectorAll('.routing-rule-fallback').length, 0,
+    'VPN connection state is a default rule; no per-row fallback control may render');
   assert.equal(row.querySelectorAll('select').length, 2);
   assert.ok(row.querySelectorAll('select').every(select => select.enhanced),
-    'rendering the fallback control must preserve custom select coverage');
+    'rendering rule rows must preserve custom select coverage');
 }
-const checked = fallbackInput(rows()[0]);
-assert.match(checked.attributes['aria-label'], /第 1 条规则.*物理网络/);
-const sharedCheckbox = rows()[0].querySelectorAll('.routing-rule-fallback')[0];
-assert.ok(sharedCheckbox.className.includes('routing-filter-check'));
-assert.equal(sharedCheckbox.children[1].attributes['aria-hidden'], 'true');
-assert.match(sharedCheckbox.children[1].innerHTML, /<svg/);
-checked.checked = true;
-checked.onchange();
+let outbound = rowOutbound(rows()[0]);
+outbound.value = 'physical';
+outbound.onchange();
 assert.equal(ruleContext.window.ruleDirtyCount, 1);
 let collected = ruleApi.collectConfig();
 assert.equal(collected.schema_version, 9);
-assert.equal(collected.rules[0].physical_fallback, true);
-assert.equal(collected.rules[0].outbound, vpnOutbound, 'Unicode VPN identity must survive collection');
-checked.checked = false;
-checked.onchange();
-assert.equal(ruleApi.collectConfig().rules[0].physical_fallback, false);
+assert.equal(collected.rules[0].outbound, 'physical');
+assert.equal(collected.rules[0].physical_fallback, undefined,
+  'switching outbound must not create fallback state');
+assert.equal(collected.rules[1].physical_fallback, true,
+  'legacy field passes through for the backend normalizer to strip');
+outbound = rowOutbound(rows()[0]);
+outbound.value = vpnOutbound;
+outbound.onchange();
+assert.equal(ruleApi.collectConfig().rules[0].outbound, vpnOutbound,
+  'Unicode VPN identity must survive collection');
 
 for (const target of ['physical', 'block', 'proxy:alpha']) {
-  ruleApi.initialize([makeRule('allowed', { physical_fallback: true })]);
-  let outbound = rowOutbound(rows()[0]);
+  ruleApi.initialize([makeRule('legacy', { physical_fallback: true })]);
+  outbound = rowOutbound(rows()[0]);
   outbound.value = target;
   outbound.onchange();
-  assert.equal(fallbackInput(rows()[0]), undefined);
-  assert.equal(ruleApi.collectConfig().rules[0].physical_fallback, false,
-    'moving a rule away from VPN must clear its physical fallback permission');
-  outbound = rowOutbound(rows()[0]);
-  outbound.value = vpnOutbound;
-  outbound.onchange();
-  assert.equal(fallbackInput(rows()[0]).checked, false,
-    'returning to VPN must not resurrect an earlier fallback permission');
+  assert.equal(ruleApi.collectConfig().rules[0].outbound, target);
+  assert.equal(rowOutbound(rows()[0]).value, target);
 }
-ruleApi.initialize([makeRule('disabled', { enabled: false, physical_fallback: true })]);
+ruleApi.initialize([makeRule('disabled', { enabled: false })]);
 const enabled = rows()[0].querySelectorAll('.routing-rule-switch')[0].children[0];
 enabled.checked = true;
 enabled.onchange();
-assert.equal(fallbackInput(rows()[0]).disabled, false);
-assert.equal(fallbackInput(rows()[0]).checked, true, 'temporarily disabling a rule must preserve its explicit setting');
-ruleApi.initialize([makeRule('busy', { physical_fallback: true })], true);
-assert.equal(fallbackInput(rows()[0]).disabled, true);
+assert.equal(ruleApi.collectConfig().rules[0].enabled, true);
+ruleApi.initialize([makeRule('busy')], true);
 assert.ok(rows()[0].querySelectorAll('select').every(select => select.disabled));
-assert.match(rulesCss, /\.routing-rule-fallback\s*\{[^}]*grid-column:\s*2\s*\/\s*-1/s);
-assert.match(rulesCss, /\.routing-rule-fallback\s*\{[^}]*white-space:\s*normal/s);
-assert.match(rulesCss, /\.routing-rule-fallback input\s*\{[^}]*padding:\s*0/s);
 assert.match(css, /\.routing-filter-check input:focus-visible \+ i/);
 assert.match(css, /\.routing-filter-check input:disabled \+ i/);
-const definedVariables = new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map(match => match[1]));
-const fallbackStyles = [...rulesCss.matchAll(/[^{}]*\.routing-rule-fallback[^{}]*\{([^}]*)\}/g)]
-  .map(match => match[1]).join('\n');
-for (const match of fallbackStyles.matchAll(/var\((--[\w-]+)\)/g)) {
-  assert.ok(definedVariables.has(match[1]), `fallback style variable ${match[1]} must be defined`);
-}
-console.log('routing VPN fallback opt-in, availability, persistence and shared controls: ok');
+console.log('routing rule rows, outbound switching and shared controls: ok');
