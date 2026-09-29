@@ -42,13 +42,13 @@ def _no_forbidden_words(text):
 class CheckLatestTests(unittest.TestCase):
     def test_payload_extracts_installer_and_sha256(self):
         payload = {
-            'tag_name': 'v1.3.0',
+            'tag_name': 'v1.4.0',
             'html_url': 'https://example.invalid/notes',
             'assets': [{
-                'name': 'CXVPNTools-1.3.0-setup.exe',
+                'name': 'CXVPNTools-1.4.0-setup.exe',
                 'browser_download_url':
                     'https://github.com/SeanZhang97/cxvpn-tools/'
-                    'releases/download/v1.3.0/CXVPNTools-1.3.0-setup.exe',
+                    'releases/download/v1.4.0/CXVPNTools-1.4.0-setup.exe',
                 'digest': 'sha256:' + 'a' * 64,
             }],
             'body': '更新说明',
@@ -59,7 +59,7 @@ class CheckLatestTests(unittest.TestCase):
                 mock.patch('json.loads', return_value=payload):
             result = app_update.check_latest()
         self.assertTrue(result['ok'])
-        self.assertEqual(result['latest_version'], '1.3.0')
+        self.assertEqual(result['latest_version'], '1.4.0')
         self.assertTrue(result['newer'])
         self.assertTrue(result['installer_url'].endswith('.exe'))
         self.assertEqual(result['installer_sha256'], 'a' * 64)
