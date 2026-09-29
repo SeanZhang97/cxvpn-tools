@@ -9,6 +9,9 @@ struct Mock {
     down: bool,
     state_error: bool,
     physical_down: bool,
+    physical_route_missing: bool,
+    create_calls: usize,
+    remove_calls: usize,
     next_luid: u64,
 }
 struct Fake(Arc<Mutex<Mock>>);
@@ -26,6 +29,7 @@ impl RouteOs for Fake {
     }
     fn best(&self, luid: u64, ip: IpAddr) -> AppResult<Option<Route>> {
         let s = self.0.lock().unwrap();
+        if luid == 1 && s.physical_route_missing { return Ok(None); }
         if let Some(r) = s.rows.values().filter(|r| r.ip == ip && (luid == 0 || r.luid == luid)).min_by_key(|r| r.metric) {
             return Ok(Some(r.clone()));
         }
@@ -36,12 +40,14 @@ impl RouteOs for Fake {
     fn matches(&self, route: &Route) -> AppResult<bool> { Ok(self.0.lock().unwrap().rows.get(&route.key()) == Some(route)) }
     fn create(&mut self, route: &Route) -> AppResult<bool> {
         let mut s = self.0.lock().unwrap();
+        s.create_calls += 1;
         if s.fail_create && route.luid != 1 { return Err("injected create failure".into()); }
         if s.rows.contains_key(&route.key()) { return Ok(false); }
         s.rows.insert(route.key(), route.clone()); Ok(true)
     }
     fn remove(&mut self, route: &Route) -> AppResult<()> {
         let mut s = self.0.lock().unwrap();
+        s.remove_calls += 1;
         if s.fail_delete && route.luid != 1 { return Err("injected delete failure".into()); }
         if s.rows.get(&route.key()) == Some(route) { s.rows.remove(&route.key()); }
         Ok(())
@@ -60,6 +66,20 @@ impl Fixture {
     }
     fn acquire(&mut self, id: &str, vpn: &str, ip: &str) -> AppResult<()> {
         self.state.acquire(id, vpn, ip.parse().unwrap(), Instant::now()+Duration::from_secs(2))
+    }
+    fn acquire_physical(&mut self, id: &str, vpn: &str, ip: &str) -> AppResult<()> {
+        self.state.acquire_physical(id, vpn, ip.parse().unwrap(), Instant::now()+Duration::from_secs(2))
+    }
+    fn allow_physical_fallback(&mut self) {
+        self.state.policy.fallback_vpns.insert("vpn".into());
+    }
+    fn assert_no_route_mutation(&self) {
+        let os = self.os.lock().unwrap();
+        assert_eq!(os.create_calls, 0);
+        assert_eq!(os.remove_calls, 0);
+        assert!(os.rows.is_empty());
+        assert!(self.state.entries.is_empty());
+        assert!(!self.state.journal.exists());
     }
 }
 impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.root); } }
@@ -226,6 +246,195 @@ fn configured_fake_ranges_are_never_installed_as_real_targets() {
     let mut f=Fixture::new();f.state.policy.fake_ranges=vec![("192.0.2.1".parse().unwrap(),24),("fd00:1::1".parse().unwrap(),64)];
     assert!(f.acquire("1","vpn","192.0.2.7").is_err());assert!(f.acquire("2","vpn","fd00:1::7").is_err());
     assert!(f.state.entries.is_empty());
+}
+
+#[test]
+fn physical_fallback_only_accepts_public_unicast_targets() {
+    for ip in ["1.1.1.1", "45.113.20.8", "100.63.255.255", "100.128.0.1",
+               "192.0.1.1", "198.20.0.1", "2001:200::1", "2001:4860::8888", "2606:4700::1111"] {
+        assert!(public_fallback_target(ip.parse().unwrap()), "public target rejected: {ip}");
+    }
+    for ip in ["0.0.0.0", "0.1.2.3", "10.1.2.3", "100.64.0.1", "100.127.255.254",
+               "127.0.0.1", "169.254.1.2", "172.16.0.1", "172.31.255.254", "192.168.1.1",
+               "192.0.0.9", "192.0.2.1", "192.88.99.1", "198.18.0.1", "198.19.255.254",
+               "198.51.100.1", "203.0.113.1", "224.0.0.1", "240.0.0.1", "255.255.255.255",
+               "::", "::1", "::ffff:1.1.1.1", "64:ff9b::101:101", "100::1", "2001::1",
+               "2001:1ff::1", "2001:db8::1", "2002::1", "3fff::1", "3fff:fff::1",
+               "fc00::1", "fd00::1", "fe80::1", "ff02::1"] {
+        assert!(!public_fallback_target(ip.parse().unwrap()), "special-use target accepted: {ip}");
+    }
+}
+
+#[test]
+fn physical_fallback_for_public_ipv4_and_ipv6_creates_only_a_lease() {
+    let mut f = Fixture::new();
+    f.allow_physical_fallback();
+    f.state.policy.physical = "以太网 e\u{301} \u{1f1e8}\u{1f1f3}".into();
+    // Explicit failure fallback must not rely on the VPN still reporting connected.
+    f.os.lock().unwrap().state_error = true;
+    for (id, ip) in [("1", "45.113.20.8"), ("2", "2606:4700::1111")] {
+        f.acquire_physical(id, "vpn", ip).unwrap();
+        assert_eq!(f.state.outbound(id).unwrap(), f.state.policy.physical);
+        let lease = f.state.leases.get(id).unwrap();
+        assert_eq!(lease.vpn, "vpn");
+        assert_eq!(lease.ip, ip.parse::<IpAddr>().unwrap());
+        assert!(lease.keys.is_empty());
+    }
+    f.assert_no_route_mutation();
+    f.state.release("1").unwrap();
+    f.state.release("2").unwrap();
+    f.state.sweep(true).unwrap();
+    assert!(f.state.leases.is_empty());
+    f.assert_no_route_mutation();
+}
+
+#[test]
+fn physical_fallback_does_not_change_existing_vpn_routes_or_references() {
+    let mut f = Fixture::new();
+    f.allow_physical_fallback();
+    f.acquire("1", "vpn", "45.113.20.8").unwrap();
+    let before_rows = f.os.lock().unwrap().rows.clone();
+    let before_journal = fs::read(&f.state.journal).unwrap();
+    let before_creates = f.os.lock().unwrap().create_calls;
+    f.acquire_physical("2", "vpn", "45.113.20.8").unwrap();
+    assert_eq!(f.state.outbound("1").unwrap(), "vpn");
+    assert_eq!(f.state.outbound("2").unwrap(), "physical");
+    assert!(f.state.entries.values().all(|entry| entry.refs == 1));
+    f.state.release("2").unwrap();
+    f.state.sweep(true).unwrap();
+    assert_eq!(f.os.lock().unwrap().rows, before_rows);
+    assert_eq!(f.os.lock().unwrap().create_calls, before_creates);
+    assert_eq!(f.os.lock().unwrap().remove_calls, 0);
+    assert_eq!(fs::read(&f.state.journal).unwrap(), before_journal);
+    assert!(f.state.entries.values().all(|entry| entry.refs == 1));
+}
+
+#[test]
+fn physical_fallback_rejects_private_special_and_configured_fake_targets() {
+    let mut f = Fixture::new();
+    f.allow_physical_fallback();
+    f.state.policy.fake_ranges = vec![("1.1.1.0".parse().unwrap(), 24),
+                                     ("2606:4700::".parse().unwrap(), 32)];
+    for ip in ["10.1.2.3", "172.16.1.1", "192.168.1.1", "100.64.0.1", "203.0.113.1",
+               "198.18.0.1", "127.0.0.1", "fd00::1", "fe80::1", "2001:db8::1",
+               "1.1.1.1", "2606:4700::1111"] {
+        assert!(f.acquire_physical("1", "vpn", ip).is_err(), "target accepted: {ip}");
+    }
+    assert!(f.state.leases.is_empty());
+    f.assert_no_route_mutation();
+}
+
+#[test]
+fn physical_fallback_requires_explicit_authorization_for_the_selected_vpn() {
+    let mut f = Fixture::new();
+    assert!(f.acquire_physical("1", "vpn", "1.1.1.1").is_err());
+    f.allow_physical_fallback();
+    for vpn in ["other", "unknown", "", "VPN"] {
+        assert!(f.acquire_physical("1", vpn, "1.1.1.1").is_err(), "VPN accepted: {vpn}");
+    }
+    assert!(f.state.leases.is_empty());
+    f.assert_no_route_mutation();
+}
+
+#[test]
+fn physical_fallback_requires_an_available_physical_interface_and_route() {
+    for failure in ["interface_down", "route_missing", "empty_interface"] {
+        let mut f = Fixture::new();
+        f.allow_physical_fallback();
+        match failure {
+            "interface_down" => f.os.lock().unwrap().physical_down = true,
+            "route_missing" => f.os.lock().unwrap().physical_route_missing = true,
+            _ => f.state.policy.physical.clear(),
+        }
+        assert!(f.acquire_physical("1", "vpn", "1.1.1.1").is_err(), "failure ignored: {failure}");
+        assert!(f.state.leases.is_empty());
+        f.assert_no_route_mutation();
+    }
+}
+
+#[test]
+fn physical_fallback_cancellation_blocks_late_acquisition_and_reuse() {
+    let mut f = Fixture::new();
+    f.allow_physical_fallback();
+    f.state.release("1").unwrap();
+    assert!(f.acquire_physical("1", "vpn", "1.1.1.1").is_err());
+    f.acquire_physical("2", "vpn", "1.1.1.1").unwrap();
+    f.state.release("2").unwrap();
+    assert!(f.acquire_physical("2", "vpn", "1.1.1.1").is_err());
+    assert!(f.state.leases.is_empty());
+    assert!(f.state.outbound("2").is_err());
+    f.assert_no_route_mutation();
+}
+
+#[test]
+fn physical_fallback_rejects_invalid_ids_and_never_overwrites_an_existing_lease() {
+    let mut f = Fixture::new();
+    f.allow_physical_fallback();
+    for id in ["", "-1", "1a", " 1", "１２", "123456789012345678901"] {
+        assert!(f.acquire_physical(id, "vpn", "1.1.1.1").is_err(), "id accepted: {id}");
+    }
+    f.acquire_physical("1", "vpn", "1.1.1.1").unwrap();
+    assert!(f.acquire_physical("1", "vpn", "1.1.1.1").is_err());
+    assert!(f.acquire_physical("1", "vpn", "8.8.8.8").is_err());
+    assert_eq!(f.state.leases.len(), 1);
+    assert_eq!(f.state.leases["1"].ip, "1.1.1.1".parse::<IpAddr>().unwrap());
+    f.assert_no_route_mutation();
+}
+
+#[test]
+fn physical_fallback_expired_request_does_not_create_a_lease() {
+    let mut f = Fixture::new();
+    f.allow_physical_fallback();
+    assert!(f.state.acquire_physical("1", "vpn", "1.1.1.1".parse().unwrap(),
+                                    Instant::now() - Duration::from_secs(1)).is_err());
+    assert!(f.state.leases.is_empty());
+    f.assert_no_route_mutation();
+}
+
+#[test]
+fn physical_fallback_respects_shared_lease_capacity_without_route_mutation() {
+    let mut f = Fixture::new();
+    f.allow_physical_fallback();
+    for n in 0..MAX_LEASES {
+        f.state.leases.insert(n.to_string(), Lease { vpn: "vpn".into(),
+            ip: "1.1.1.1".parse().unwrap(), keys: Vec::new(), interface: "vpn".into() });
+    }
+    assert!(f.acquire_physical("99999", "vpn", "8.8.8.8").is_err());
+    assert_eq!(f.state.leases.len(), MAX_LEASES);
+    assert!(!f.state.leases.contains_key("99999"));
+    assert!(f.state.leases.values().all(|lease| lease.interface == "vpn"));
+    f.assert_no_route_mutation();
+}
+
+#[test]
+fn physical_fallback_policy_reset_revokes_lease_and_authorization() {
+    let mut f = Fixture::new();
+    f.allow_physical_fallback();
+    f.acquire_physical("1", "vpn", "1.1.1.1").unwrap();
+    f.state.reset(Policy::default()).unwrap();
+    assert!(f.state.outbound("1").is_err());
+    assert!(f.state.policy.fallback_vpns.is_empty());
+    assert!(f.acquire_physical("2", "vpn", "1.1.1.1").is_err());
+    f.assert_no_route_mutation();
+}
+
+#[test]
+fn physical_fallback_policy_extracts_only_boolean_opt_in_on_managed_vpns() {
+    let name = "公司 e\u{301} \u{1f1e8}\u{1f1f3}";
+    let cfg = serde_json::json!({"proxies": [
+        {"name": "PHYSICAL", "type": "direct", "interface-name": "以太网", "cxvpn-physical-fallback": true},
+        {"name": "VPN-1", "type": "direct", "interface-name": name, "cxvpn-managed-route": true, "cxvpn-physical-fallback": true},
+        {"name": "VPN-2", "type": "direct", "interface-name": "private", "cxvpn-managed-route": true, "cxvpn-physical-fallback": false},
+        {"name": "VPN-3", "type": "direct", "interface-name": "default", "cxvpn-managed-route": true},
+        {"name": "VPN-4", "type": "direct", "interface-name": "text-flag", "cxvpn-managed-route": true, "cxvpn-physical-fallback": "true"},
+        {"name": "UNMANAGED", "type": "direct", "interface-name": "unmanaged", "cxvpn-physical-fallback": true}
+    ], "tun": {"enable": true}});
+    let policy = Policy::from_config(&serde_json::to_vec(&cfg).unwrap(), 123, "epoch".into()).unwrap();
+    assert_eq!(policy.fallback_vpns, [name.to_owned()].into());
+    assert_eq!(policy.vpns.len(), 4);
+    assert!(policy.fallback_vpns.is_subset(&policy.vpns));
+    assert_eq!(policy.physical, "以太网");
+    assert_eq!(policy.guard, "CXVPN-TUN");
 }
 
 #[test]

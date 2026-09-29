@@ -3,7 +3,7 @@
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
 界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
 关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置导入, 配置导出, 文件选择, DNS高级模式, nameserver-policy, 托盘快捷操作, 域名分流导航
-最后验证：2026-09-24 | 分支：main
+最后验证：2026-09-29 | 分支：main
 
 ## 职责边界
 
@@ -43,12 +43,13 @@
 `config.json.routing` 的稳定字段为：
 
 - `enabled`：期望启用状态，默认 `false`。
-- `schema_version`：当前为 `8`。旧配置缺少版本时按首版语义迁移为 `capture_mode=tun`、
+- `schema_version`：当前为 `9`。旧配置缺少版本时按首版语义迁移为 `capture_mode=tun`、
   `builtin_rule_pack=off`，不得套用新安装默认值改变既有流量路径。
 - `capture_mode`：`system-proxy` 或 `tun`，二者互斥。新安装推荐默认是
   `system-proxy`；TUN 是需要透明接管 UDP/不遵循系统代理应用时的高级模式。
 - `traffic_mode`：`rule` 或 `global`。规则模式执行 `rules[]`；全局模式保留规则配置但生成
-  运行配置时忽略域名规则，全部流量直接使用 `default_outbound`。切回规则模式后原规则恢复。
+  运行配置时忽略用户域名规则，其余流量使用 `default_outbound`；授权入口
+  `remote.chaoxing.com` 固定物理出口，避免续期循环依赖。切回规则模式后原规则恢复。
 - `physical_interface`：物理直连绑定的 Windows 接口别名；留空时选择默认路由中优先级
   最高且非 VPN/TUN 的已连接接口。
 - `proxy_strategy`：全部已启用订阅合并后的策略，支持 `url-test`、`fallback`、`select`。
@@ -62,6 +63,11 @@
   固定使用 `selected_node`，并让已保存的智能策略休眠而不删除。`auto_update` 默认关闭。首版的 `proxy_provider_url` /
   `proxy_provider_interval` 会在规范化时迁移为 `default` 订阅；旧订阅缺少新增字段时默认
   使用 `auto` 下载出口和 `Clash-Verge` User-Agent。
+- `rules[].physical_fallback`：仅 VPN 出口支持的严格布尔开关，默认 `false`；切换到其它出口时清除。
+  开启后生成独立的 `VPN-n-FALLBACK` 出口，按公网 TCP 建连超时/不可达回退，内网及其它失败类型
+  不触发新增回退。同一 VPN 的其它规则维持原策略；细则见 [VPN目标路由自动维护](VPN目标路由自动维护.md)。
+  连接链显示实际 `PHYSICAL` 为“物理网络”，可用中文或原始标识搜索。确认核心停止或 PID 换代后，
+  旧活动连接归入最多 500 条历史记录；暂时断流、状态未知、同 PID 待机不伪造连接关闭。
 - `default_outbound`：`physical`、`proxy`（全部订阅）、`proxy:<订阅 ID>`、`block` 或
   `vpn:<Windows VPN 名称>`。
 - `builtin_rule_pack`：`off`、`local-direct-v1`、`cn-direct-v1`。可编辑规则内容来自

@@ -49,8 +49,8 @@ from core.routing_speedtest import (
 SERVICE_ID = 'CXVPNRoutingService'
 # 服务数据目录本轮不迁移，保留旧内部路径以维持已安装服务兼容性。
 LEGACY_SERVICE_DIR_NAME = 'CXVPNManager\\RoutingService'
-MIHOMO_VERSION = 'v1.19.30-cxvpn.2'
-MIHOMO_SHA256 = '5187346B49D7CEC1E6B2C4A8C02E648720BC37E7CF889B0E9783A4787618436B'
+MIHOMO_VERSION = 'v1.19.30-cxvpn.3'
+MIHOMO_SHA256 = 'B586E9D57E3E5C49850695BBDC244CF8185A4A5D19EF363036DEA4DE67317791'
 GEOIP_DATABASE = 'Country.mmdb'
 GEOIP_DATABASE_SHA256 = '4BF15C30737F7CC2807BCBE1ACE44149B18579BEA3B13BF7BEA935A3F2834052'
 WINSW_VERSION = 'v2.12.0'
@@ -703,12 +703,16 @@ def normalize_config(value):
         if key in seen:
             raise RoutingError(f'存在重复域名规则：{domain}')
         seen.add(key)
+        fallback = rule.get('physical_fallback', False)
+        if not isinstance(fallback, bool):
+            raise RoutingError(f'第 {index + 1} 条规则的物理回退开关无效')
         normalized_rules.append({
             'id': str(rule.get('id') or f'rule-{index + 1}'),
             'enabled': enabled,
             'match_type': match_type,
             'domain': domain,
             'outbound': outbound,
+            'physical_fallback': fallback and outbound.startswith('vpn:'),
         })
     result['rules'] = normalized_rules
     enabled_provider_ids = {
@@ -826,6 +830,21 @@ def system_proxy_bypass_domains(config):
     return result
 
 
+def _rule_matches_domain(rule, domain):
+    pattern = rule['domain']
+    if rule['match_type'] == 'exact':
+        return domain == pattern
+    if rule['match_type'] == 'suffix':
+        return domain == pattern or domain.endswith('.' + pattern)
+    return fnmatch.fnmatchcase(domain, pattern)
+
+
+def _authorization_direct(config):
+    return config.get('traffic_mode') == 'global' or not any(
+        rule['outbound'] == 'block' and _rule_matches_domain(rule, 'remote.chaoxing.com')
+        for rule in _active_rules(config))
+
+
 def _effective_rules(config):
     rules = []
     seen = set()
@@ -836,6 +855,9 @@ def _effective_rules(config):
             rules.append(raw)
             seen.add(key)
 
+    # 授权入口不能依赖正由它续期的 VPN；包括全局模式。
+    if _authorization_direct(config):
+        append('DOMAIN,remote.chaoxing.com,PHYSICAL')
     for raw in _bypass_rules(config):
         append(raw)
     if config.get('traffic_mode') != 'global':
@@ -903,6 +925,8 @@ def explain_domain(value, domain, vpns=None):
     bypass_match = next((item for item in bypass_domains
                          if normalized_domain == item or
                          normalized_domain.endswith('.' + item)), None)
+    if normalized_domain == 'remote.chaoxing.com' and _authorization_direct(config):
+        bypass_match = normalized_domain
     if not bypass_match and config['capture_mode'] == 'system-proxy':
         for raw in _builtin_rules('local-direct-v1'):
             parts = raw.split(',')
@@ -1169,6 +1193,18 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
             'interface-name': name,
             'cxvpn-managed-route': True,
         })
+    fallback_rules = {
+        (rule['match_type'], rule['domain'], rule['outbound'])
+        for rule in _active_rules(config)
+        if rule.get('physical_fallback') and rule['outbound'].startswith('vpn:')
+    } if config.get('traffic_mode') != 'global' and not standby else set()
+    for name in targets:
+        if any(outbound == f'vpn:{name}' for _, _, outbound in fallback_rules):
+            proxies.append({
+                'name': proxy_names[name] + '-FALLBACK', 'type': 'direct', 'udp': True,
+                'interface-name': name, 'cxvpn-managed-route': True,
+                'cxvpn-physical-fallback': True,
+            })
 
     enabled_providers = [
         item for item in config.get('proxy_providers', []) if item['enabled']]
@@ -1325,7 +1361,12 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
             if parts[0] == 'MATCH':
                 parts[1] = target_name(parts[1])
             elif len(parts) >= 3 and parts[2] != 'PHYSICAL':
+                kind = {'DOMAIN': 'exact', 'DOMAIN-SUFFIX': 'suffix',
+                        'DOMAIN-WILDCARD': 'wildcard'}.get(parts[0])
+                fallback = (kind, parts[1], parts[2]) in fallback_rules
                 parts[2] = target_name(parts[2])
+                if fallback:
+                    parts[2] += '-FALLBACK'
             rules.append(','.join(parts))
     generated['rules'] = rules
     return generated
@@ -1729,6 +1770,7 @@ class RoutingManager:
                 'state': 'Running',
                 'backend': 'native',
                 'runtime_running': bool(native.get('runtime_running')),
+                'mihomo_pid': native.get('mihomo_pid'),
                 'runtime_enabled': bool(native.get('runtime_enabled')),
                 'runtime_mode': str(native.get('runtime_mode') or (
                     'active' if native.get('runtime_enabled') else 'stopped')),
@@ -2779,6 +2821,7 @@ if ($service) {{
             'dns_mode': normalized['dns_mode'],
             'service_state': service.get('state', 'Unknown'),
             'service_backend': service.get('backend', 'unknown'),
+            'mihomo_pid': service.get('mihomo_pid'),
             'service_version': service.get('service_version', ''),
             'service_update_required': bool(
                 service.get('backend') == 'native' and
@@ -3282,7 +3325,7 @@ if ($service) {{
 
         if _target_vpns(config):
             capability = self._controller_request(config, '/version', timeout=1.5)
-            if capability.get('cxvpn-vpn-routes') != 2:
+            if capability.get('cxvpn-vpn-routes') != 3:
                 raise RoutingError('当前 Mihomo 不支持 VPN 目标路由自动维护，请更新配套运行时')
 
         referenced = _referenced_group_ids(config)

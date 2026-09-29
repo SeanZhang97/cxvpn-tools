@@ -63,9 +63,21 @@ func TestPhysicalSelectionAndUDPStateChange(t *testing.T){
  l,err:=Acquire(context.Background(),"VPN",first)
  if err!=nil||l.Interface!="物理 e\u0301 \U0001f1e8\U0001f1f3"{t.Fatal(l,err)}
  raw:=&fakePacket{};p:=WrapPacket(raw,"VPN",first,l);defer p.Close()
+ if !IsPhysical(p) { t.Fatal("physical UDP connection reported as VPN") }
  resetFake(false) // VPN is now connected; this socket is still bound to physical.
  if _,err=p.WriteTo([]byte{1},&net.UDPAddr{IP:net.ParseIP("203.0.113.9"),Port:443});err==nil{t.Fatal("state change reused old interface")}
  if raw.writes!=0||!raw.closed{t.Fatal("old UDP association was not closed before sending")}
  fresh,err:=Acquire(context.Background(),"VPN",first);if err!=nil{t.Fatal(err)};defer fresh.Release()
  if fresh.Interface!="VPN"{t.Fatal(fresh.Interface)}
+}
+
+func TestTCPActualExitMarker(t *testing.T) {
+ resetFake(false)
+ raw, peer := net.Pipe(); defer peer.Close()
+ l := &Lease{Interface: "以太网", VPN: "公司 VPN"}
+ c := WrapConn(raw, l); defer c.Close()
+ if !IsPhysical(c) { t.Fatal("physical TCP connection reported as VPN") }
+ rawVPN, peerVPN := net.Pipe(); defer peerVPN.Close()
+ cVPN := WrapConn(rawVPN, &Lease{Interface: "公司 VPN", VPN: "公司 VPN"}); defer cVPN.Close()
+ if IsPhysical(cVPN) || IsPhysical(peer) { t.Fatal("non-fallback TCP connection reported physical") }
 }

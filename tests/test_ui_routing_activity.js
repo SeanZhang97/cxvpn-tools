@@ -48,6 +48,51 @@ assert.deepEqual(
 assert.deepEqual(
   Array.from(tools.filteredConnections(connections, 'active', '', 'traffic-desc'), item => item.id),
   ['b', 'a']);
+assert.equal(tools.chainText({ chains: ['PHYSICAL'] }), '物理网络');
+assert.equal(tools.chainText({ chains: ['PHYSICAL', 'VPN-1'] }), '物理网络 → VPN-1');
+assert.equal(tools.chainText({ chains: ['VPN-1'] }), 'VPN-1', 'a VPN chain must not be relabeled as physical');
+assert.equal(tools.chainText({ chains: [] }), 'DIRECT');
+assert.equal(tools.chainText({ chains: ['订阅 PHYSICAL e\u0301 🇯🇵'] }), '订阅 PHYSICAL e\u0301 🇯🇵',
+  'only the exact physical adapter marker may be translated');
+const fallbackConnections = {
+  active: [
+    { ...connections.active[0], id: 'physical', chains: ['PHYSICAL'] },
+    { ...connections.active[1], id: 'vpn', chains: ['VPN-1'] },
+  ],
+  closed: [{ ...connections.active[0], id: 'closed-physical', chains: ['PHYSICAL'] }],
+};
+for (const query of ['物理网络', 'physical', 'PHYSICAL']) {
+  assert.deepEqual(
+    Array.from(tools.filteredConnections(fallbackConnections, 'active', query, 'start-desc'), item => item.id),
+    ['physical'], 'search must accept both the displayed label and raw adapter name');
+}
+assert.deepEqual(
+  Array.from(tools.filteredConnections(fallbackConnections, 'closed', '物理网络', 'start-desc'), item => item.id),
+  ['closed-physical']);
+const activityElements = new Map();
+const activityElement = id => {
+  if (!activityElements.has(id)) activityElements.set(id, {
+    value: '', classList: { toggle() {} }, closest() { return this; },
+  });
+  return activityElements.get(id);
+};
+const renderingContext = {
+  document: { getElementById: activityElement },
+  window: { addEventListener() {} },
+};
+vm.createContext(renderingContext);
+vm.runInContext(source.replace('  window.RoutingActivityTools = {', `
+  window.renderActivityTest = snapshot => { state.connections = snapshot; renderConnections(); };
+  window.RoutingActivityTools = {`), renderingContext);
+renderingContext.window.renderActivityTest({ active: [{
+  ...connections.active[0],
+  chains: ['PHYSICAL', '<img src=x onerror=alert(1)>', '节点 e\u0301 🇯🇵'],
+}], closed: [] });
+const connectionHtml = activityElement('connections-body').innerHTML;
+assert.match(connectionHtml, /class="connection-chain" title="PHYSICAL → &lt;img/,
+  'tooltip must preserve and escape the raw chain for diagnostics');
+assert.match(connectionHtml, />物理网络 → &lt;img src=x onerror=alert\(1\)&gt; → 节点 e\u0301 🇯🇵<\/td>/);
+assert.doesNotMatch(connectionHtml, /<img/);
 const logs = { items: [
   { type: 'info', payload: 'first' },
   { type: 'error', payload: 'second' },

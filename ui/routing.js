@@ -953,8 +953,9 @@
     const bypass = routingConfig?.system_proxy_bypass || {};
     const bypassCount = (bypass.domains?.length || 0) + (bypass.processes?.length || 0);
     const hasCnFallback = !!bypass.include_cn_direct;
-    const actual = bypassCount + (routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length + builtinCount) + (hasCnFallback ? 1 : 0) + 1;
-    const flow = `bypass → user → builtin${hasCnFallback ? ' → GEOIP(CN)' : ''} → MATCH`;
+    // 授权入口例外至多占一条，显式阻止时由后端省略；MATCH 固定占一条。
+    const actual = bypassCount + (routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length + builtinCount) + (hasCnFallback ? 1 : 0) + 2;
+    const flow = `授权入口例外 → bypass → user → builtin${hasCnFallback ? ' → GEOIP(CN)' : ''} → MATCH`;
     byId('routing-rule-composition').textContent = `自定义绕过 ${bypassCount} 条 · 用户规则 ${routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length} 条 · 内置规则 ${routingConfig?.traffic_mode === 'global' ? 0 : builtinCount} 条（${routingConfig?.builtin_rule_pack || 'off'}） · 最多 ${actual} 条；顺序固定为 ${flow}，重复项会自动合并。`;
     renderBuiltinRules();
   }
@@ -2576,7 +2577,11 @@
       outboundOptions(outbound, rule.outbound);
       outbound.setAttribute('aria-label', `第 ${index + 1} 条规则出口`);
       outbound.disabled = busy;
-      outbound.onchange = () => { rule.outbound = outbound.value; syncDirty(); };
+      outbound.onchange = () => {
+        rule.outbound = outbound.value;
+        if (!outbound.value.startsWith('vpn:')) rule.physical_fallback = false;
+        syncDirty(); renderRules();
+      };
 
       const actions = document.createElement('div');
       actions.className = 'routing-rule-actions';
@@ -2606,6 +2611,21 @@
       };
       actions.append(enabled, up, down, remove);
       row.append(order, match, domain, outbound, actions);
+      if (String(rule.outbound || '').startsWith('vpn:')) {
+        const fallback = document.createElement('label');
+        fallback.className = 'routing-filter-check routing-rule-fallback';
+        fallback.title = '仅在公网目标的 TCP 连接建立失败时重试；内网地址、UDP 和已发送的数据不回退。';
+        const input = document.createElement('input'); input.type = 'checkbox';
+        input.checked = rule.physical_fallback === true;
+        input.disabled = busy || rule.enabled === false;
+        input.setAttribute('aria-label', `第 ${index + 1} 条规则 VPN 连接失败时尝试物理网络`);
+        input.onchange = () => { rule.physical_fallback = input.checked; syncDirty(); };
+        const mark = document.createElement('i'); mark.setAttribute('aria-hidden', 'true');
+        mark.innerHTML = '<svg viewBox="0 0 24 24"><path d="m7.5 12.5 3 3 6.5-7"/></svg>';
+        const label = document.createElement('span'); label.textContent = 'VPN 连接失败时尝试物理网络';
+        fallback.append(input, mark, label);
+        row.append(fallback);
+      }
       root.append(row);
       enhanceRoutingSelect(match, { compact: true });
       enhanceRoutingSelect(outbound, { compact: true });

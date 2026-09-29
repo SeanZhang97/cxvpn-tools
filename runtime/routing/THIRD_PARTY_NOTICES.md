@@ -3,7 +3,7 @@
 ## Mihomo
 
 - Project: https://github.com/MetaCubeX/mihomo
-- Version: v1.19.30-cxvpn.2 (modified 2026-09-14 and 2026-09-15)
+- Version: v1.19.30-cxvpn.3 (modified 2026-09-14, 2026-09-15 and 2026-09-19)
 - License: GNU General Public License v3.0
 - License text: https://github.com/MetaCubeX/mihomo/blob/Meta/LICENSE
 - Source corresponding to this release:

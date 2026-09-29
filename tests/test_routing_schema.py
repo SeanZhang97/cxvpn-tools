@@ -156,9 +156,10 @@ class RoutingSchemaTests(unittest.TestCase):
             }],
         })
         rules = routing.build_mihomo_config(config, [])['rules']
-        self.assertEqual(rules[0], 'DOMAIN-SUFFIX,example.com,REJECT')
+        self.assertEqual(rules[0], 'DOMAIN,remote.chaoxing.com,PHYSICAL')
+        self.assertEqual(rules[1], 'DOMAIN-SUFFIX,example.com,REJECT')
         local_rules = routing_rules.rules_for('local-direct-v1')
-        self.assertEqual(rules[1:1 + len(local_rules)], local_rules)
+        self.assertEqual(rules[2:2 + len(local_rules)], local_rules)
         self.assertEqual(rules[-1], 'MATCH,PHYSICAL')
 
     def test_builtin_rule_catalog_is_structured_readonly_and_complete(self):
@@ -273,7 +274,7 @@ class RoutingSchemaTests(unittest.TestCase):
                         routing.RoutingError, '第 1 行域名格式无效'):
                     routing.build_mihomo_config(config, [])
 
-    def test_global_mode_only_generates_match(self):
+    def test_global_mode_keeps_authorization_exception_before_match(self):
         config = routing.normalize_config({
             **routing.default_config(),
             'physical_interface': 'Ethernet',
@@ -282,7 +283,7 @@ class RoutingSchemaTests(unittest.TestCase):
             'rules': [{'domain': 'example.com', 'outbound': 'block'}],
         })
         self.assertEqual(routing.build_mihomo_config(config, [])['rules'],
-                         ['MATCH,PHYSICAL'])
+                         ['DOMAIN,remote.chaoxing.com,PHYSICAL', 'MATCH,PHYSICAL'])
 
     def test_custom_bypass_precedes_global_match_and_enables_process_lookup(self):
         config = routing.normalize_config({
@@ -301,6 +302,7 @@ class RoutingSchemaTests(unittest.TestCase):
             'internal.example.com'])
         self.assertEqual(generated['find-process-mode'], 'strict')
         self.assertEqual(generated['rules'], [
+            'DOMAIN,remote.chaoxing.com,PHYSICAL',
             'DOMAIN-SUFFIX,internal.example.com,PHYSICAL',
             'PROCESS-NAME,Updater.exe,PHYSICAL',
             'MATCH,PHYSICAL',
@@ -329,6 +331,7 @@ class RoutingSchemaTests(unittest.TestCase):
                 routing.explain_domain(config, 'www.baidu.com')['source'],
                 'bypass')
             self.assertEqual(routing.build_mihomo_config(config, [])['rules'], [
+                'DOMAIN,remote.chaoxing.com,PHYSICAL',
                 'DOMAIN-SUFFIX,chaoxing.com,PHYSICAL',
                 'GEOIP,CN,PHYSICAL',
                 'MATCH,PHYSICAL',

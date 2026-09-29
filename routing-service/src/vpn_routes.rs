@@ -14,6 +14,7 @@ pub struct Policy {
     pub pid: u32,
     pub epoch: String,
     pub vpns: HashSet<String>,
+    pub fallback_vpns: HashSet<String>,
     pub guard: String,
     pub physical: String,
     pub fake_ranges: Vec<(IpAddr, u8)>,
@@ -22,6 +23,7 @@ impl Policy {
     pub fn from_config(data: &[u8], pid: u32, epoch: String) -> AppResult<Self> {
         let cfg: serde_json::Value = serde_json::from_slice(data).map_err(|_| "invalid route policy")?;
         let mut vpns = HashSet::new();
+        let mut fallback_vpns = HashSet::new();
         let mut physical = String::new();
         for p in cfg["proxies"].as_array().ok_or("missing proxies")? {
             if p["name"] == "PHYSICAL" { physical = p["interface-name"].as_str().unwrap_or("").into(); }
@@ -32,6 +34,7 @@ impl Policy {
                     return Err("invalid managed VPN proxy".into());
                 }
                 vpns.insert(name.to_owned());
+                if p["cxvpn-physical-fallback"] == true { fallback_vpns.insert(name.to_owned()); }
             }
         }
         let guard = if cfg["tun"]["enable"] == true { "CXVPN-TUN".into() } else { physical.clone() };
@@ -49,7 +52,7 @@ impl Policy {
                 fake_ranges.push((ip, bits));
             }
         }
-        Ok(Self { pid, epoch, vpns, guard, physical, fake_ranges })
+        Ok(Self { pid, epoch, vpns, fallback_vpns, guard, physical, fake_ranges })
     }
     pub fn permits(&self, pid: u32, epoch: &str) -> bool {
         pid != 0 && pid == self.pid && !epoch.is_empty() && epoch == self.epoch
@@ -219,6 +222,26 @@ impl RouteState {
         self.log(&format!("request success id={id} target={ip}"));
         Ok(())
     }
+    pub fn acquire_physical(&mut self, id: &str, vpn: &str, ip: IpAddr, deadline: Instant) -> AppResult<()> {
+        self.log(&format!("physical fallback claimed/start id={id} target={ip} timeout=2s"));
+        if id.is_empty() || id.len() > 20 || !id.bytes().all(|b| b.is_ascii_digit())
+            || !self.policy.fallback_vpns.contains(vpn) || !public_fallback_target(ip)
+            || self.policy.is_fake(ip) || self.cancelled.contains_key(id) {
+            return Err("physical fallback not permitted for target/policy".into());
+        }
+        if self.leases.contains_key(id) { return Err("physical fallback lease id already used".into()); }
+        if self.leases.len() >= MAX_LEASES { return Err("route lease capacity reached".into()); }
+        if Instant::now() >= deadline { return Err("physical fallback deadline exceeded".into()); }
+        let physical = self.policy.physical.clone();
+        let (luid, _) = self.os.interface(&physical, ip, false)?;
+        if physical.is_empty() || self.os.best(luid, ip)?.is_none() {
+            return Err("physical fallback route unavailable".into());
+        }
+        if Instant::now() >= deadline { return Err("physical fallback deadline exceeded".into()); }
+        self.leases.insert(id.into(), Lease { vpn: vpn.into(), ip, keys: Vec::new(), interface: physical });
+        self.log(&format!("physical fallback success id={id} target={ip}"));
+        Ok(())
+    }
     pub fn outbound(&self, id: &str) -> AppResult<String> {
         self.leases.get(id).map(|l| l.interface.clone()).ok_or_else(|| "route lease missing".into())
     }
@@ -252,6 +275,24 @@ impl RouteState {
         if changed { self.save()?; }
         if let Some(e) = error { return Err(e); }
         Ok(())
+    }
+}
+
+// A rule opt-in never authorizes new failure fallback for private/special-use IPs.
+fn public_fallback_target(ip: IpAddr) -> bool {
+    if !valid_target(ip) { return false; }
+    match ip {
+        IpAddr::V4(v) => {
+            let [a,b,c,_] = v.octets();
+            !v.is_private() && !(a == 100 && (64..128).contains(&b))
+                && !(a == 192 && (b == 0 && (c == 0 || c == 2) || b == 88 && c == 99))
+                && !(a == 198 && b == 51 && c == 100) && !(a == 203 && b == 0 && c == 113)
+        },
+        IpAddr::V6(v) => {
+            let s = v.segments();
+            s[0] & 0xe000 == 0x2000 && !(s[0] == 0x2001 && (s[1] < 0x200 || s[1] == 0xdb8))
+                && s[0] != 0x2002 && !(s[0] == 0x3fff && s[1] < 0x1000)
+        },
     }
 }
 

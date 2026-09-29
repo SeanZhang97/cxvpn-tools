@@ -1,4 +1,8 @@
 .builtin-rules-card { padding-bottom: 16px; }
+.routing-rule-fallback { grid-column: 2 / -1; min-width: 0; height: auto; margin: 0; color: var(--muted); font-size: 12px; white-space: normal; cursor: pointer; }
+.routing-rule-row .routing-rule-fallback input { padding: 0; border: 0; margin: 0; }
+.routing-rule-fallback:hover input:not(:disabled) + i { border-color: var(--acc2); }
+.routing-rule-fallback:has(input:disabled) { cursor: default; }
 .builtin-rules-head { align-items: center; }
 .builtin-rules-count { flex: none; padding: 6px 10px; border: 1px solid rgba(34,211,238,.2); border-radius: 9px; color: #a5f3fc; background: rgba(34,211,238,.07); font-size: 11px; font-weight: 700; }
 .builtin-rules-toolbar { display: flex; gap: 10px; margin: 14px 0 11px; }

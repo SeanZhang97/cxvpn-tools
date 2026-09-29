@@ -93,6 +93,7 @@ class MihomoActivityRelay:
         self._stop = threading.Event()
         self._thread = None
         self._view = 'idle'
+        self._core_identity = None
         self._lifecycle_version = 0
         self._versions = {'connections': 0, 'logs': 0}
         self._states = {
@@ -258,6 +259,27 @@ class MihomoActivityRelay:
             self._versions['connections'] += 1
             self._condition.notify_all()
 
+    def _retire_connections(self):
+        """只在确认核心停止或换代后归档；通道临时断线不代表连接已关闭。"""
+        with self._condition:
+            state = self._states['connections']
+            if not state['active']:
+                return
+            state['closed'] = (
+                state['closed'] + state['active'])[-MAX_CLOSED_CONNECTIONS:]
+            state['active'] = []
+            self._versions['connections'] += 1
+            self._condition.notify_all()
+
+    def _observe_core_identity(self, status, config):
+        pid = _safe_int(status.get('mihomo_pid'))
+        if not pid:
+            return
+        identity = (_safe_int(config.get('controller_port')), pid)
+        if self._core_identity is not None and identity != self._core_identity:
+            self._retire_connections()
+        self._core_identity = identity
+
     def _log_secrets(self, config):
         values = [config.get('controller_secret')]
         for provider in config.get('proxy_providers') or []:
@@ -325,6 +347,8 @@ class MihomoActivityRelay:
                     value = json.loads(raw.decode('utf-8'))
                 except (UnicodeError, ValueError, TypeError):
                     continue
+                if self._active_snapshot() != (view, lifecycle_version):
+                    return
                 if view == 'connections':
                     self._apply_connections(value)
                 else:
@@ -350,11 +374,17 @@ class MihomoActivityRelay:
                 config = self._config_getter().get('routing') or {}
                 try:
                     status = self._routing.status(config, quick=True)
+                    if (status.get('ok') is False or
+                            status.get('service_state') == 'Unknown'):
+                        raise ConnectionError('代理核心状态暂时无法确认')
                     if not (status.get('running') or status.get('core_running')):
                         retry_index = 0
+                        self._retire_connections()
+                        self._core_identity = None
                         self._set_phase(view, 'idle')
                         self._wait_lifecycle(1, lifecycle_version)
                         continue
+                    self._observe_core_identity(status, config)
                     self._set_phase(view, 'connecting')
                     self._stream(view, config, lifecycle_version)
                     retry_index = 0

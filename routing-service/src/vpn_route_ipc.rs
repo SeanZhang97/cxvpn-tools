@@ -89,12 +89,14 @@ fn serve(pipe: HANDLE, state: &Shared, deadline: Instant) -> AppResult<Option<St
                 let result = match request.op.as_str() {
                     "acquire" => state.acquire(&request.id, &request.vpn,
                         request.ip.parse().map_err(|_| "invalid route IP")?, deadline),
+                    "acquire_physical" => state.acquire_physical(&request.id, &request.vpn,
+                        request.ip.parse().map_err(|_| "invalid route IP")?, deadline),
                     "release" => state.release(&request.id),
                     _ => Err("unsupported route operation".into()),
                 };
                 if let Err(error) = &result { state.log(&format!("request failed id={}: {error}", request.id)); }
                 result?;
-                return if request.op == "acquire" { state.outbound(&request.id).map(Some) } else { Ok(None) };
+                return if request.op == "acquire" || request.op == "acquire_physical" { state.outbound(&request.id).map(Some) } else { Ok(None) };
             },
             Err(std::sync::TryLockError::Poisoned(_)) => return Err("route state unavailable".into()),
             Err(_) => std::thread::sleep(Duration::from_millis(5)),

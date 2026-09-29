@@ -17,7 +17,7 @@ import zipfile
 BASE = Path(__file__).resolve().parent
 PATCH = BASE / 'patches' / 'mihomo'
 UPSTREAM = 'v1.19.30'
-VERSION = UPSTREAM + '-cxvpn.2'
+VERSION = UPSTREAM + '-cxvpn.3'
 SOURCE_SHA256 = '6790545B467FD6E61B6610793F37B64FAC7F59B061F222501F6CC3A7A5DE7C8B'
 SOURCE_URL = f'https://codeload.github.com/MetaCubeX/mihomo/zip/refs/tags/{UPSTREAM}'
 
@@ -47,6 +47,7 @@ def build(install=False):
     go = shutil.which('go')
     if not go:
         raise RuntimeError('缺少 Go 构建工具')
+    source_patch_digest = patch_digest()
     cache = BASE / 'build_tmp' / 'mihomo-custom'
     cache.mkdir(parents=True, exist_ok=True)
     source = BASE / 'build_tmp' / f'mihomo-{UPSTREAM}.zip'
@@ -79,13 +80,17 @@ def build(install=False):
         # Fixed metadata and trimpath make the source/patch/toolchain combination repeatable.
         flags = ('-w -s -buildid= -X github.com/metacubex/mihomo/constant.Version=' + VERSION
                  + ' -X github.com/metacubex/mihomo/constant.BuildTime=2026-09-14')
+        # The process deadline includes cold module downloads and compilation;
+        # the test binary itself still has a separate 45-second limit.
         subprocess.run([go, 'test', '-timeout=45s', './component/vpnroute', './component/dialer'],
-                       cwd=tree, env=env, check=True, timeout=60)
-        subprocess.run([go, 'test', '-timeout=45s', '-run', '^TestCXVPNDirectCompatibility$', './adapter'],
-                       cwd=tree, env=env, check=True, timeout=60)
+                       cwd=tree, env=env, check=True, timeout=600)
+        subprocess.run([go, 'test', '-timeout=45s', '-run',
+                        '^TestCXVPN(DirectCompatibility|PhysicalPacketPreservesDirectDNSAndPreference)$',
+                        './adapter', './adapter/outbound'],
+                       cwd=tree, env=env, check=True, timeout=600)
         subprocess.run([go, 'build', '-tags', 'with_gvisor', '-trimpath', '-buildvcs=false',
                         '-ldflags', flags, '-o', str(output), '.'],
-                       cwd=tree, env=env, check=True, timeout=120)
+                       cwd=tree, env=env, check=True, timeout=600)
         (tree / 'CXVPN-BUILD.txt').write_text(
             'Upstream: ' + UPSTREAM + '\nCore version: ' + VERSION
             + '\nGOOS=windows GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0\n'
@@ -99,11 +104,13 @@ def build(install=False):
                     archive.writestr(info, path.read_bytes())
     compiler = subprocess.check_output([go, 'version'], text=True, encoding='utf-8',
                                        errors='backslashreplace', timeout=5).strip()
+    if patch_digest() != source_patch_digest:
+        raise RuntimeError('构建期间核心补丁发生变化，请用最终补丁重新构建')
     manifest = {'version': VERSION, 'upstream': UPSTREAM, 'source_url': SOURCE_URL,
-                'source_sha256': SOURCE_SHA256, 'patch_sha256': patch_digest(),
+                'source_sha256': SOURCE_SHA256, 'patch_sha256': source_patch_digest,
                 'binary_sha256': digest(output), 'compiler': compiler,
                 'corresponding_source_sha256': digest(cache / 'mihomo-source.zip'),
-                'goamd64': 'v1', 'tags': ['with_gvisor'], 'capability': 2}
+                'goamd64': 'v1', 'tags': ['with_gvisor'], 'capability': 3}
     (cache / 'mihomo-build.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     if install:
         runtime = BASE / 'runtime/routing'

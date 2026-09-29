@@ -17,7 +17,7 @@ import (
 )
 
 type request struct { Op string `json:"op"`; Epoch string `json:"epoch"`; ID string `json:"id"`; VPN string `json:"vpn,omitempty"`; IP string `json:"ip,omitempty"` }
-type Lease struct { id string; once sync.Once; Interface string }
+type Lease struct { id string; once sync.Once; Interface string; VPN string }
 var sequence atomic.Uint64
 var slots = make(chan struct{}, 32)
 var exchange = exchangeNative
@@ -35,14 +35,20 @@ func call(ctx context.Context, req request) (string,error) {
 }
 
 func Acquire(ctx context.Context, vpn string, ip netip.Addr) (*Lease, error) {
+ return acquire(ctx, vpn, ip, "acquire")
+}
+func AcquirePhysical(ctx context.Context, vpn string, ip netip.Addr) (*Lease, error) {
+ return acquire(ctx, vpn, ip, "acquire_physical")
+}
+func acquire(ctx context.Context, vpn string, ip netip.Addr, op string) (*Lease, error) {
  if vpn == "" || !ip.IsValid() { return nil, errors.New("invalid managed VPN target") }
  id := strconv.FormatUint(sequence.Add(1), 10)
  log.Debugln("[vpn-route] request submitted id=%s target=%s timeout=2s", id, ip)
- selected,err := call(ctx, request{Op:"acquire", ID:id, VPN:vpn, IP:ip.Unmap().String()})
+ selected,err := call(ctx, request{Op:op, ID:id, VPN:vpn, IP:ip.Unmap().String()})
  if err != nil { enqueueRelease(id); return nil, fmt.Errorf("VPN route prepare: %w", err) }
  if selected == "" {enqueueRelease(id);return nil,errors.New("VPN route service did not select an interface")}
  if err = ctx.Err(); err != nil { enqueueRelease(id); return nil, err }
- return &Lease{id:id,Interface:selected}, nil
+ return &Lease{id:id,Interface:selected,VPN:vpn}, nil
 }
 func (l *Lease) Release() { if l != nil { l.once.Do(func(){ enqueueRelease(l.id) }) } }
 
@@ -71,6 +77,8 @@ func enqueueRelease(id string) {
 }
 
 type conn struct { net.Conn; lease *Lease }
+func (c *conn) Physical() bool { return c.lease.Interface != c.lease.VPN }
+func IsPhysical(c any) bool { p,ok:=c.(interface{Physical() bool});return ok && p.Physical() }
 func WrapConn(c net.Conn, l *Lease) net.Conn { return &conn{c,l} }
 func (c *conn) Close() error { err:=c.Conn.Close(); c.lease.Release(); return err }
 
@@ -82,6 +90,7 @@ type packet struct {
  closed bool
  leases map[netip.Addr]*Lease
 }
+func (p *packet) Physical() bool { return p.selected != p.vpn }
 func WrapPacket(c net.PacketConn, vpn string, ip netip.Addr, l *Lease) net.PacketConn {
  return &packet{PacketConn:c,vpn:vpn,selected:l.Interface,leases:map[netip.Addr]*Lease{ip.Unmap():l}}
 }

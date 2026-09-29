@@ -27,12 +27,16 @@
     return `${address}${meta.destination_port ? `:${meta.destination_port}` : ''}`;
   }
 
+  function chainText(item) {
+    return (item.chains || []).map(name => name === 'PHYSICAL' ? '物理网络' : name).join(' → ') || 'DIRECT';
+  }
+
   function filteredConnections(snapshot, scope, query, sort) {
     const needle = String(query || '').trim().toLocaleLowerCase();
     let rows = [...(snapshot?.[scope] || [])];
     if (needle) rows = rows.filter(item => [
       targetText(item), item.metadata?.process, item.metadata?.process_path,
-      item.rule, item.rule_payload, ...(item.chains || []),
+      item.rule, item.rule_payload, chainText(item), ...(item.chains || []),
     ].some(value => String(value || '').toLocaleLowerCase().includes(needle)));
     rows.sort((left, right) => {
       if (sort === 'traffic-desc') return (right.upload + right.download) - (left.upload + left.download);
@@ -82,7 +86,7 @@
       const started = item.start ? String(item.start).replace('T', ' ').replace(/\..*$/, '') : '--';
       const close = state.connectionScope === 'active'
         ? `<button class="btn mini ghost" type="button" data-close-connection="${html(item.id)}">关闭</button>` : '';
-      return `<tr><td class="connection-target"><strong title="${html(targetText(item))}">${html(targetText(item))}</strong><small title="${html(process)}">${html(process)}</small></td><td title="${html(item.rule_payload || '')}">${html(item.rule || '--')}</td><td class="connection-chain" title="${html((item.chains || []).join(' → '))}">${html((item.chains || []).join(' → ') || 'DIRECT')}</td><td>${formatBytes(item.upload)}</td><td>${formatBytes(item.download)}</td><td>${html(started)}</td><td>${close}</td></tr>`;
+      return `<tr><td class="connection-target"><strong title="${html(targetText(item))}">${html(targetText(item))}</strong><small title="${html(process)}">${html(process)}</small></td><td title="${html(item.rule_payload || '')}">${html(item.rule || '--')}</td><td class="connection-chain" title="${html((item.chains || []).join(' → '))}">${html(chainText(item))}</td><td>${formatBytes(item.upload)}</td><td>${formatBytes(item.download)}</td><td>${html(started)}</td><td>${close}</td></tr>`;
     }).join('');
   }
 
@@ -208,7 +212,7 @@
     document.addEventListener('visibilitychange', () => void activate());
   }
 
-  window.RoutingActivityTools = { formatBytes, filteredConnections, filteredLogs };
+  window.RoutingActivityTools = { formatBytes, filteredConnections, filteredLogs, chainText };
   window.RoutingActivityWorkspace = {
     runtimeLogsVisible: () => state.page === 'logs' && state.logSource === 'runtime',
   };

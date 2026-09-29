@@ -83,7 +83,8 @@ class RoutingReliabilityTests(unittest.TestCase):
 
         self.assertEqual(len(config['rules']), 1)
         self.assertFalse(config['rules'][0]['enabled'])
-        self.assertEqual(generated['rules'], ['MATCH,PHYSICAL'])
+        self.assertEqual(generated['rules'], [
+            'DOMAIN,remote.chaoxing.com,PHYSICAL', 'MATCH,PHYSICAL'])
 
     def test_aggregate_proxy_requires_enabled_provider(self):
         with self.assertRaisesRegex(routing.RoutingError, '至少需要一个已启用'):
