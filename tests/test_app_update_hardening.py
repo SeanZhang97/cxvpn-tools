@@ -81,7 +81,7 @@ class HardenedUpdateTests(unittest.TestCase):
             path = Path(folder, 'CXVPNTools-9.9.9-setup.exe')
             path.write_bytes(b'fixture')
             state = app_update.UpdateDownloadState()
-            with mock.patch('urllib.request.urlopen', side_effect=AssertionError('network forbidden')):
+            with mock.patch.object(app_update, '_urlopen', side_effect=AssertionError('network forbidden')):
                 result = app_update.download_installer(URL, SHA, state)
             self.assertTrue(result['ok'])
             self.assertEqual(SHA, state.snapshot()['sha256'])
@@ -92,7 +92,7 @@ class HardenedUpdateTests(unittest.TestCase):
                     mock.patch.object(app_update, 'updates_root', return_value=folder):
                 response = _FakeResponse(b'fixture')
                 response.headers['Content-Length'] = '100'
-                with mock.patch('urllib.request.urlopen', return_value=response), \
+                with mock.patch.object(app_update, '_urlopen', return_value=response), \
                         mock.patch.object(app_update, 'DOWNLOAD_TOTAL_TIMEOUT', -1 if timeout else 900):
                     result = app_update.download_installer(URL, SHA)
                 self.assertFalse(result['ok'])

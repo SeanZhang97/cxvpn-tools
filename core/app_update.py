@@ -36,6 +36,8 @@ UNINSTALL_REGISTRY_PATH = (
 DOWNLOAD_CHUNK = 64 * 1024
 DOWNLOAD_READ_TIMEOUT = 30
 DOWNLOAD_TOTAL_TIMEOUT = 900
+DOWNLOAD_MAX_ATTEMPTS = 3
+DOWNLOAD_RETRY_BACKOFF = (1.0, 2.0)
 MAX_INSTALLER_BYTES = 512 * 1024 * 1024
 PROGRESS_REPORT_INTERVAL = 0.25
 INSTALL_MONITOR_TIMEOUT = 4260
@@ -47,6 +49,10 @@ CHECK_RETRY_BACKOFF = (1.0, 2.0)
 
 class _DownloadCancelled(Exception):
     """用户请求取消下载时在下载循环内抛出。"""
+
+
+class _DownloadTotalTimeout(TimeoutError):
+    """单次尝试超过下载总时限；整包重下代价过高，不进入重试。"""
 
 
 class UpdateDownloadState:
@@ -90,18 +96,28 @@ class UpdateDownloadState:
             self._fields['updated_at'] = self._fields['started_at']
 
 
+def _urlopen(request, timeout, direct=False):
+    """发起一次请求；每次调用都重建 opener，实时读取当前系统代理。
+
+    不能复用 urllib.request.urlopen 的进程级全局 opener：它在首次调用时
+    固化当时的代理配置，之后再开启、关闭或更换系统代理都不会再生效。
+    本应用自身管理系统代理，启动顺序稍早就会导致后续请求永久绕过代理。
+    """
+    if direct:
+        # 与 core/routing.py 的 Controller 请求一致：显式禁用系统/环境代理，
+        # 避免更新检查依赖应用自身的代理核心。
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    else:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler())
+    return opener.open(request, timeout=timeout)
+
+
 def _request(url, timeout=12, direct=False):
     request = urllib.request.Request(url, headers={
         'Accept': 'application/vnd.github+json',
         'User-Agent': USER_AGENT,
     })
-    if direct:
-        # 与 core/routing.py 的 Controller 请求一致：显式禁用系统/环境代理，
-        # 避免更新检查依赖应用自身的代理核心。
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(request, timeout=timeout) as response:
-            return response.read(1024 * 1024)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with _urlopen(request, timeout, direct=direct) as response:
         return response.read(1024 * 1024)
 
 
@@ -281,14 +297,18 @@ def download_installer(url, expected_sha256='', state=None, cancel_event=None,
         return _download_installer(url, expected_sha256, state, cancel_event, log)
     except (OSError, ValueError, TypeError) as exc:
         if log:
-            log('[app-update] 下载准备失败: type=%s' % type(exc).__name__)
-        return {'ok': False, 'msg': '下载升级包失败：' + type(exc).__name__}
+            log('[app-update] 下载准备失败: %s' % _describe_network_error(exc))
+        return {'ok': False,
+                'msg': '下载升级包失败：' + _describe_network_error(exc)}
 
 
 def _download_installer(url, expected_sha256='', state=None, cancel_event=None,
                         log=None):
-    """下载升级包到用户数据目录；支持进度上报、取消与完整性校验。
+    """下载升级包到用户数据目录；支持进度上报、取消、重试与完整性校验。
 
+    网络类失败按 DOWNLOAD_MAX_ATTEMPTS 重试，最后一次尝试直连兜底；每次
+    尝试都重新读取系统代理。校验失败与服务端明确答复属于确定性结果，
+    不重试。
     下载写入临时文件，全部完成后校验 SHA-256 并原子落盘，避免半截
     文件被误当作可执行安装包。
     """
@@ -315,6 +335,50 @@ def _download_installer(url, expected_sha256='', state=None, cancel_event=None,
                              sha256=expected_sha256, downloaded_bytes=size, total_bytes=size, speed_bps=0)
             log('[app-update] 已复用通过校验的本地升级包')
             return {'ok': True, 'path': target, 'sha256': expected_sha256, 'bytes': size}
+    attempts = max(1, int(DOWNLOAD_MAX_ATTEMPTS))
+    attempt = 0
+    while True:
+        attempt += 1
+        direct = attempt >= attempts and attempts > 1
+        try:
+            return _download_attempt(
+                url, version, target_root, target, expected_sha256,
+                state, cancel_event, log, direct=direct)
+        except _DownloadCancelled:
+            return {'ok': False, 'cancelled': True, 'msg': '已取消下载'}
+        except _DownloadTotalTimeout as exc:
+            log('[app-update] 升级包下载失败: %s' % exc)
+            return {'ok': False, 'msg': '下载升级包失败：%s' % exc}
+        except (ValueError, urllib.error.HTTPError) as exc:
+            log('[app-update] 升级包下载失败: %s' % _describe_network_error(exc))
+            return {'ok': False,
+                    'msg': '下载升级包失败：' + _describe_network_error(exc)}
+        except (OSError, urllib.error.URLError) as exc:
+            if attempt >= attempts:
+                log('[app-update] 升级包下载失败（已用尽重试）: %s'
+                    % _describe_network_error(exc))
+                return {'ok': False,
+                        'msg': '下载升级包失败：' + _describe_network_error(exc)}
+            if _is_proxy_tunnel_error(exc):
+                # 重试同一代理无意义，下一次直接进入直连兜底。
+                attempt = attempts - 1
+                log('[app-update] 系统代理隧道连接失败，下载改为直连重试: %s'
+                    % _describe_network_error(exc))
+                continue
+            backoff = DOWNLOAD_RETRY_BACKOFF
+            delay = backoff[min(attempt - 1, len(backoff) - 1)]
+            log('[app-update] 升级包下载失败，%.1f 秒后重试 (%d/%d): %s'
+                % (delay, attempt, attempts, _describe_network_error(exc)))
+            if cancel_event is not None:
+                if cancel_event.wait(delay):
+                    return {'ok': False, 'cancelled': True, 'msg': '已取消下载'}
+            else:
+                time.sleep(delay)
+
+
+def _download_attempt(url, version, target_root, target, expected_sha256,
+                      state, cancel_event, log, direct=False):
+    """单次下载尝试：写入临时文件、校验并原子落盘；任何失败清理后抛出。"""
     descriptor, temporary = tempfile.mkstemp(prefix='update.', suffix='.tmp', dir=target_root)
     os.close(descriptor)
     digest = hashlib.sha256()
@@ -324,11 +388,13 @@ def _download_installer(url, expected_sha256='', state=None, cancel_event=None,
     last_report = started
     last_reported_bytes = 0
     try:
-        log('[app-update] 开始下载: version=%s read_timeout=%ss total_timeout=%ss' % (
-            version, DOWNLOAD_READ_TIMEOUT, DOWNLOAD_TOTAL_TIMEOUT))
+        log('[app-update] 开始下载: version=%s direct=%s read_timeout=%ss total_timeout=%ss' % (
+            version, direct, DOWNLOAD_READ_TIMEOUT, DOWNLOAD_TOTAL_TIMEOUT))
+        if state is not None:
+            state.update(phase='downloading', progress=0, downloaded_bytes=0,
+                         total_bytes=0, speed_bps=0, msg='')
         request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-        with urllib.request.urlopen(
-                request, timeout=DOWNLOAD_READ_TIMEOUT) as source, \
+        with _urlopen(request, DOWNLOAD_READ_TIMEOUT, direct=direct) as source, \
                 open(temporary, 'wb') as out:
             header_total = str(source.headers.get('Content-Length') or '')
             total = int(header_total) if header_total.isdigit() else 0
@@ -340,10 +406,10 @@ def _download_installer(url, expected_sha256='', state=None, cancel_event=None,
                 if cancel_event is not None and cancel_event.is_set():
                     raise _DownloadCancelled()
                 if time.monotonic() - started > DOWNLOAD_TOTAL_TIMEOUT:
-                    raise TimeoutError('升级包下载超过总时限')
+                    raise _DownloadTotalTimeout('升级包下载超过总时限')
                 chunk = source.read(DOWNLOAD_CHUNK)
                 if time.monotonic() - started > DOWNLOAD_TOTAL_TIMEOUT:
-                    raise TimeoutError('升级包下载超过总时限')
+                    raise _DownloadTotalTimeout('升级包下载超过总时限')
                 if not chunk:
                     break
                 out.write(chunk)
@@ -371,6 +437,7 @@ def _download_installer(url, expected_sha256='', state=None, cancel_event=None,
         if digest.hexdigest().lower() != expected_sha256:
             raise ValueError('升级包完整性校验失败')
         os.replace(temporary, target)
+        temporary = ''
         if state is not None:
             state.update(phase='downloaded', progress=100,
                          downloaded_bytes=downloaded, total_bytes=total,
@@ -379,14 +446,9 @@ def _download_installer(url, expected_sha256='', state=None, cancel_event=None,
             downloaded, digest.hexdigest()[:12], time.monotonic() - started))
         return {'ok': True, 'path': target, 'sha256': digest.hexdigest(),
                 'bytes': downloaded}
-    except _DownloadCancelled:
-        _remove(temporary)
-        return {'ok': False, 'cancelled': True, 'msg': '已取消下载'}
-    except Exception as exc:
-        _remove(temporary)
-        log('[app-update] 升级包下载失败: type=%s elapsed=%.1fs' % (
-            type(exc).__name__, time.monotonic() - started))
-        return {'ok': False, 'msg': f'下载升级包失败：{type(exc).__name__}'}
+    finally:
+        if temporary:
+            _remove(temporary)
 
 
 def prune_old_installers(keep_path, log=None):

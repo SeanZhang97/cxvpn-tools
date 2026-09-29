@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.request
 from unittest import mock
 
 from core import app_update
@@ -183,6 +184,57 @@ class CheckLatestTests(unittest.TestCase):
         self.assertTrue(_no_forbidden_words(result['msg']))
 
 
+class UrlopenProxyFreshnessTests(unittest.TestCase):
+    """回归：进程首次请求时系统代理未开启，后续请求也必须用上新代理。"""
+
+    def _recording_proxy_handler(self, seen):
+        real_handler = urllib.request.ProxyHandler
+
+        class RecordingProxyHandler(real_handler):
+            def __init__(self, proxies=None):
+                super().__init__(proxies)
+                seen.append(dict(self.proxies))
+
+        return RecordingProxyHandler
+
+    def test_every_call_rereads_system_proxy(self):
+        seen = []
+        proxies_sequence = iter([{}, {'https': 'http://127.0.0.1:17890'}])
+        with mock.patch('urllib.request.getproxies',
+                        new=lambda: next(proxies_sequence)), \
+                mock.patch('urllib.request.ProxyHandler',
+                           self._recording_proxy_handler(seen)), \
+                mock.patch.object(urllib.request.OpenerDirector, 'open',
+                                  side_effect=urllib.error.URLError('stop')):
+            for _ in range(2):
+                with self.assertRaises(urllib.error.URLError):
+                    app_update._urlopen(
+                        urllib.request.Request('http://example.invalid/'),
+                        timeout=1)
+        self.assertEqual([{}, {'https': 'http://127.0.0.1:17890'}], seen)
+
+    def test_direct_mode_disables_proxy(self):
+        seen = []
+        with mock.patch('urllib.request.ProxyHandler',
+                        self._recording_proxy_handler(seen)), \
+                mock.patch.object(urllib.request.OpenerDirector, 'open',
+                                  side_effect=urllib.error.URLError('stop')):
+            with self.assertRaises(urllib.error.URLError):
+                app_update._urlopen(
+                    urllib.request.Request('http://example.invalid/'),
+                    timeout=1, direct=True)
+        self.assertEqual([{}], seen)
+
+    def test_request_routes_through_urlopen_helper(self):
+        response = _FakeResponse(b'{"ok": true}')
+        with mock.patch.object(app_update, '_urlopen',
+                               return_value=response) as helper:
+            self.assertEqual(app_update._request('https://example.invalid/api'),
+                             b'{"ok": true}')
+        self.assertEqual(helper.call_count, 1)
+        self.assertFalse(helper.call_args.kwargs['direct'])
+
+
 class UpdateDownloadStateTests(unittest.TestCase):
     def test_begin_resets_fields_to_downloading(self):
         state = app_update.UpdateDownloadState()
@@ -237,8 +289,8 @@ class DownloadInstallerTests(unittest.TestCase):
             lambda *args, **kwargs: self._user_data)
 
     def test_rejects_untrusted_url_without_network(self):
-        with mock.patch('urllib.request.urlopen',
-                        side_effect=AssertionError('不应发起网络请求')):
+        with mock.patch.object(app_update, '_urlopen',
+                               side_effect=AssertionError('不应发起网络请求')):
             result = app_update.download_installer('https://example.invalid/x.exe')
         self.assertFalse(result['ok'])
         self.assertTrue(_no_forbidden_words(result['msg']))
@@ -250,7 +302,7 @@ class DownloadInstallerTests(unittest.TestCase):
         state.begin('1.2.0')
         response = _FakeResponse(payload)
         with self._patch_data_root(), \
-                mock.patch('urllib.request.urlopen', return_value=response):
+                mock.patch.object(app_update, '_urlopen', return_value=response):
             result = app_update.download_installer(
                 self.URL, expected_sha256=digest, state=state)
         self.assertTrue(result['ok'])
@@ -275,7 +327,7 @@ class DownloadInstallerTests(unittest.TestCase):
         state = app_update.UpdateDownloadState()
         response = _FakeResponse(payload)
         with self._patch_data_root(), \
-                mock.patch('urllib.request.urlopen', return_value=response):
+                mock.patch.object(app_update, '_urlopen', return_value=response):
             result = app_update.download_installer(
                 self.URL, expected_sha256='0' * 64, state=state)
         self.assertFalse(result['ok'])
@@ -294,7 +346,7 @@ class DownloadInstallerTests(unittest.TestCase):
         cancel.set()
         response = _FakeResponse(payload)
         with self._patch_data_root(), \
-                mock.patch('urllib.request.urlopen', return_value=response):
+                mock.patch.object(app_update, '_urlopen', return_value=response):
             result = app_update.download_installer(
                 self.URL, state=state, cancel_event=cancel)
         self.assertFalse(result['ok'])
@@ -306,12 +358,75 @@ class DownloadInstallerTests(unittest.TestCase):
     def test_transport_failure_returns_typed_error(self):
         state = app_update.UpdateDownloadState()
         with self._patch_data_root(), \
-                mock.patch('urllib.request.urlopen',
-                           side_effect=urllib.error.URLError('reset')):
+                mock.patch.object(app_update, 'DOWNLOAD_RETRY_BACKOFF', (0, 0)), \
+                mock.patch.object(app_update, '_urlopen',
+                                  side_effect=urllib.error.URLError('reset')) as urlopen_mock:
             result = app_update.download_installer(self.URL, expected_sha256='a' * 64, state=state)
         self.assertFalse(result['ok'])
         self.assertIn('URLError', result['msg'])
+        # 失败文案必须带具体原因，不能只给异常类型名。
+        self.assertIn('reset', result['msg'])
         self.assertTrue(_no_forbidden_words(result['msg']))
+        self.assertEqual(urlopen_mock.call_count, app_update.DOWNLOAD_MAX_ATTEMPTS)
+
+    def test_retry_recovers_after_transient_failure(self):
+        payload = os.urandom(64 * 1024)
+        digest = hashlib.sha256(payload).hexdigest()
+        attempts = []
+
+        def flaky(request, timeout, direct=False):
+            attempts.append(direct)
+            if len(attempts) == 1:
+                raise urllib.error.URLError('connection reset')
+            return _FakeResponse(payload)
+
+        with self._patch_data_root(), \
+                mock.patch.object(app_update, 'DOWNLOAD_RETRY_BACKOFF', (0, 0)), \
+                mock.patch.object(app_update, '_urlopen', side_effect=flaky):
+            result = app_update.download_installer(
+                self.URL, expected_sha256=digest)
+        self.assertTrue(result['ok'])
+        self.assertEqual(attempts, [False, False])
+
+    def test_proxy_tunnel_failure_falls_back_to_direct(self):
+        payload = os.urandom(64 * 1024)
+        digest = hashlib.sha256(payload).hexdigest()
+        direct_flags = []
+
+        def tunnel_then_direct(request, timeout, direct=False):
+            direct_flags.append(direct)
+            if not direct:
+                raise urllib.error.URLError(
+                    OSError('Tunnel connection failed: 400 Bad Request'))
+            return _FakeResponse(payload)
+
+        with self._patch_data_root(), \
+                mock.patch.object(app_update, '_urlopen',
+                                  side_effect=tunnel_then_direct):
+            result = app_update.download_installer(
+                self.URL, expected_sha256=digest)
+        self.assertTrue(result['ok'])
+        # 代理隧道被拒后不再重试代理，直接进入直连兜底。
+        self.assertEqual(direct_flags, [False, True])
+
+    def test_cancel_during_retry_backoff_stops_immediately(self):
+        cancel = threading.Event()
+        attempts = []
+
+        def fail_and_cancel(request, timeout, direct=False):
+            attempts.append(direct)
+            cancel.set()
+            raise urllib.error.URLError('reset')
+
+        with self._patch_data_root(), \
+                mock.patch.object(app_update, 'DOWNLOAD_RETRY_BACKOFF', (30, 30)), \
+                mock.patch.object(app_update, '_urlopen',
+                                  side_effect=fail_and_cancel):
+            result = app_update.download_installer(
+                self.URL, expected_sha256='a' * 64, cancel_event=cancel)
+        self.assertFalse(result['ok'])
+        self.assertTrue(result.get('cancelled'))
+        self.assertEqual(len(attempts), 1)
 
     def test_progress_updates_track_content_length(self):
         payload = os.urandom(256 * 1024)
@@ -320,8 +435,8 @@ class DownloadInstallerTests(unittest.TestCase):
         # 压缩上报间隔，确保多块下载会触发多次进度更新。
         with self._patch_data_root(), \
                 mock.patch.object(app_update, 'PROGRESS_REPORT_INTERVAL', 0), \
-                mock.patch('urllib.request.urlopen',
-                           return_value=_FakeResponse(payload)):
+                mock.patch.object(app_update, '_urlopen',
+                                  return_value=_FakeResponse(payload)):
             result = app_update.download_installer(self.URL, expected_sha256=hashlib.sha256(payload).hexdigest(), state=state)
         self.assertTrue(result['ok'])
         self.assertEqual(state.snapshot()['progress'], 100)
