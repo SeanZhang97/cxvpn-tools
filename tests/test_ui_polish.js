@@ -144,13 +144,20 @@ assert.doesNotMatch(app, /btn-default-more/);
 assert.match(app, /renderVpnConnections/);
 assert.match(app, /createConnectionRow/);
 assert.match(app, /createEmptyConnectionSlot/);
+const renderVpnConnections = app.slice(
+  app.indexOf('function renderVpnConnections'),
+  app.indexOf('function connectionRowView'));
 const createConnectionRow = app.slice(
   app.indexOf('function createConnectionRow'),
   app.indexOf('function createEmptyConnectionSlot'));
 const createEmptyConnectionSlot = app.slice(
   app.indexOf('function createEmptyConnectionSlot'),
   app.indexOf('function formatDuration'));
-assert.match(createConnectionRow, /moreButton\.onclick = \(\) => openModal\(profile\)/);
+assert.match(renderVpnConnections, /dataset\.vpnName/);
+assert.match(renderVpnConnections, /updateConnectionRow\(row, view\)/);
+assert.doesNotMatch(renderVpnConnections, /replaceChildren/);
+assert.match(createConnectionRow, /moreButton\.onclick = \(\) => openModal\(view\.profile\)/);
+assert.match(createConnectionRow, /actionButton\.dataset\.state/);
 assert.doesNotMatch(createConnectionRow, /goToPage\('vpns'\)/);
 assert.match(createEmptyConnectionSlot, /button\.onclick = \(\) => openModal\(null\)/);
 assert.doesNotMatch(createEmptyConnectionSlot, /goToPage\('vpns'\)/);

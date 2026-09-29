@@ -2245,7 +2245,6 @@ function updateOverview(state, vpnStatus) {
 
 function renderVpnConnections(profiles, connections, connectionAction = {}) {
   const root = $('ov-active-connections');
-  root.replaceChildren();
   const configured = Array.isArray(profiles) ? profiles : [];
   const connectedByName = new Map(connections.map(item => [item.name, item]));
   const rows = configured.slice().sort((left, right) => {
@@ -2256,42 +2255,71 @@ function renderVpnConnections(profiles, connections, connectionAction = {}) {
   connections.forEach(item => {
     if (!rows.some(row => row.name === item.name)) rows.push(item);
   });
-  rows.forEach(profile => {
-    const item = connectedByName.get(profile.name);
-    const connected = !!item;
-    const pendingSystemCheck = profile.pending_system_check === true;
-    const autoBusy = !!connectionAction.active &&
-      connectionAction.name === profile.name;
-    const address = connected && item.ip_address
-      ? `${item.ip_address}${item.prefix_length ? `/${item.prefix_length}` : ''}`
-      : '';
-    const meta = autoBusy
-      ? (connectionAction.message || '正在自动连接')
-      : pendingSystemCheck
-        ? '已从 config.json 读取，正在核对 Windows VPN 状态'
-      : connected
-        ? `${address || '地址由 Windows 管理'} · 已连接 ${formatDuration(item.connected_seconds)}`
-        : '未连接';
-    const validationStatus = (CFG.credential_status || {})[profile.name] || '';
-    root.appendChild(createConnectionRow({
-      profile,
-      name: profile.name || '未命名 VPN',
-      connected,
-      defaultRouteLabel: activeDefaultRouteLabel(item),
-      validationStatus,
-      meta,
-      actionText: autoBusy
-        ? '正在自动连接' : pendingSystemCheck ? '核对中' : (connected ? '断开' : '连接'),
-      busy: autoBusy || pendingSystemCheck,
-      action: pendingSystemCheck ? null : event => connected
-        ? disconnectVpn(profile.name, event.currentTarget)
-        : connectVpn(profile.name, event.currentTarget),
-    }));
+  // 状态流每秒重放本函数。按 VPN 名称复用行元素并就地更新变化的文本，
+  // 避免整表重建打断按钮悬停与过渡动画（悬停时每秒闪烁）。
+  const existing = new Map();
+  const slots = [];
+  for (const node of Array.from(root.children)) {
+    if (node.dataset.vpnName !== undefined) existing.set(node.dataset.vpnName, node);
+    else if (node.classList.contains('connection-slot-empty')) slots.push(node);
+    else node.remove();
+  }
+  const seen = new Set();
+  rows.forEach((profile, index) => {
+    const view = connectionRowView(profile, connectedByName.get(profile.name), connectionAction);
+    let row = existing.get(view.name);
+    if (!row || seen.has(view.name)) {
+      row = createConnectionRow(view);
+      row.dataset.vpnName = view.name;
+    } else {
+      updateConnectionRow(row, view);
+    }
+    seen.add(view.name);
+    const placeholder = root.children[index];
+    if (placeholder !== row) root.insertBefore(row, placeholder || null);
   });
+  for (const [name, node] of existing) {
+    if (!seen.has(name)) node.remove();
+  }
   const displayCapacity = Math.max(5, rows.length);
-  for (let index = rows.length; index < displayCapacity; index += 1) {
+  const wantedSlots = Math.max(0, displayCapacity - rows.length);
+  for (let index = slots.length; index < wantedSlots; index += 1) {
     root.appendChild(createEmptyConnectionSlot());
   }
+  for (let index = wantedSlots; index < slots.length; index += 1) {
+    slots[index].remove();
+  }
+}
+
+function connectionRowView(profile, item, connectionAction = {}) {
+  const connected = !!item;
+  const pendingSystemCheck = profile.pending_system_check === true;
+  const autoBusy = !!connectionAction.active &&
+    connectionAction.name === profile.name;
+  const address = connected && item.ip_address
+    ? `${item.ip_address}${item.prefix_length ? `/${item.prefix_length}` : ''}`
+    : '';
+  const meta = autoBusy
+    ? (connectionAction.message || '正在自动连接')
+    : pendingSystemCheck
+      ? '已从 config.json 读取，正在核对 Windows VPN 状态'
+    : connected
+      ? `${address || '地址由 Windows 管理'} · 已连接 ${formatDuration(item.connected_seconds)}`
+      : '未连接';
+  return {
+    profile,
+    name: profile.name || '未命名 VPN',
+    connected,
+    defaultRouteLabel: activeDefaultRouteLabel(item),
+    validationStatus: (CFG.credential_status || {})[profile.name] || '',
+    meta,
+    actionText: autoBusy
+      ? '正在自动连接' : pendingSystemCheck ? '核对中' : (connected ? '断开' : '连接'),
+    busy: autoBusy || pendingSystemCheck,
+    action: pendingSystemCheck ? null : event => connected
+      ? disconnectVpn(profile.name, event.currentTarget)
+      : connectVpn(profile.name, event.currentTarget),
+  };
 }
 
 function activeDefaultRouteLabel(item) {
@@ -2302,65 +2330,107 @@ function activeDefaultRouteLabel(item) {
   return families.length ? `${families.join('/')} 默认路由` : '';
 }
 
-function createConnectionRow({ profile, name, connected, defaultRouteLabel = '', validationStatus = '', meta, actionText, action, busy = false }) {
+function createConnectionRow(view) {
   const row = document.createElement('div');
-  const isDefault = name === CFG.vpn_name;
-  row.className = `active-connection${connected ? '' : ' disconnected'}${isDefault ? ' is-default' : ''}`;
+  row.className = `active-connection${view.connected ? '' : ' disconnected'}${view.name === CFG.vpn_name ? ' is-default' : ''}`;
   const stateDot = document.createElement('span');
-  stateDot.className = `connection-status-dot${connected ? ' on' : ''}`;
+  stateDot.className = `connection-status-dot${view.connected ? ' on' : ''}`;
   stateDot.setAttribute('aria-hidden', 'true');
   const nameBox = document.createElement('div');
   nameBox.className = 'active-connection-name';
+  nameBox.append(...connectionNameBoxChildren(view));
+  const metaBox = document.createElement('div');
+  metaBox.className = 'active-connection-meta';
+  metaBox.textContent = view.meta;
+  const actions = document.createElement('div');
+  actions.className = 'connection-row-actions';
+  actions.append(...connectionActionButtons(view));
+  row.append(stateDot, nameBox, metaBox, actions);
+  return row;
+}
+
+function connectionNameBoxChildren(view) {
+  const children = [];
   const title = document.createElement('strong');
-  title.textContent = name;
-  nameBox.appendChild(title);
-  if (isDefault) {
+  title.textContent = view.name;
+  children.push(title);
+  if (view.name === CFG.vpn_name) {
     const tag = document.createElement('span');
     tag.className = 'default-tag';
     tag.textContent = '默认';
-    nameBox.appendChild(tag);
+    children.push(tag);
   }
-  if (defaultRouteLabel) {
+  if (view.defaultRouteLabel) {
     const tag = document.createElement('span');
     tag.className = 'route-tag';
-    tag.textContent = defaultRouteLabel;
-    nameBox.appendChild(tag);
+    tag.textContent = view.defaultRouteLabel;
+    children.push(tag);
   }
-  if (validationStatus === 'windows_sync_failed') {
+  if (view.validationStatus === 'windows_sync_failed') {
     const tag = document.createElement('span');
     tag.className = 'credential-tag failed';
     tag.textContent = 'Windows 同步失败';
-    nameBox.appendChild(tag);
+    children.push(tag);
   }
-  const metaBox = document.createElement('div');
-  metaBox.className = 'active-connection-meta';
-  metaBox.textContent = meta;
-  const actions = document.createElement('div');
-  actions.className = 'connection-row-actions';
-  const actionButton = document.createElement('button');
-  actionButton.type = 'button';
-  actionButton.className = `connection-icon-action${connected ? ' connected' : ' primary'}`;
-  actionButton.innerHTML = connected
+  return children;
+}
+
+function connectionActionSvg(connected) {
+  return connected
     ? '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v8"/>' +
       '<path d="M17.7 6.3a8 8 0 1 1-11.4 0"/></svg>'
     : '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 7 8 5-8 5Z"/></svg>';
-  actionButton.title = `${actionText} ${name}`;
-  actionButton.setAttribute('aria-label', `${actionText} ${name}`);
-  actionButton.onclick = action;
+}
+
+function connectionActionButtons(view) {
+  const actionButton = document.createElement('button');
+  actionButton.type = 'button';
+  actionButton.className = `connection-icon-action${view.connected ? ' connected' : ' primary'}`;
+  actionButton.innerHTML = connectionActionSvg(view.connected);
+  actionButton.title = `${view.actionText} ${view.name}`;
+  actionButton.setAttribute('aria-label', `${view.actionText} ${view.name}`);
+  actionButton.onclick = view.action;
   actionButton.dataset.vpnAction = 'true';
-  if (busy) setConnectionButtonBusy(actionButton, actionText);
+  if (view.busy) setConnectionButtonBusy(actionButton, view.actionText);
   const moreButton = document.createElement('button');
   moreButton.type = 'button';
   moreButton.className = 'connection-icon-action more';
   moreButton.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24">' +
     '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/>' +
     '<circle cx="19" cy="12" r="1"/></svg>';
-  moreButton.title = `编辑 ${name}`;
-  moreButton.setAttribute('aria-label', `编辑 ${name}`);
-  moreButton.onclick = () => openModal(profile);
-  actions.append(actionButton, moreButton);
-  row.append(stateDot, nameBox, metaBox, actions);
-  return row;
+  moreButton.title = `编辑 ${view.name}`;
+  moreButton.setAttribute('aria-label', `编辑 ${view.name}`);
+  moreButton.onclick = () => openModal(view.profile);
+  return [actionButton, moreButton];
+}
+
+function updateConnectionRow(row, view) {
+  const className = `active-connection${view.connected ? '' : ' disconnected'}${view.name === CFG.vpn_name ? ' is-default' : ''}`;
+  if (row.className !== className) row.className = className;
+  const stateDot = row.querySelector('.connection-status-dot');
+  const dotClass = `connection-status-dot${view.connected ? ' on' : ''}`;
+  if (stateDot.className !== dotClass) stateDot.className = dotClass;
+  const nameBox = row.querySelector('.active-connection-name');
+  const tagSignature = JSON.stringify([
+    view.name === CFG.vpn_name, view.defaultRouteLabel, view.validationStatus]);
+  if (nameBox.dataset.tags !== tagSignature) {
+    nameBox.dataset.tags = tagSignature;
+    nameBox.replaceChildren(...connectionNameBoxChildren(view));
+  }
+  const metaBox = row.querySelector('.active-connection-meta');
+  if (metaBox.textContent !== view.meta) metaBox.textContent = view.meta;
+  const actionButton = row.querySelector('[data-vpn-action]');
+  actionButton.onclick = view.action;
+  const actionSignature = JSON.stringify([view.connected, view.busy, view.actionText]);
+  if (actionButton.dataset.state === actionSignature) return;
+  actionButton.dataset.state = actionSignature;
+  actionButton.className = `connection-icon-action${view.connected ? ' connected' : ' primary'}`;
+  actionButton.innerHTML = connectionActionSvg(view.connected);
+  actionButton.title = `${view.actionText} ${view.name}`;
+  actionButton.setAttribute('aria-label', `${view.actionText} ${view.name}`);
+  actionButton.disabled = false;
+  actionButton.classList.remove('is-busy');
+  if (view.busy) setConnectionButtonBusy(actionButton, view.actionText);
 }
 
 function createEmptyConnectionSlot() {
