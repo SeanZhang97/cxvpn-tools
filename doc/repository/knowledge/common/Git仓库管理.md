@@ -2,12 +2,13 @@
 
 模块：开发与交付 | 关键词：Git, GitHub, gitignore, 敏感配置, 构建产物, 运行时二进制
 代码路径：`.gitignore`, `core/config.py`, `build.py`, `build_runtime.py`, `runtime/routing/`
-入口：仓库根目录 | 最后验证：2026-09-01 | 分支：`main`
+入口：仓库根目录 | 最后验证：2026-10-10 | 分支：`main`
 
 ## 跟踪边界
 
-- `config.json` 是应用根目录下的便携式用户配置，可包含手机号、VPN 名称与凭据、
-  邮箱授权码、VLM API Key、订阅 URL 和 Controller secret，因此必须被 `.gitignore` 排除。
+- 活动主库是 `%LOCALAPPDATA%\CXVPNTools\state.sqlite3`；该目录的 `config.json`
+  仅用于首次导入和兼容导出。历史应用根目录 `config.json` 也可能含手机号、VPN 凭据、
+  邮箱授权码、VLM API Key、订阅 URL 和 Controller secret，必须继续由 `.gitignore` 排除。
 - `webview_data/` 和 `browser_data*/` 是 WebView2 用户数据目录，可包含 Cookie、
   Local Storage 和会话数据；`captcha_cache/` 与 `routing_data/` 也属于本地运行状态，均不跟踪。
 - `dist/`、`build_tmp/`、`routing-service/target/`、Python 虚拟环境与缓存是可重建产物，不进入代码仓库。

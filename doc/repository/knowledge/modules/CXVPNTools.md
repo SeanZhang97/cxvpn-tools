@@ -10,7 +10,7 @@
 
 ## 软件版本与发行构建
 
-最后验证：2026-10-09，main / v1.3.1。
+最后验证：2026-10-10，main / v1.3.2。
 
 代码路径：`core/version.py`、`api.py`、`core/app_update.py`、`ui/app.js`、
 `build.py`、`build_protected.py`、`build_release.py`、`installer/build_installer.ps1`。
