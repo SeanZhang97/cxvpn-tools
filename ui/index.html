@@ -466,7 +466,7 @@
             <div class="routing-auto-policy-actions"><p id="routing-auto-policy-feedback" class="form-feedback" role="status" aria-live="polite"></p><button id="btn-routing-auto-policy-save" class="btn primary" type="button">保存智能优选</button></div>
           </section>
           <div id="routing-node-filterbar" class="routing-node-filterbar">
-            <div class="routing-region-control"><span>地区</span><div id="routing-node-regions" class="routing-region-list" role="group" aria-label="按地区筛选节点"></div></div>
+            <div class="routing-region-control"><span>地区</span><div id="routing-node-regions" class="routing-region-list" role="group" aria-label="按地区筛选节点"><div class="routing-region-shortcuts"></div><div class="routing-region-more"><select id="routing-node-region-more" aria-label="更多地区"></select></div></div></div>
             <div class="routing-node-ordering">
               <div class="field"><label for="routing-node-sort">排序</label><select id="routing-node-sort">
                 <option value="default">订阅原始顺序</option>
@@ -698,6 +698,7 @@
       <div id="otp-grid" class="otp-grid" role="list" aria-label="2FA 账号"></div>
       <div id="otp-empty" class="otp-empty"><p id="otp-empty-text">正在读取账号…</p><button type="button" id="otp-retry" class="btn hidden">重新加载</button></div>
       <p id="otp-count" class="otp-count" aria-live="polite"></p>
+      <span id="otp-order-status" class="otp-order-status" role="status" aria-live="polite"></span>
     </section>
     <section id="page-cx" class="page settings-page">
       <header><h2>超星账号</h2><p>登录 remote.chaoxing.com 并接收短信验证码</p></header>
@@ -1212,11 +1213,16 @@
 <div id="otp-transfer" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="otp-transfer-title">
   <form id="otp-transfer-form" class="modal-card otp-transfer-card" autocomplete="off">
     <div class="modal-heading"><h3 id="otp-transfer-title">备份与恢复</h3></div>
-    <div class="otp-transfer-tabs" role="group" aria-label="备份操作"><button type="button" id="otp-mode-export" class="btn primary" aria-pressed="true">导出备份</button><button type="button" id="otp-mode-import" class="btn" aria-pressed="false">恢复备份</button></div>
+    <div class="otp-transfer-tabs" role="group" aria-label="备份操作"><button type="button" id="otp-mode-export" class="btn primary" aria-pressed="true">导出备份</button><button type="button" id="otp-mode-import" class="btn" aria-pressed="false">恢复备份</button><button type="button" id="otp-mode-google" class="btn" aria-pressed="false">Google 导入</button></div>
     <p id="otp-transfer-help" class="modal-lead">设置备份密码后选择保存位置。换电脑时可用该密码恢复账号，请妥善保管。</p>
     <div id="otp-password-fields">
       <div class="field"><label for="otp-password">备份密码</label><input id="otp-password" type="password" autocomplete="new-password" minlength="10" maxlength="512" placeholder="至少 10 个字符" required></div>
       <div id="otp-password-confirm-field" class="field"><label for="otp-password-confirm">确认密码</label><input id="otp-password-confirm" type="password" autocomplete="new-password" maxlength="512" required></div>
+    </div>
+    <div id="otp-google-fields" class="hidden">
+      <div class="otp-google-actions"><button type="button" id="otp-google-files" class="btn">选择二维码图片</button><button type="button" id="otp-google-reset" class="btn ghost">重新开始</button></div>
+      <p class="muted">可多选同一次导出的全部图片，也可按 Ctrl+V 逐张粘贴。支持 PNG、JPEG、WebP，单张不超过 6 MB。</p>
+      <p id="otp-google-progress" role="status" aria-live="polite"></p>
     </div>
     <div id="otp-restore-preview" class="otp-restore-preview hidden"><p id="otp-restore-summary"></p><ul id="otp-restore-items"></ul><p class="muted">重复和冲突项会跳过，保留现有账号。</p></div>
     <p id="otp-transfer-feedback" class="form-feedback" role="alert"></p>
@@ -1226,12 +1232,16 @@
 <div id="otp-menu" class="otp-menu hidden" role="menu" aria-label="账号操作"><button type="button" data-otp-action="edit" role="menuitem">编辑账号</button><button type="button" data-otp-action="delete" role="menuitem">删除账号</button></div>
 <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 <script src="app.js"></script>
+<script src="routing_regions.js"></script>
 <script src="routing_nodes.js"></script>
+<script src="routing_region_picker.js"></script>
 <script src="routing_telemetry.js"></script>
 <script src="routing_workspace.js"></script>
 <script src="routing.js"></script>
 <script src="proxy.js"></script>
 <script src="routing_activity.js"></script>
-<script src="two_factor.js"></script>
+  <script src="two_factor_brands.js"></script>
+  <script src="two_factor_order.js"></script>
+  <script src="two_factor.js"></script>
 </body>
 </html>

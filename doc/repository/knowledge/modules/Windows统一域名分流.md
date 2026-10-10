@@ -1,9 +1,9 @@
 # Windows 统一域名分流
 
 模块：Windows 网络路由 | 入口：`core/routing.py`、`core/routing_service.py`、`Api.apply_routing`
-界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
+界面：`ui/proxy.js`、`ui/routing.js`、`ui/routing_workspace.js`、`ui/routing_activity.js`、`ui/routing_nodes.js`、`ui/routing_telemetry.js`、`ui/style.css`、`ui/routing_rules.css` | 原生服务：`routing-service/` | 运行时：`runtime/routing/` | 本地规则：`rule-packs/`
 关键词：Mihomo, Named Pipe, Windows Service, system-proxy, 快速开关, 系统代理快切, Proxy Guard, TUN, routing schema, 本地规则包, rule-packs, proxy-provider, Windows VPN, 节点筛选, 节点排序, 订阅流量, 套餐到期, WebSocket, 连接日志, 核心日志, 后端遥测中继, 版本化状态流, 实时流量, Clash Verge Rev, 常驻核心, mixed-port, 订阅引导, 系统代理绕过, 配置导入, 配置导出, 文件选择, DNS高级模式, nameserver-policy, 托盘快捷操作, 域名分流导航
-最后验证：2026-09-29 | 分支：main
+最后验证：2026-10-09（节点定位、地区展示与实时速率查看；其余内容沿用 2026-09-29 验证） | 分支：main
 
 ## 职责边界
 
@@ -206,6 +206,7 @@
   直接使用某订阅时，两页节点可以不同。概览策略副标题仍读取 `proxy_strategy`，聚合
   已手动固定时也可能显示“自动测速”，不能据此判断聚合运行组仍是自动模式。
 - 订阅智能优选由 `core/routing_auto_policy.py` 编译。`auto_policy.stages[]` 最多 8 个，
+  地区名单与节点筛选共用 `ui/routing_regions.json`，包含完整国家与地区；节点筛选仅展示实际有节点的全部地区。数据来源、维护与识别边界见 [节点国家与地区识别](节点国家与地区识别.md)。
   每项包含地区代码、最多 12 个地区补充关键词和最多 12 个线路优先关键词；关键词按
   字面量安全转成 Go RE2。UI 用逐个添加/删除的标签编辑器维护数组，不接受在同一输入框
   以逗号、竖线或换行批量分隔。
@@ -571,9 +572,12 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   视觉；只有不可逆或高破坏性操作使用红色确认。
 - “查看全部节点”进入一级节点工作台，复用分流模块的运行态代理组和独立订阅
   预览能力，支持订阅组筛选、节点搜索、只看可用、后台整组测速、停止测速和持久化选点。
-  地区筛选由节点国旗和中英文地点名称在前端动态推导，只展示当前组实际存在的常用地区；排序支持
+  地区筛选由节点国旗和中英文地点名称在前端动态推导，全部已识别地区均可单独选择；主栏展示快捷地区，其余通过“更多地区”访问；排序支持
   订阅原始顺序、当前节点优先、延迟、倍率和名称，均不改变后端节点顺序或持久化配置。“定位当前
   节点”会清除展示筛选并聚焦手动目标或运行节点。
+  `locateCurrentNode` 清除搜索、可用和地区筛选，将排序设为当前节点优先，滚动并聚焦选中卡片；
+  `located` 高亮保留 1600ms。节点卡片焦点使用自身边框，不叠加偏移 outline 或硬边阴影；
+  后加载的 `routing_rules.css` 在选中态之后统一定位与焦点边框，避免选中态覆盖定位提示。
   已启用订阅的节点卡可“设为本订阅节点”，各订阅独立保存手动偏好，不改写默认出口。
   未启用订阅的手动选点按钮禁用，前端提交入口与后端 `save_proxy_preference` 同时拦截；
   后端以已保存订阅的启用状态为准，不能通过传入 enabled 草稿绕过。
@@ -686,7 +690,12 @@ UTF-8 `charset`，中文和国旗节点名会按系统代码页变成乱码。�
   搜索、排序、清空关闭历史以及通过后端 `DELETE /connections[/<id>]` 关闭连接。
 - 网络代理首页复用轻量遥测维护最近 60 秒的上下行速率采样，以同一纵轴绘制 SVG 趋势图；
   代理未连接、正在连接或重连时清空采样并归零，避免把上一会话流量误显示为当前速率；
-  图表悬停层按最近采样点显示时间、当前节点及上下行速率，焦点态也可读取最新采样。
+  图表悬停层按最近采样点显示时间、采样时节点及上下行速率，焦点态也可读取最新采样。
+  鼠标进入或聚焦时保存查看快照，固定 60 秒时间窗、纵轴和所选采样；后台实时历史仍按当前时间
+  保留最近 60 秒，实时数字继续更新。查看中的旧采样即使离开实时窗口也不会被删除，移动鼠标
+  只在进入时的快照内切换采样。提示框、准线和点标使用同一时间基准，刷新不再主动关闭提示框。
+  鼠标移出、焦点离开、Escape、窗口失焦、页面离开或隐藏时恢复最新曲线；断开或重连清空查看态
+  及历史。缩放只重新布局提示框，不改变查看的数据。离线交互验证见 `tests/test_ui_proxy_rate.js`。
 - 一级“日志”页把 `/logs?level=debug` 的 Mihomo 核心日志与原程序运行日志分开。核心日志支持级别、
   搜索、暂停、清空和正倒序；Controller secret、订阅 URL、URL 凭据、敏感查询参数和 Bearer token
   在进入 UI 前脱敏，核心日志默认只保存在内存，不写入 `run.log`。

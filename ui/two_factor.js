@@ -5,7 +5,10 @@
   let accounts = [], loaded = false, fetching = false, epoch = 0, timer = null;
   let anchor = null, retryAt = 0, editing = null, editorSession = 0, editorBusy = false;
   let transferBusy = false, transferMode = 'export', restoreToken = null;
+  let transferReset = Promise.resolve({ ok: true });
+  let editorBeforeGoogle = null;
   let returnFocus = null, menuAccount = null, menuTrigger = null;
+  let orderController = null, orderBusy = false;
   const active = () => byId('page-two-factor').classList.contains('active') && !document.hidden;
   const backend = () => window.pywebview?.api;
   const element = (tag, className, text) => {
@@ -29,6 +32,7 @@
     return accounts.filter(row => `${row.issuer}\n${row.account}`.toLocaleLowerCase().includes(query));
   }
   function render() {
+    orderController?.cancel();
     closeMenu(false);
     const rows = visibleAccounts();
     const fragment = document.createDocumentFragment();
@@ -37,8 +41,26 @@
       card.dataset.id = row.id;
       card.setAttribute('role', 'listitem');
       const head = element('div', 'otp-card-head');
-      const avatar = element('span', 'otp-avatar', Array.from(row.issuer)[0]?.toUpperCase() || '');
+      const drag = element('button', 'otp-drag');
+      drag.type = 'button';
+      drag.draggable = true;
+      drag.disabled = orderBusy;
+      drag.title = '拖动调整顺序';
+      drag.setAttribute('aria-label', `调整 ${row.issuer} ${row.account} 的顺序`);
+      drag.setAttribute('aria-description', '拖动手柄调整顺序，或按空格选中，再用方向键移动，Enter 保存，Escape 取消');
+      drag.setAttribute('aria-pressed', 'false');
+      drag.append(icon('grip'));
+      const brand = window.TwoFactorBrands?.image(row.issuer);
+      const avatar = element('span', brand ? 'otp-avatar otp-brand' : 'otp-avatar',
+        brand ? undefined : Array.from(row.issuer)[0]?.toUpperCase() || '');
       avatar.setAttribute('aria-hidden', 'true');
+      if (brand) {
+        const image = element('img');
+        image.src = brand;
+        image.alt = '';
+        image.draggable = false;
+        avatar.append(image);
+      }
       const identity = element('div', 'otp-identity');
       const issuer = element('h3', '', row.issuer), account = element('p', '', row.account);
       issuer.title = row.issuer;
@@ -67,7 +89,7 @@
       copy.append(icon('copy'), document.createTextNode('复制'));
       copy.addEventListener('click', () => void copyCode(row, copy));
       foot.append(progress, seconds, copy);
-      card.append(head, code, foot, element('p', 'otp-card-error', row.error || ''));
+      card.append(drag, head, code, foot, element('p', 'otp-card-error', row.error || ''));
       fragment.append(card);
     });
     byId('otp-grid').replaceChildren(fragment);
@@ -107,7 +129,7 @@
     tick();
   }
   async function refresh() {
-    if (!active() || fetching || !backend()) return;
+    if (!active() || fetching || orderBusy || orderController?.active() || !backend()) return;
     const requestEpoch = epoch;
     fetching = true;
     try {
@@ -147,11 +169,48 @@
     timer = setTimeout(tick, 250);
   }
   function pageChanged() {
+    orderController?.cancel();
     epoch++;
     clearTimeout(timer);
     closeMenu(false);
     if (active()) { retryAt = 0; void refresh(); tick(); }
     else { clearCodes(); anchor = null; }
+  }
+  function focusOrder(id) {
+    [...byId('otp-grid').querySelectorAll('.otp-card')].find(card => card.dataset.id === id)
+      ?.querySelector('.otp-drag')?.focus();
+  }
+  async function saveOrder(ids, expected, focusId) {
+    if (orderBusy) return;
+    orderBusy = true;
+    const requestEpoch = epoch;
+    const grid = byId('otp-grid');
+    grid.setAttribute('aria-busy', 'true');
+    grid.querySelectorAll('.otp-drag').forEach(handle => { handle.disabled = true; });
+    let deadline;
+    try {
+      checked(await Promise.race([backend().reorder_otp_accounts(ids, expected),
+        new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('保存顺序超时，请刷新后重试')), 10000); })]));
+      if (requestEpoch !== epoch || !active()) return;
+      const values = new Map(accounts.map(row => [row.id, row]));
+      accounts = ids.map(id => values.get(id));
+      render();
+      feedback('otp-feedback');
+      byId('otp-order-status').textContent = '账号顺序已保存';
+    } catch (error) {
+      if (requestEpoch !== epoch || !active()) return;
+      render();
+      orderBusy = false;
+      await refresh();
+      feedback('otp-feedback', friendlyError(error), 'error');
+      byId('otp-order-status').textContent = '顺序未保存，已重新读取账号';
+    } finally {
+      clearTimeout(deadline);
+      orderBusy = false;
+      grid.setAttribute('aria-busy', 'false');
+      grid.querySelectorAll('.otp-drag').forEach(handle => { handle.disabled = false; });
+      if (requestEpoch === epoch && active()) focusOrder(focusId);
+    }
   }
   async function copyCode(row, button) {
     if (button.disabled) return;
@@ -191,7 +250,7 @@
     returnFocus = document.activeElement;
     byId(id).classList.remove('hidden');
   }
-  async function modalClose(modal) {
+  async function modalClose(modal, completed = false) {
     if (modal.id === 'otp-editor') {
       if (editorBusy) return;
       editorSession++;
@@ -202,9 +261,17 @@
       if (transferBusy) return;
       byId('otp-transfer-form').reset();
       restoreToken = null;
-      if (backend()) void backend().cancel_otp_restore();
+      resetTransferBackend();
     }
     modal.classList.add('hidden');
+    if (modal.id === 'otp-transfer' && editorBeforeGoogle) {
+      returnFocus = editorBeforeGoogle.returnFocus;
+      editorBeforeGoogle = null;
+      if (completed) { await modalClose(byId('otp-editor')); return; }
+      byId('otp-editor').classList.remove('hidden');
+      byId('otp-qr').focus();
+      return;
+    }
     if (returnFocus?.isConnected) returnFocus.focus();
   }
   function refreshSelects() {
@@ -239,8 +306,19 @@
     setEditorBusy(true);
     feedback('otp-editor-feedback');
     try {
+      checked(await transferReset);
       const result = checked(await operation());
       if (result.cancelled || session !== editorSession) return;
+      if (result.kind === 'google') {
+        editorBeforeGoogle = { returnFocus };
+        byId('otp-editor').classList.add('hidden');
+        setTransferMode('google', false);
+        modalOpen('otp-transfer');
+        showGooglePreview(result);
+        setTransferBusy(false);
+        byId(result.pending ? 'otp-transfer-submit' : 'otp-google-files').focus();
+        return;
+      }
       const row = result.account;
       if (row.issuer) byId('otp-issuer').value = row.issuer;
       if (row.account) byId('otp-account').value = row.account;
@@ -271,28 +349,43 @@
     } catch (error) { feedback('otp-editor-feedback', friendlyError(error), 'error'); }
     finally { setEditorBusy(false); }
   }
-  function setTransferMode(mode) {
+  function resetTransferBackend() {
+    // 串行取消旧预览，避免切换页签后的迟到响应清掉新批次。
+    transferReset = transferReset.then(() => backend()?.cancel_otp_restore() || { ok: true })
+      .catch(error => ({ ok: false, msg: friendlyError(error) }));
+  }
+  function setTransferBusy(value) {
+    transferBusy = value;
+    byId('otp-transfer').querySelectorAll('button,input').forEach(control => { control.disabled = value; });
+    if (!value) byId('otp-transfer-submit').disabled = transferMode === 'google' && !restoreToken;
+  }
+  function setTransferMode(mode, resetBackend = true) {
     if (transferBusy) return;
     transferMode = mode;
     restoreToken = null;
     byId('otp-transfer-form').reset();
     byId('otp-restore-preview').classList.add('hidden');
-    byId('otp-password-fields').classList.remove('hidden');
-    byId('otp-password').required = true;
+    byId('otp-restore-items').replaceChildren();
+    byId('otp-password-fields').classList.toggle('hidden', mode === 'google');
+    byId('otp-google-fields').classList.toggle('hidden', mode !== 'google');
+    byId('otp-google-progress').textContent = '';
+    byId('otp-password').required = mode !== 'google';
     byId('otp-password-confirm').required = mode === 'export';
     byId('otp-password-confirm-field').classList.toggle('hidden', mode !== 'export');
-    ['export', 'import'].forEach(item => {
+    ['export', 'import', 'google'].forEach(item => {
       byId(`otp-mode-${item}`).className = `btn${mode === item ? ' primary' : ''}`;
       byId(`otp-mode-${item}`).setAttribute('aria-pressed', String(mode === item));
     });
     byId('otp-transfer-help').textContent = mode === 'export'
       ? '设置备份密码后选择保存位置。换电脑时可用该密码恢复账号，请妥善保管。'
-      : '输入备份密码后选择 .cx2fa 文件。先预览，再确认导入。';
-    byId('otp-transfer-submit').textContent = mode === 'export' ? '选择位置并导出' : '选择文件并预览';
+      : mode === 'google' ? '在 iPhone 的 Google Authenticator 中打开菜单 → 转移账号 → 导出账号，选择账号并生成二维码。若有多页，请保存全部二维码图片。'
+        : '输入备份密码后选择 .cx2fa 文件。先预览，再确认导入。';
+    byId('otp-transfer-submit').textContent = mode === 'export' ? '选择位置并导出' : mode === 'google' ? '确认导入' : '选择文件并预览';
     feedback('otp-transfer-feedback');
-    if (backend()) void backend().cancel_otp_restore();
+    if (resetBackend) resetTransferBackend();
+    setTransferBusy(false);
   }
-  function showRestorePreview(result) {
+  function showRestorePreview(result, skipped = []) {
     restoreToken = result.token;
     const summary = result.summary;
     byId('otp-password').value = '';
@@ -303,23 +396,53 @@
     byId('otp-restore-summary').textContent = `新增 ${summary.additions.length} 个，重复 ${summary.duplicates} 个，冲突 ${summary.conflicts.length} 个`;
     const replacements = summary.replacements || [];
     if (replacements.length) byId('otp-restore-summary').textContent += `，恢复不可读账号 ${replacements.length} 个`;
+    if (skipped.length) byId('otp-restore-summary').textContent += `，不支持 ${skipped.length} 个`;
     const rows = [...summary.additions.map(row => ({ ...row, status: '新增' })),
                   ...replacements.map(row => ({ ...row, status: '恢复不可读密钥' })),
-                  ...summary.conflicts.map(row => ({ ...row, status: '冲突，跳过' }))];
+                  ...summary.conflicts.map(row => ({ ...row, status: '冲突，跳过' })),
+                  ...skipped.map(row => ({ ...row, status: `${row.reason}，跳过` }))];
     byId('otp-restore-items').replaceChildren(...rows.map(row => element('li', '', `${row.issuer} · ${row.account}（${row.status}）`)));
     byId('otp-transfer-submit').textContent = '确认导入';
+  }
+  function showGooglePreview(result) {
+    const batch = result.batch;
+    restoreToken = null;
+    byId('otp-google-progress').textContent = `已读取 ${batch.received} / ${batch.total} 页` + (batch.missing.length
+      ? `，还缺第 ${batch.missing.join('、')} 页。请继续选择或粘贴图片。` : '，请核对账号后确认导入。');
+    if (result.pending) showRestorePreview(result, batch.skipped);
+    else {
+      byId('otp-restore-preview').classList.remove('hidden');
+      byId('otp-restore-summary').textContent = `已识别 ${batch.accounts.length} 个账号，收齐全部页后才能导入`;
+      const rows = [...batch.accounts.map(row => ({ ...row, status: '等待补齐' })),
+        ...batch.skipped.map(row => ({ ...row, status: `${row.reason}，跳过` }))];
+      byId('otp-restore-items').replaceChildren(...rows.map(row => element('li', '', `${row.issuer} · ${row.account}（${row.status}）`)));
+    }
+  }
+  async function previewGoogle(operation) {
+    if (transferBusy) return;
+    setTransferBusy(true);
+    feedback('otp-transfer-feedback', '正在读取二维码，可在文件窗口取消…');
+    try {
+      checked(await transferReset);
+      const result = checked(await operation());
+      feedback('otp-transfer-feedback');
+      if (!result.cancelled) showGooglePreview(result);
+    } catch (error) { feedback('otp-transfer-feedback', friendlyError(error), 'error'); }
+    finally { setTransferBusy(false); }
   }
   async function transfer(event) {
     event.preventDefault();
     if (transferBusy) return;
+    if (transferMode === 'google' && !restoreToken) return;
     if (transferMode === 'export' && byId('otp-password').value !== byId('otp-password-confirm').value) {
       feedback('otp-transfer-feedback', '两次输入的密码不一致', 'error'); return;
     }
-    transferBusy = true;
-    byId('otp-transfer').querySelectorAll('button').forEach(button => { button.disabled = true; });
+    setTransferBusy(true);
     feedback('otp-transfer-feedback', restoreToken ? '正在导入…' : '等待选择文件，可在文件窗口取消…');
     try {
-      const result = checked(await (restoreToken ? backend().restore_otp_backup(restoreToken)
+      checked(await transferReset);
+      const result = checked(await (restoreToken ? (transferMode === 'google'
+        ? backend().confirm_otp_google_import(restoreToken) : backend().restore_otp_backup(restoreToken))
         : transferMode === 'export' ? backend().export_otp_backup(byId('otp-password').value)
           : backend().preview_otp_restore(byId('otp-password').value)));
       if (result.cancelled) { feedback('otp-transfer-feedback'); return; }
@@ -330,20 +453,25 @@
       if (result.path) feedback('otp-transfer-feedback', `备份已保存：\n${result.path}`);
       else {
         transferBusy = false;
-        await modalClose(byId('otp-transfer'));
+        await modalClose(byId('otp-transfer'), true);
         toast(result);
         await changed();
       }
     } catch (error) {
-      if (restoreToken) { transferBusy = false; setTransferMode('import'); }
+      if (restoreToken) { transferBusy = false; setTransferMode(transferMode); }
       feedback('otp-transfer-feedback', friendlyError(error), 'error');
     }
     finally {
-      transferBusy = false;
-      byId('otp-transfer').querySelectorAll('button').forEach(button => { button.disabled = false; });
+      setTransferBusy(false);
     }
   }
   function bind() {
+    orderController = window.TwoFactorOrder?.attach(byId('otp-grid'), {
+      visible: () => visibleAccounts().map(row => row.id), all: () => accounts.map(row => row.id),
+      ready: () => active() && loaded && !fetching && !orderBusy,
+      start: () => { closeMenu(false); byId('otp-order-status').textContent = ''; }, save: saveOrder,
+      announce: message => { byId('otp-order-status').textContent = message; },
+    });
     byId('otp-search').addEventListener('input', render);
     byId('otp-add').addEventListener('click', () => openEditor());
     byId('otp-retry').addEventListener('click', () => { retryAt = 0; void refresh(); });
@@ -355,7 +483,9 @@
     byId('otp-parse').addEventListener('click', () => void fillFromInput(() => backend().parse_otp_input(byId('otp-secret').value)));
     byId('otp-qr').addEventListener('click', () => void fillFromInput(() => backend().import_otp_qr()));
     byId('otp-transfer-form').addEventListener('submit', transfer);
-    ['export', 'import'].forEach(mode => byId(`otp-mode-${mode}`).addEventListener('click', () => setTransferMode(mode)));
+    ['export', 'import', 'google'].forEach(mode => byId(`otp-mode-${mode}`).addEventListener('click', () => setTransferMode(mode)));
+    byId('otp-google-files').addEventListener('click', () => void previewGoogle(() => backend().preview_otp_google_images()));
+    byId('otp-google-reset').addEventListener('click', () => { setTransferMode('google'); byId('otp-google-files').focus(); });
     byId('otp-menu').addEventListener('click', async event => {
       const action = event.target.closest('[data-otp-action]')?.dataset.otpAction;
       const row = menuAccount;
@@ -372,21 +502,24 @@
       if (!event.target.closest('#otp-menu,.otp-more')) closeMenu(false);
     });
     document.addEventListener('paste', event => {
-      if (byId('otp-editor').classList.contains('hidden') || editorBusy) return;
+      const google = !byId('otp-transfer').classList.contains('hidden') && transferMode === 'google';
+      if (google ? transferBusy : byId('otp-editor').classList.contains('hidden') || editorBusy) return;
       const image = [...(event.clipboardData?.items || [])].find(item => item.type.startsWith('image/'));
       if (!image) return;
       event.preventDefault();
       const file = image.getAsFile();
-      if (!file || file.size > 6 * 1024 * 1024) { feedback('otp-editor-feedback', '图片为空或超过 6 MB', 'error'); return; }
-      void fillFromInput(async () => {
+      if (!file || file.size > 6 * 1024 * 1024) { feedback(google ? 'otp-transfer-feedback' : 'otp-editor-feedback', '图片为空或超过 6 MB', 'error'); return; }
+      const operation = async () => {
         const data = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result);
           reader.onerror = () => reject(new Error('剪贴板图片读取失败'));
           reader.readAsDataURL(file);
         });
-        return backend().decode_otp_image(data);
-      });
+        return google ? backend().preview_otp_google_image(data) : backend().decode_otp_image(data);
+      };
+      if (google) void previewGoogle(operation);
+      else void fillFromInput(operation);
     });
     document.addEventListener('keydown', event => {
       if (!byId('otp-menu').classList.contains('hidden')) {

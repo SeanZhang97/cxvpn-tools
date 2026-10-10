@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 import re
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -42,6 +47,37 @@ def policy_config(**policy_changes):
 
 
 class RoutingAutoPolicyTests(unittest.TestCase):
+    def test_catalog_unicode_survives_subprocess_json(self):
+        completed = subprocess.run([
+            sys.executable, '-c',
+            "import json; from core.routing_auto_policy import region_label; "
+            "name = region_label('LA') + ' e\\u0301 ' + chr(0x1F1F1) + chr(0x1F1E6); "
+            "print(json.dumps({'display_name': name}, ensure_ascii=False))",
+        ], cwd=str(Path(__file__).resolve().parents[1]),
+            env={**os.environ, 'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'},
+            capture_output=True, text=True, encoding='utf-8', errors='strict',
+            timeout=10, check=True)
+        self.assertEqual(json.loads(completed.stdout)['display_name'],
+                         '老挝 e\u0301 \U0001f1f1\U0001f1e6')
+
+    def test_worldwide_catalog_can_be_saved_and_compiled(self):
+        catalog = json.loads((Path(__file__).resolve().parents[1] /
+                              'ui/routing_regions.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(catalog), 258)
+        for code, (label, aliases) in catalog.items():
+            if code == 'OTHER':
+                continue
+            with self.subTest(region=code):
+                policy = routing_auto_policy.normalize_policy({
+                    'enabled': True, 'stages': [{'region': code}],
+                }, '订阅 e\u0301', routing.RoutingError)
+                pattern = routing_auto_policy.stage_region_pattern(policy['stages'][0])
+                self.assertEqual(routing_auto_policy.region_label(code), label)
+                self.assertRegex(f'pro-{label}-01', pattern)
+                self.assertRegex(f'pro-{code}-01', pattern)
+                flag = ''.join(chr(0x1F1E6 + ord(char) - 65) for char in code)
+                self.assertRegex(f'节点 e\u0301 {flag}', pattern)
+
     def test_normalizes_ordered_regions_and_safe_keywords(self):
         config = policy_config()
         policy = config['proxy_providers'][0]['auto_policy']

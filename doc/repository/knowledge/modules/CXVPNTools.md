@@ -8,6 +8,22 @@
 侧栏品牌区使用单行 `CXVPN` + `Tools` 组合，与 44px 图标垂直居中；
 产品名、窗口标题、可执行文件与打包目录统一为 `CXVPNTools`。
 
+## 软件版本与发行构建
+
+最后验证：2026-10-09，main / v1.3.1。
+
+代码路径：`core/version.py`、`api.py`、`core/app_update.py`、`ui/app.js`、
+`build.py`、`build_protected.py`、`build_release.py`、`installer/build_installer.ps1`。
+
+- `core/version.py` 是程序版本的唯一来源：`APP_VERSION` 为三段版本字符串，
+  `APP_VERSION_TUPLE` 为 Windows 文件版本的四段元组，二者应同步。
+- 帮助页通过 `Api.get_app_version` 获取该常量；`core/app_update.py` 用同一常量
+  返回 `current_version`、生成请求 User-Agent 并执行新旧版本比较。
+- 普通与受保护构建读取这两个常量生成 `build_version.txt` 和 exe 版本资源；
+  发行脚本用 `APP_VERSION` 命名分发产物与 manifest，安装器也从源文件读取版本。
+- 重新打包不会自动增加版本号，也不会从已安装程序、运行进程或远端 Release 继承版本。
+  工作区未同步版本发布提交时，打包结果继续使用工作区的旧版本，即使功能修复提交已经存在。
+
 ### 代理首页状态图标
 
 最后验证：2026-09-07，main。

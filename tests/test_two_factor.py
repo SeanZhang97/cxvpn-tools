@@ -179,7 +179,7 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.store.records(), [])
         self.assertEqual(state_store.load_config(self.temp.name), {'existing': '保留'})
         with closing(sqlite3.connect(state_store.database_path(self.temp.name))) as conn:
-            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 4)
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], state_store.SCHEMA_VERSION)
 
 
 class BackupTests(unittest.TestCase):

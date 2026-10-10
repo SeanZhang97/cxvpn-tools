@@ -2,7 +2,11 @@
 """节点名称驱动的分层自动优选策略。"""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import re
+
+from core.app_paths import resource_root
 
 
 MAX_STAGES = 8
@@ -13,29 +17,12 @@ SELECTION_MODES = {'latency', 'failure'}
 TOLERANCE_UNITS = {'ms', 'percent'}
 PERCENT_REFERENCE_MS = 100
 
+_REGION_DATA = json.loads(
+    (Path(resource_root()) / 'ui/routing_regions.json').read_text(encoding='utf-8'))
 REGION_CATALOG = {
-    'HK': ('香港', ('香港', 'Hong Kong', 'HKG', 'HK', '🇭🇰')),
-    'TW': ('台湾', ('台湾', '台灣', 'Taiwan', 'Taipei', '台北', 'TW', '🇹🇼')),
-    'JP': ('日本', ('日本', '东京', '東京', '大阪', '名古屋', 'Japan', 'Tokyo',
-                  'Osaka', 'JP', '🇯🇵')),
-    'SG': ('新加坡', ('新加坡', '狮城', '獅城', 'Singapore', 'SG', '🇸🇬')),
-    'US': ('美国', ('美国', '美國', '洛杉矶', '洛杉磯', '西雅图', '西雅圖',
-                  '纽约', '紐約', 'United States', 'Los Angeles', 'Seattle',
-                  'New York', 'USA', 'US', '🇺🇸')),
-    'KR': ('韩国', ('韩国', '韓國', '首尔', '首爾', 'Korea', 'Seoul', 'KR', '🇰🇷')),
-    'GB': ('英国', ('英国', '英國', '伦敦', '倫敦', 'United Kingdom', 'London',
-                  'UK', 'GB', '🇬🇧')),
-    'DE': ('德国', ('德国', '德國', '法兰克福', '法蘭克福', 'Germany',
-                  'Frankfurt', 'DE', '🇩🇪')),
-    'FR': ('法国', ('法国', '法國', '巴黎', 'France', 'Paris', 'FR', '🇫🇷')),
-    'CA': ('加拿大', ('加拿大', '多伦多', '多倫多', 'Canada', 'Toronto', 'CA', '🇨🇦')),
-    'AU': ('澳大利亚', ('澳大利亚', '澳大利亞', '澳洲', '悉尼', 'Australia',
-                   'Sydney', 'AU', '🇦🇺')),
-    'RU': ('俄罗斯', ('俄罗斯', '俄羅斯', '莫斯科', 'Russia', 'Moscow', 'RU', '🇷🇺')),
-    'IN': ('印度', ('印度', '孟买', '孟買', 'India', 'Mumbai', 'IN', '🇮🇳')),
-    'BR': ('巴西', ('巴西', '圣保罗', '聖保羅', 'Brazil', 'Sao Paulo', 'BR', '🇧🇷')),
-    'CN': ('中国', ('中国', '中國', '大陆', '大陸', 'China', 'CN', '🇨🇳')),
-    'OTHER': ('其他', ()),
+    code: (label, tuple(aliases) + (''.join(chr(0x1F1E6 + ord(char) - 65)
+                                        for char in code),) if code != 'OTHER' else ())
+    for code, (label, aliases) in _REGION_DATA.items()
 }
 
 def default_policy():

@@ -79,6 +79,7 @@
     widget.menu.classList.add('hidden');
     widget.trigger.setAttribute('aria-expanded', 'false');
     widget.trigger.removeAttribute('aria-activedescendant');
+    widget.searchControl?.close();
     widget.activeIndex = -1;
     if (restoreFocus) widget.trigger.focus();
     if (openSelect === widget) openSelect = null;
@@ -95,8 +96,9 @@
     const openUpward = below < Math.min(wantedHeight, 180) && above > below;
     const available = Math.max(96, (openUpward ? above : below) - gap);
     widget.root.classList.toggle('opens-upward', openUpward);
-    widget.menu.style.left = `${Math.max(viewportPadding, rect.left)}px`;
-    widget.menu.style.width = `${Math.min(rect.width, window.innerWidth - viewportPadding * 2)}px`;
+    const menuWidth = Math.min(widget.searchControl ? 460 : rect.width, window.innerWidth - viewportPadding * 2);
+    widget.menu.style.left = `${Math.max(viewportPadding, Math.min(rect.left, window.innerWidth - menuWidth - viewportPadding))}px`;
+    widget.menu.style.width = `${menuWidth}px`;
     widget.menu.style.maxHeight = `${Math.min(300, available)}px`;
     widget.menu.style.top = openUpward
       ? `${Math.max(viewportPadding, rect.top - gap - Math.min(wantedHeight, available))}px`
@@ -113,11 +115,12 @@
     return svg;
   }
 
-  function enhanceRoutingSelect(select, { compact = false } = {}) {
+  function enhanceRoutingSelect(select, { compact = false, searchable = false, triggerLabel = '' } = {}) {
     if (!select) return null;
     if (select._routingWidget) {
       select._routingWidget.compact = compact;
       select._routingWidget.root.classList.toggle('compact', compact);
+      select._routingWidget.triggerLabel = triggerLabel;
       select._routingWidget.refresh();
       return select._routingWidget;
     }
@@ -156,8 +159,9 @@
     document.body.append(menu);
 
     const widget = {
-      root, select, trigger, current, menu, compact, activeIndex: -1,
+      root, select, trigger, current, menu, compact, triggerLabel, activeIndex: -1,
       refresh() {
+        const restoreSearchFocus = widget.searchControl?.hasFocus();
         const options = [...select.options];
         const selected = options.find(item => item.value === select.value) || options[0];
         trigger.disabled = select.disabled;
@@ -165,7 +169,7 @@
         if (select.disabled && openSelect === widget) closeRoutingSelect(widget);
         current.replaceChildren();
         const title = document.createElement('strong');
-        title.textContent = selected?.textContent || '请选择';
+        title.textContent = widget.triggerLabel || selected?.textContent || '请选择';
         current.append(title);
         if (!widget.compact && selected?.dataset.detail) {
           const detail = document.createElement('small');
@@ -181,6 +185,7 @@
           button.id = `${menu.id}-option-${index}`;
           button.dataset.index = String(index);
           button.dataset.value = item.value;
+          button.dataset.search = item.dataset.search || item.textContent;
           const copy = document.createElement('span');
           const strong = document.createElement('strong');
           strong.textContent = item.textContent;
@@ -203,15 +208,20 @@
           };
           menu.append(button);
         });
+        widget.searchControl?.update();
+        if (restoreSearchFocus && openSelect === widget && !select.disabled) widget.searchControl.focus();
         if (openSelect === widget) placeRoutingMenu(widget);
       },
       setActive(index) {
-        const items = [...menu.querySelectorAll('[role="option"]')];
+        const items = [...menu.querySelectorAll('[role="option"]')].filter(item => !item.hidden);
         if (!items.length) return;
-        widget.activeIndex = Math.max(0, Math.min(index, items.length - 1));
-        items.forEach((item, itemIndex) => item.classList.toggle('active', itemIndex === widget.activeIndex));
-        widget.trigger.setAttribute('aria-activedescendant', items[widget.activeIndex].id);
-        items[widget.activeIndex].scrollIntoView({ block: 'nearest' });
+        const active = items.find(item => Number(item.dataset.index) === index)
+          || items[Math.max(0, Math.min(index, items.length - 1))];
+        widget.activeIndex = Number(active.dataset.index);
+        items.forEach(item => item.classList.toggle('active', item === active));
+        widget.trigger.setAttribute('aria-activedescendant', active.id);
+        widget.searchControl?.setActive(active.id);
+        active.scrollIntoView({ block: 'nearest' });
       },
       choose(index) {
         if (select.disabled) return;
@@ -229,16 +239,20 @@
         root.classList.add('open');
         menu.classList.remove('hidden');
         trigger.setAttribute('aria-expanded', 'true');
+        widget.searchControl?.reset();
         const selectedIndex = Math.max(0, select.selectedIndex);
         widget.setActive(selectedIndex);
         placeRoutingMenu(widget);
+        widget.searchControl?.focus();
       },
+      close: restoreFocus => closeRoutingSelect(widget, restoreFocus),
       destroy() {
         closeRoutingSelect(widget);
         menu.remove();
         select._routingWidget = null;
       },
     };
+    if (searchable) window.RoutingRegionPicker.enhanceMenu(widget);
     select._routingWidget = widget;
     trigger.onclick = event => {
       event.stopPropagation();
@@ -1755,24 +1769,12 @@
       nodeTestScope = 'all';
     }
     if (nodeRegionFilter === 'all') nodeTestScope = 'all';
-    const regionRoot = byId('routing-node-regions');
-    regionRoot?.replaceChildren(...regionOptions.map(region => {
-      const button = document.createElement('button');
-      button.type = 'button'; button.className = 'routing-region-chip';
-      button.dataset.region = region.code;
-      button.classList.toggle('active', region.code === nodeRegionFilter);
-      button.setAttribute('aria-pressed', String(region.code === nodeRegionFilter));
-      button.setAttribute('aria-label', `${region.label}，${region.count} 个节点`);
-      const label = document.createElement('span'); label.textContent = region.label;
-      const count = document.createElement('small'); count.textContent = String(region.count);
-      button.append(label, count);
-      button.onclick = () => {
-        nodeRegionFilter = region.code;
-        nodeTestScope = region.code === 'all' ? 'all' : 'region';
+    window.RoutingRegionPicker.render(byId('routing-node-regions'), regionOptions,
+      nodeRegionFilter, code => {
+        nodeRegionFilter = code;
+        nodeTestScope = code === 'all' ? 'all' : 'region';
         renderNodes();
-      };
-      return button;
-    }));
+      }, enhanceRoutingSelect);
     const batchTarget = batchTestTarget(group);
     const currentRegion = regionOptions.find(item =>
       item.code === nodeRegionFilter && item.code !== 'all');
@@ -3204,7 +3206,7 @@
       if (!autoPolicyDraft || autoPolicyDraft.stages.length >= 8) return;
       const used = new Set(autoPolicyDraft.stages.map(stage => stage.region));
       const visibleRegions = nodeTools.regionOptions(
-        nodeGroups().find(item => item.id === byId('routing-node-group')?.value)?.nodes || [], 20)
+        nodeGroups().find(item => item.id === byId('routing-node-group')?.value)?.nodes || [])
         .map(item => item.code).filter(code => code !== 'all');
       const choices = [...visibleRegions, ...Object.keys(nodeTools.REGION_LABELS)];
       const region = choices.find(code => !used.has(code));

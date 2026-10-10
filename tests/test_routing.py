@@ -67,6 +67,7 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(proxies['PHYSICAL']['interface-name'], '以太网')
         self.assertEqual(proxies['VPN-1']['interface-name'], '公司 VPN')
         self.assertEqual(generated['rules'], [
+            'DOMAIN,vpn.example.test,PHYSICAL',
             'DOMAIN,remote.chaoxing.com,PHYSICAL',
             'DOMAIN,mh.chaoxing.com,VPN-1',
             'DOMAIN-SUFFIX,chaoxing.com,PHYSICAL',
@@ -125,7 +126,8 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertFalse(generated['allow-lan'])
         self.assertEqual(generated['bind-address'], '127.0.0.1')
         self.assertEqual(generated['mixed-port'], config['mixed_port'])
-        self.assertEqual(generated['rules'], ['MATCH,PROXY'])
+        self.assertEqual(generated['rules'], [
+            'DOMAIN,vpn.example.test,PHYSICAL', 'MATCH,PROXY'])
         self.assertNotIn('VPN-1', {item['name'] for item in generated['proxies']})
         self.assertEqual(
             generated['proxy-providers']['provider-default']['size-limit'],
@@ -143,6 +145,7 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual(config['traffic_mode'], 'global')
         self.assertEqual(len(config['rules']), 3)
         self.assertEqual(generated['rules'], [
+            'DOMAIN,vpn.example.test,PHYSICAL',
             'DOMAIN,remote.chaoxing.com,PHYSICAL', 'MATCH,PROXY'])
         self.assertFalse(explained['matched'])
         self.assertEqual(explained['outbound'], 'proxy')
@@ -177,7 +180,7 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertNotIn('use', groups['PROXY'])
         self.assertEqual(groups['PROXY-beta']['type'], 'select')
         self.assertNotIn('url', groups['PROXY-beta'])
-        self.assertEqual(generated['rules'][1],
+        self.assertEqual(generated['rules'][2],
                          'DOMAIN,mh.chaoxing.com,PROXY-beta')
         self.assertEqual(
             generated['proxy-providers']['provider-alpha']['filter'],

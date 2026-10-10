@@ -7,6 +7,7 @@ const context = { console, setTimeout, clearTimeout,
   document: { getElementById: () => null, addEventListener() {} },
   window: { addEventListener() {} } };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(root, 'ui/routing_regions.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(root, 'ui/routing_nodes.js'), 'utf8'), context);
 const source = fs.readFileSync(path.join(root, 'ui/routing.js'), 'utf8');
 vm.runInContext(source.replace('  window.RoutingWorkspace = {', `

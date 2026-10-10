@@ -44,6 +44,7 @@
 
 final result: passed
 
+
 ---
 
 ## 当前记录：代理状态超星流光图标
@@ -137,5 +138,60 @@ final result: passed
 - 浏览器验证未操作真实 Windows 文件选择窗口或真实平台绑定；文件选择 API 使用项目已有 pywebview 模式，取消/错误路径有离线测试。
 - 用户真实主库未写入测试账号；原有配置仅自动更新检查时间戳发生运行态变化。
 - 打包程序已启动且进程响应正常；此结论不等同于真实平台登录或全量端到端回归。
+
+final result: passed
+
+---
+
+## 2026-10-10：2FA 方案 3、顶部保留与手工排序
+
+### Source and state
+
+- 内容区视觉依据：`C:/Users/29511/.codex/generated_images/01a0b3d5-6de5-7471-a17d-5a9d09457ae3/exec-b834264c-853a-45a9-ad9e-74a38c4d842d.png`，1490 × 1056 px；只采用其卡片布局和深蓝主题。
+- 顶部依据：用户最后确认的 `C:/Users/29511/AppData/Local/Temp/codex-clipboard-0ad67ffa-3d31-46c0-86a9-e54adcb43dcc.png`，1185 × 221 px。标题、锁图标、说明、下划线、搜索及两个主操作沿用当前源码；生成图顶部不作为实现目标。
+- 浏览器实现：`http://127.0.0.1:8877/`，当前生产 UI 文件配合隔离临时库；8 个公开示例账号，深色主题、初始排列。没有访问真实平台或写入真实账号做测试。
+- 完整实现截图：`build_tmp/2fa-sort-preview/desktop.jpg`，1482 × 906 px，CSS viewport 1482 × 906，devicePixelRatio=1；截取卡片区为 x=252/y=216/w=1184/h≈669。
+- 视觉源卡片区 x=44/y=253/w=1404/h=769 统一缩放至 1184 × 649；横向同尺度比较，记录生成图与实际组件约 3% 的纵向节奏差异。顶部保留造成的首屏起始高度变化为明确需求，不作为偏差。
+- 顶部实现截图：`build_tmp/2fa-sort-preview/header-full.jpg`，1424 × 906 px、同等 CSS 视口及 1× 密度；裁取 x=217/y=0/w=1185/h=218。用户图裁去顶部 3 px 外框后同尺寸比较。
+
+### Comparison evidence and iterations
+
+- 首轮完整合成对照：`build_tmp/2fa-sort-preview/comparison-first.png`；首卡局部：`build_tmp/2fa-sort-preview/comparison-first-card.png`。实现原始截图 `first.jpg`，已置于同一比较图中判断。
+- [P2，已修复] 平台/账号字号偏小、官方图标和手柄偏细，使身份与拖动入口弱于方案 3。平台 16→18 px、账号 13→14 px、图标 44→48 px、手柄图标 19→24 px；复制按钮 12→13 px 并增加点击尺寸，验证码上限 40→42 px，调整卡片内边距和行距。
+- 复核完整合成：`build_tmp/2fa-sort-preview/comparison-final.png`；首卡局部：`build_tmp/2fa-sort-preview/comparison-final-card.png`；对应重拍截图 `desktop.jpg`。身份、手柄、验证码及底部动作层级恢复，无未解决的 P0/P1/P2。
+- 顶部合成对照：`build_tmp/2fa-sort-preview/header-comparison.png`。正确规范裁切后，标题/工具条尺度和位置一致；源码比对也确认 header HTML 及其 CSS 与既有版本一致。第一次截图工具的 clip 原点未生效，随后改用完整截图再裁切；未将工具裁切问题误判为布局问题。
+
+### Required fidelity surfaces
+
+- 字体：沿用项目 Segoe UI Variable/Segoe UI/Microsoft YaHei，验证码 Cascadia Code/Consolas 等宽字体。18/14/42 px 层级明确；长名称和账号省略并保留 title；六/八位码不折行，Windows 字体字形与生成图的差异为可接受的系统字体差异。
+- 间距：三列同宽、16 px 卡片间距、20/20/18 px 内边距、12 px 圆角；顶栏完全保留。源图各行存在轻微不等高，实际网格统一对齐；3% 高度差不改变列数或隐藏操作，视为可接受偏差。
+- 配色：背景沿用 `--bg`，卡片采用深蓝渐变与低对比边界，验证码近白、账号蓝灰，青色进度和拖动状态复用主题色，顶部紫蓝按钮保持不变；hover、focus、disabled 和错误语义清楚。
+- 资产：GitHub/GitLab/OpenAI SVG、Google 64 px 官方 PNG、Lucide 手柄均为本地资源；没有手绘品牌替代。GitHub 使用当前官方 Invertocat 白版，取代生成图中的猫形近似；GitLab/OpenAI 裁去透明视口留白，路径与颜色保留。
+- 文案：沿用现有业务文案，不新增分组、备注、收藏或排序宣传区；保存信息仅由必要错误反馈及读屏状态提供。示例验证码的秒数随实际计时变化，源图固定 21 秒不作为静态数值约束。
+
+### Primary interactions and responsive evidence
+
+- 鼠标手柄将首条拖到第三条后，后台保存成功；刷新后保持新排列，见 `after-drag.jpg`。通过键盘恢复初始排列。
+- Space/Enter 选中、Home/方向键移动、Enter 保存与焦点恢复已在浏览器验证；Escape/Tab 取消、无效落点取消由控制器离线测试覆盖。
+- 搜索 GitHub 后拖动两条匹配账号，清空搜索显示其他 6 条位置未变；之后恢复原排列。
+- `?fail-order=1` 模拟保存失败，页面恢复后端顺序，见 `save-failure.jpg`；事务失败及过期请求的持久化回滚由 Python 测试覆盖。
+- 1000 × 800 的 50 条列表为两列、760 × 800 为一列；分别见 `stress-two-columns.jpg`、`stress-one-column.jpg`。覆盖长 Unicode 名称、8 位码、未知平台首字、单条密钥错误及禁用复制；卡片和底部动作横向溢出数为 0，官方图标加载成功。
+- 高密度主区实测全局 WebKit 滑块 `rgba(129,140,248,.34)`、轨道 `rgba(3,7,18,.52)`，无局部冲突颜色；静态检查包含标准 scrollbar-color 兼容路径。空列表无多余滚动，见 `empty.jpg`；未新增横向滚动区域。
+- 浏览器 console warning/error：0。顶部及页面原有高级设置使用既有自定义下拉，不新增 select。
+
+### Build and boundaries
+
+- 最小相关检查：Python 56 项通过；JavaScript 排序/品牌、2FA 静态、Google 导入、自定义下拉与 UI 样式检查通过，语法检查通过。
+- `uv run --with pyinstaller python build.py` 成功；产物 `dist/CXVPNTools/CXVPNTools.exe` 时间戳 2026-10-10 11:50:14，自动启动 PID 52872，进程响应正常。
+- 真实桌面数据视图 `C:/Users/29511/AppData/Local/CXVPNTools` 构建前后配置、全部加密账号及既有顺序保持一致；schema 4→5，仅新增排序表。备份 `recovery-backups/state-before-build-20261010-114951.sqlite3`。
+- 打包 UI/脚本/图标/许可证与当前源码逐项相同，业务模块包含于 PYZ，产物不携带 state.sqlite3 或 config.json；打包 EXE 的普通/Google QR 自动识别使用公开合成向量通过。
+- 浏览器验证使用隔离桥接；未执行完整端到端回归、真实平台登录、原生 WebView2 指针交互或 Windows 文件选择器。真实库只由正常新版启动执行 schema 升级，没有测试账号、排序或密钥写入。
+- 低 schema 旧程序不能直接读取 v5 主库，回退必须先处理备份与兼容性。
+
+### Implementation checklist
+
+- 顶部保持、卡片重设计、官方图标、手工排序及失败恢复：完成。
+- 源/实现完整及局部对比，相关离线验证、知识和变更记录、打包与配置核对：完成。
+- 残留 P3：生成图品牌标记和 Windows 字体外形的少量差异采用真实资源/项目字体；无需进一步重绘。
 
 final result: passed

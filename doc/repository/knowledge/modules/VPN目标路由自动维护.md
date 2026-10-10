@@ -1,11 +1,28 @@
 # VPN 目标路由自动维护
 
 模块：Windows VPN 动态目标路由
-关键词：VPN, DNS, 首次访问, fake-IP, 路由租约, Named Pipe, 路由恢复, 核心定制
+关键词：VPN, DNS, 首次访问, fake-IP, 路由租约, Named Pipe, 路由恢复, 核心定制, VPN服务器解析, 断网重连, 628
 代码路径：`core/routing.py`、`routing-service/src/vpn_route_*.rs`、`routing-service/src/vpn_routes*.rs`、
 `routing-service/src/core_job.rs`、`patches/mihomo/`、`build_mihomo.py`
 入口：`build_mihomo_config`、Mihomo direct 的 TCP/UDP 出站、`RouteState.acquire`
-最后验证：2026-09-19 | 分支：main（工作区实现）
+最后验证：2026-10-10 | 分支：main（工作区实现）
+
+## VPN 服务器解析与握手保护
+
+- Windows VPN 的服务器域名属于隧道建立前的基础连接。所有已配置 VPN（包含未连接、
+  未被业务规则引用的条目）的服务器域名都加入运行配置 `dns.fake-ip-filter`，并使用
+  精确 `nameserver-policy` 绑定当前 DNS 模式的 `direct-nameserver`；业务规则和全局
+  MATCH 前固定生成 `DOMAIN,<服务器域名>,PHYSICAL`，避免服务器连接依赖其自身隧道。
+- 简单模式使用默认 DNS，高级模式沿用用户保存 DNS；保护项只合入生成配置，不改写
+  用户 DNS 草稿、业务规则、VPN 服务器地址、账号或凭据。IP 字面量不加入域名过滤器。
+- 应用及系统代理快切待机配置为全部 VPN 服务器预解析物理排除路由。系统解析产生
+  IPv4 `198.18.0.0/15` 或 IPv6 `fdfe:dcba:9876::/64` 虚拟地址时，改用当前核心
+  `/dns/query` 的真实 resolver 查询 A/AAAA；总期限 5 秒、每次 Controller 请求 2 秒。
+  单个地址族失败仍可使用另一个地址族的真实结果；无法确认真实地址时保留警告，
+  不把 fake-IP 加入 `tun.route-exclude-address`。
+- 拔插网线后原有 VPN 被断开、重拨持续返回 628 时，应核对 RasClient 的实际服务器
+  地址与系统 DNS。如果服务器被解析成 fake-IP，修复 RasMan/IKE 服务不会纠正 DNS；
+  应重新应用受保护的分流配置、清理 Windows DNS 缓存，再连接原 VPN。
 
 ## 调用链与出口隔离
 

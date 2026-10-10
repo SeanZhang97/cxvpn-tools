@@ -12,7 +12,7 @@ MAX_BYTES = 6 * 1024 * 1024
 MAX_PIXELS = 8_000_000
 
 
-def decode_image(content):
+def _read_values(content):
     from PIL import Image, UnidentifiedImageError
     import zxingcpp
 
@@ -31,11 +31,30 @@ def decode_image(content):
     values = list(dict.fromkeys(code.text for code in codes if code.valid))
     if not values:
         raise TwoFactorError('未识别到二维码，请使用清晰完整的图片')
+    if len(values) > 32:
+        raise TwoFactorError('图片中的二维码过多，请分张导入')
+    return values
+
+
+def decode_image(content):
+    values = _read_values(content)
+    return _totp_value(values)
+
+
+def _totp_value(values):
     if len(values) != 1:
         raise TwoFactorError('图片包含多个二维码，请裁剪至单个账号后重试')
+    if values[0].lower().startswith('otpauth-migration://'):
+        raise TwoFactorError('这是 Google 导出二维码，请在“备份与恢复 → Google 导入”中批量导入')
     if not values[0].lower().startswith('otpauth://totp/'):
         raise TwoFactorError('此二维码不是标准 TOTP 账号二维码')
     return values[0]
+
+
+def _automatic_result(values):
+    if all(value.lower().startswith('otpauth-migration://offline?') for value in values):
+        return {'kind': 'google', 'uris': values}
+    return {'kind': 'totp', 'uri': _totp_value(values)}
 
 
 def _pipe_stream(kind):
@@ -55,7 +74,16 @@ def _pipe_stream(kind):
 
 def run_child():
     try:
-        result = {'ok': True, 'uri': decode_image(_pipe_stream('stdin').read(MAX_BYTES + 1))}
+        content = _pipe_stream('stdin').read(MAX_BYTES + 1)
+        if '--otp-auto' in sys.argv:
+            result = {'ok': True, **_automatic_result(_read_values(content))}
+        elif '--otp-migration' in sys.argv:
+            values = _read_values(content)
+            if any(not value.lower().startswith('otpauth-migration://offline?') for value in values):
+                raise TwoFactorError('请选择 Google Authenticator 导出账号的二维码')
+            result = {'ok': True, 'uris': values}
+        else:
+            result = {'ok': True, 'uri': decode_image(content)}
     except Exception as exc:
         result = {'ok': False, 'msg': str(exc) if isinstance(exc, TwoFactorError) else '二维码识别失败'}
     stream = _pipe_stream('stdout')
@@ -63,23 +91,36 @@ def run_child():
     stream.flush()
 
 
-def decode_isolated(content):
+def decode_isolated(content, migration=False, timeout=10, auto=False):
     if not isinstance(content, bytes) or not content or len(content) > MAX_BYTES:
         raise TwoFactorError('图片为空或超过 6 MB')
     command = [sys.executable]
     if not getattr(sys, 'frozen', False):
         command.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'main.py'))
     command.append('--otp-decode')
+    if auto:
+        command.append('--otp-auto')
+    elif migration:
+        command.append('--otp-migration')
     try:
-        completed = subprocess.run(command, input=content, capture_output=True, timeout=10,
+        completed = subprocess.run(command, input=content, capture_output=True, timeout=timeout,
                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), check=False)
-        if completed.returncode != 0 or len(completed.stdout) > 32768:
+        if completed.returncode != 0 or len(completed.stdout) > (1024 * 1024 if migration or auto else 32768):
             raise TwoFactorError('二维码识别进程异常退出')
         result = json.loads(completed.stdout.decode('utf-8'))
         if not result.get('ok'):
             raise TwoFactorError(result.get('msg') or '二维码识别失败')
+        if auto and result.get('kind') == 'totp' and isinstance(result.get('uri'), str):
+            return {'kind': 'totp', 'uri': result['uri']}
+        if auto and result.get('kind') != 'google':
+            raise TwoFactorError('二维码识别返回无效结果')
+        if migration or auto:
+            values = result['uris']
+            if not isinstance(values, list) or not 1 <= len(values) <= 32 or any(not isinstance(v, str) for v in values):
+                raise TwoFactorError('二维码识别返回无效结果')
+            return {'kind': 'google', 'uris': values} if auto else values
         return result['uri']
     except subprocess.TimeoutExpired:
-        raise TwoFactorError('二维码识别超过 10 秒，已终止；请裁剪图片后重试') from None
+        raise TwoFactorError('二维码识别超时，已终止；请裁剪图片后重试') from None
     except (UnicodeError, json.JSONDecodeError, KeyError):
         raise TwoFactorError('二维码识别返回无效结果') from None

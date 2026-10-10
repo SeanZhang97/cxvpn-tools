@@ -13,6 +13,7 @@ const context = {
   } } },
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'ui', 'routing_regions.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'ui', 'routing_nodes.js'), 'utf8'), context);
 vm.runInContext(source.replace('  window.RoutingWorkspace = {', `
   window.selectionTest = {

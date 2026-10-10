@@ -15,7 +15,7 @@ import traceback
 from core import app_paths
 
 DB_FILENAME = 'state.sqlite3'
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _local = threading.local()
 _log = logging.getLogger(__name__)
 _reporter = None
@@ -78,6 +78,9 @@ def _schema(conn):
                      'algorithm TEXT NOT NULL, digits INTEGER NOT NULL, period INTEGER NOT NULL, '
                      'secret BLOB NOT NULL, revision INTEGER NOT NULL, '
                      'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
+        conn.execute('CREATE TABLE IF NOT EXISTS otp_account_order ('
+                     'account_id TEXT PRIMARY KEY REFERENCES otp_accounts(id) ON DELETE CASCADE, '
+                     'position INTEGER NOT NULL CHECK(position>=0))')
         conn.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         conn.commit()
     except BaseException:

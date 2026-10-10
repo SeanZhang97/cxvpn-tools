@@ -13,6 +13,7 @@
   let telemetryData = { up: 0, down: 0, upTotal: 0, downTotal: 0 };
   const RATE_WINDOW_MS = 60 * 1000;
   let rateHistory = { up: [], down: [] };
+  let rateInspection = null;
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value || {}));
@@ -151,6 +152,7 @@
 
   function resetRateHistory() {
     rateHistory = { up: [], down: [] };
+    rateInspection = null;
   }
 
   function ratePath(samples, maxValue, closeArea = false, now = Date.now()) {
@@ -177,15 +179,15 @@
     return `M${firstX} ${baseline} ${line.replace(/^M/, 'L')} L${lastX} ${baseline} Z`;
   }
 
-  function rateSamples() {
-    const times = new Set([...rateHistory.up, ...rateHistory.down].map(item => item.time));
+  function rateSamples(history = rateHistory) {
+    const times = new Set([...history.up, ...history.down].map(item => item.time));
     return [...times].sort((a, b) => a - b).map(time => {
       const nearest = samples => samples.reduce((best, item) => {
         if (!best || Math.abs(item.time - time) < Math.abs(best.time - time)) return item;
         return best;
       }, null);
-      const up = nearest(rateHistory.up);
-      const down = nearest(rateHistory.down);
+      const up = nearest(history.up);
+      const down = nearest(history.down);
       return { time, up, down, node: up?.node || down?.node || '' };
     });
   }
@@ -217,12 +219,11 @@
     });
   }
 
-  function showRateTooltip(sample, x, maxValue) {
+  function showRateTooltip(sample, maxValue, now = Date.now()) {
     const tooltip = byId('proxy-rate-tooltip');
     const chart = byId('proxy-rate-chart');
     const wrap = chart?.parentElement;
     if (!tooltip || !chart || !wrap || !sample) return;
-    const now = Date.now();
     const up = sample.up || { value: 0 };
     const down = sample.down || { value: 0 };
     const upPoint = ratePoint(up.value, maxValue, sample.time, now);
@@ -235,7 +236,7 @@
     setText('proxy-rate-tooltip-down-value', `下行 ${formatRateValue(down.value)}`);
     const wrapRect = wrap.getBoundingClientRect();
     const chartRect = chart.getBoundingClientRect();
-    const sampleX = upPoint.x || downPoint.x || x;
+    const sampleX = upPoint.x;
     const pointerRatio = Math.max(0, Math.min(1, sampleX / 360));
     const tooltipRect = tooltip.getBoundingClientRect();
     const tooltipWidth = tooltipRect.width || 146;
@@ -264,32 +265,46 @@
     if (downDot) { downDot.setAttribute('cx', downPoint.x.toFixed(1)); downDot.setAttribute('cy', downPoint.y.toFixed(1)); downDot.style.display = 'block'; }
   }
 
+  function inspectRateAt(ratio) {
+    if (!rateInspection) {
+      const history = { up: rateHistory.up.slice(), down: rateHistory.down.slice() };
+      const samples = rateSamples(history);
+      if (!samples.length) return hideRateTooltip();
+      // 查看历史时固定时间窗和纵轴；实时采样仍继续写入独立的 rateHistory。
+      rateInspection = { history, samples, now: Date.now() };
+    }
+    const time = rateInspection.now - RATE_WINDOW_MS + ratio * RATE_WINDOW_MS;
+    rateInspection.sample = rateInspection.samples.reduce((best, item) =>
+      !best || Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best, null);
+    renderRateChart();
+  }
+
+  function endRateInspection() {
+    if (!rateInspection) return;
+    rateInspection = null;
+    renderRateChart();
+  }
+
   function bindRateChart() {
     const chart = byId('proxy-rate-chart');
     const target = byId('proxy-rate-hover-target');
     if (!chart || !target || target.dataset.bound === 'true') return;
     target.dataset.bound = 'true';
     const update = event => {
-      const samples = rateSamples();
-      if (!samples.length) return hideRateTooltip();
       const rect = chart.getBoundingClientRect();
       const ratio = rect.width ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) : 1;
-      const now = Date.now();
-      const time = now - RATE_WINDOW_MS + ratio * RATE_WINDOW_MS;
-      const sample = samples.reduce((best, item) => !best || Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best, null);
-      const max = Math.max(1, ...rateHistory.up.map(item => item.value), ...rateHistory.down.map(item => item.value));
-      showRateTooltip(sample, 360 * ratio, max);
+      inspectRateAt(ratio);
     };
+    target.addEventListener('mouseenter', update);
     target.addEventListener('mousemove', update);
-    target.addEventListener('focus', () => {
-      const samples = rateSamples();
-      const sample = samples[samples.length - 1];
-      if (!sample) return;
-      const max = Math.max(1, ...rateHistory.up.map(item => item.value), ...rateHistory.down.map(item => item.value));
-      showRateTooltip(sample, 360, max);
+    target.addEventListener('focus', () => inspectRateAt(1));
+    target.addEventListener('keydown', event => {
+      if (event.key === 'Escape') endRateInspection();
     });
-    target.addEventListener('blur', hideRateTooltip);
-    chart.addEventListener('mouseleave', hideRateTooltip);
+    target.addEventListener('blur', endRateInspection);
+    chart.addEventListener('mouseleave', endRateInspection);
+    window.addEventListener('resize', renderRateChart);
+    window.addEventListener('blur', endRateInspection);
   }
 
   function renderRateChart() {
@@ -298,13 +313,15 @@
     const uploadFill = byId('proxy-upload-chart-fill');
     const downloadFill = byId('proxy-download-chart-fill');
     if (!upload || !download || !uploadFill || !downloadFill) return;
-    const now = Date.now();
-    const max = Math.max(1, ...rateHistory.up.map(item => item.value), ...rateHistory.down.map(item => item.value));
-    upload.setAttribute('d', ratePath(rateHistory.up, max, false, now));
-    download.setAttribute('d', ratePath(rateHistory.down, max, false, now));
-    uploadFill.setAttribute('d', ratePath(rateHistory.up, max, true, now));
-    downloadFill.setAttribute('d', ratePath(rateHistory.down, max, true, now));
-    hideRateTooltip();
+    const now = rateInspection?.now ?? Date.now();
+    const history = rateInspection?.history || rateHistory;
+    const max = Math.max(1, ...history.up.map(item => item.value), ...history.down.map(item => item.value));
+    upload.setAttribute('d', ratePath(history.up, max, false, now));
+    download.setAttribute('d', ratePath(history.down, max, false, now));
+    uploadFill.setAttribute('d', ratePath(history.up, max, true, now));
+    downloadFill.setAttribute('d', ratePath(history.down, max, true, now));
+    if (rateInspection?.sample) showRateTooltip(rateInspection.sample, max, now);
+    else hideRateTooltip();
     const chart = byId('proxy-rate-chart');
     if (chart) chart.setAttribute('aria-label', `实时上行 ${window.RoutingTelemetryTools?.formatRate?.(telemetryData.up) || '0 B/s'}，下行 ${window.RoutingTelemetryTools?.formatRate?.(telemetryData.down) || '0 B/s'}，过去 60 秒趋势图`);
   }
@@ -384,6 +401,7 @@
 
   function reconcileTelemetry(running) {
     const active = !!running && proxyHomeVisible();
+    if (!active) endRateInspection();
     if (active === telemetryActive) return;
     telemetryActive = active;
     backend()?.set_routing_telemetry_active?.(active)?.catch?.(() => {

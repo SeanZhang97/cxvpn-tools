@@ -1094,8 +1094,45 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
     return warnings
 
 
-def _resolve_vpn_server_routes(vpns, selected_names):
+def _vpn_server_domains(vpns):
+    domains = set()
+    for profile in vpns:
+        server = str(profile.get('server') or '').strip().rstrip('.').lower()
+        try:
+            ipaddress.ip_address(server)
+        except ValueError:
+            if DOMAIN_RE.fullmatch(server):
+                domains.add(server)
+    return sorted(domains)
+
+
+def _resolve_vpn_server_routes(vpns, selected_names, real_lookup=None,
+                               fake_ip_range='198.18.0.0/16'):
     routes, warnings, lookups = set(), [], {}
+    fake_networks = (ipaddress.ip_network('198.18.0.0/15'),
+                     ipaddress.ip_network(fake_ip_range, strict=False),
+                     ipaddress.ip_network('fdfe:dcba:9876::/64'))
+
+    def is_fake(address):
+        return any(address.version == network.version and address in network
+                   for network in fake_networks)
+
+    def resolve(server):
+        try:
+            addresses = {ipaddress.ip_address(info[4][0]) for info in
+                         socket.getaddrinfo(server, None, type=socket.SOCK_STREAM)}
+        except OSError:
+            if real_lookup is None:
+                raise
+            addresses = set()
+        if not addresses or any(is_fake(address) for address in addresses):
+            if real_lookup is None:
+                raise RoutingError('VPN 服务器被解析为 fake-IP，缺少真实 DNS 解析')
+            addresses = {ipaddress.ip_address(value) for value in real_lookup(server)}
+        if not addresses or any(is_fake(address) for address in addresses):
+            raise RoutingError('VPN 服务器未能取得真实地址')
+        return addresses
+
     for profile in vpns:
         if profile.get('name') not in selected_names:
             continue
@@ -1104,13 +1141,15 @@ def _resolve_vpn_server_routes(vpns, selected_names):
             continue
         try:
             address = ipaddress.ip_address(server)
-            routes.add(f'{address}/{32 if address.version == 4 else 128}')
+            if is_fake(address):
+                warnings.append(f'VPN 服务器“{server}”位于 fake-IP 地址池，未加入物理排除路由')
+            else:
+                routes.add(f'{address}/{32 if address.version == 4 else 128}')
         except ValueError:
-            lookups[server] = lambda server=server: socket.getaddrinfo(server, None, type=socket.SOCK_STREAM)
+            lookups[server] = lambda server=server: resolve(server)
     results, errors = bounded_calls(lookups, 5)
-    for rows in results.values():
-        for info in rows:
-            address = ipaddress.ip_address(info[4][0])
+    for addresses in results.values():
+        for address in addresses:
             routes.add(f'{address}/{32 if address.version == 4 else 128}')
     for server in errors:
         warnings.append(f'未能在期限内预解析 VPN 服务器“{server}”，VPN 重连时可能需要暂停统一分流')
@@ -1228,6 +1267,9 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
         return proxy_names[value[4:]]
 
     dns_source = config if config.get('dns_mode') == 'advanced' else default_config()
+    # Windows 原生 VPN 的握手不能发送到 TUN 的虚拟地址；保护所有已配置
+    # 条目，包含未连接、未被业务域名规则引用的 VPN。
+    vpn_domains = _vpn_server_domains(vpns)
     dns_config = {
         'enable': True,
         'ipv6': True,
@@ -1243,13 +1285,18 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
         dns_config.update({
             'fake-ip-range': dns_source['fake_ip_range'],
             'fake-ip-range6': 'fdfe:dcba:9876::1/64',
-            'fake-ip-filter': dns_source['fake_ip_filter'],
+            'fake-ip-filter': list(dict.fromkeys(
+                [*dns_source['fake_ip_filter'], *vpn_domains])),
         })
     if dns_source.get('nameserver_policy'):
         dns_config['nameserver-policy'] = {
             f'+.{item["domain"]}': item['servers']
             for item in dns_source['nameserver_policy']
         }
+    if vpn_domains:
+        policy = dns_config.setdefault('nameserver-policy', {})
+        for domain in vpn_domains:
+            policy[domain] = list(dns_source['direct_nameserver'])
     if config.get('dns_mode') != 'advanced':
         dns_config.update({
             'fallback': list(dns_source['proxy_server_nameserver']),
@@ -1355,7 +1402,7 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
                                     for item in enabled_providers), default=300),
             proxy_names=[provider_groups[item['id']]
                          for item in enabled_providers]))
-    rules = []
+    rules = [f'DOMAIN,{domain},PHYSICAL' for domain in vpn_domains]
     if standby:
         rules.append('MATCH,PROXY' if enabled_providers else 'MATCH,PHYSICAL')
     else:
@@ -1732,14 +1779,14 @@ class RoutingManager:
 
     def _repair_invalid_proxy(self, reason):
         """只修复当前用户的空手动代理，不替换合法第三方代理。"""
+        started = time.monotonic()
         try:
             state = proxy_guard.read_proxy_state(strict=True)
             if not proxy_guard.invalid_manual_proxy(state):
                 return
-            started = time.monotonic()
             self._log_best_effort(
                 f'[routing] {reason}发现无效手动代理，开始备份并修复当前用户 WinINet 设置')
-            if not proxy_guard.repair_invalid_manual_proxy():
+            if not proxy_guard.repair_invalid_manual_proxy(log=self._log_best_effort):
                 raise OSError('修复前代理状态已变化')
             self._refresh_user_proxy_settings('无效手动代理修复后')
             state = proxy_guard.read_proxy_state(strict=True)
@@ -1750,7 +1797,7 @@ class RoutingManager:
         except (OSError, ValueError) as exc:
             self._log_best_effort(
                 f'[routing] {reason}代理状态确认失败：{type(exc).__name__}: '
-                f'{_sanitize_mihomo_error(exc)}')
+                f'{_sanitize_mihomo_error(exc)}，耗时={time.monotonic()-started:.2f}秒')
             raise RoutingError('Windows 手动代理状态无法确认，请检查系统代理设置后重试') from exc
 
     def _confirm_disabled_proxy(self, reason):
@@ -3589,6 +3636,36 @@ if ($service) {{
                 raise
             raise RoutingError(_sanitize_mihomo_error(original)) from original
 
+    def _vpn_server_routes(self, config, vpns):
+        def real_lookup(server):
+            # Controller 的 DNS API 使用真实 resolver，绕过 fake-IP 合成层。
+            addresses = []
+            for qtype in ('A', 'AAAA'):
+                query = urllib.parse.urlencode({'name': server, 'type': qtype})
+                try:
+                    response = self._controller_request(
+                        config, '/dns/query?' + query, timeout=2)
+                except Exception as exc:
+                    self._log_best_effort(
+                        f'[routing] VPN 服务器“{server}”真实 DNS {qtype} 解析失败：'
+                        f'{type(exc).__name__}（单次超时=2秒）')
+                    continue
+                addresses.extend(str(row.get('data') or '').strip()
+                                 for row in response.get('Answer', [])
+                                 if row.get('type') in (1, 28))
+            return addresses
+
+        dns_source = config if config.get('dns_mode') == 'advanced' else default_config()
+        started = time.monotonic()
+        self._log_best_effort('[routing] VPN 服务器物理排除路由解析开始：总期限=5秒，拒绝 fake-IP')
+        routes, warnings = _resolve_vpn_server_routes(
+            vpns, {row.get('name') for row in vpns}, real_lookup,
+            dns_source['fake_ip_range'])
+        self._log_best_effort(
+            f'[routing] VPN 服务器物理排除路由解析结束：地址={len(routes)}，'
+            f'未完成={len(warnings)}，耗时={time.monotonic()-started:.2f}秒')
+        return routes, warnings
+
     def _start_standby_runtime(self, config):
         """在不接管系统流量时保留仅回环核心，供订阅更新与节点测速。"""
         verify_runtime()
@@ -3601,8 +3678,7 @@ if ($service) {{
             self._log_best_effort(
                 '[routing] 快切待机配置开始生成：保留完整规则与节点组，系统代理=off')
             vpns = self._environment.snapshot(False)['vpns']
-            excludes, _warnings = _resolve_vpn_server_routes(
-                vpns, set(_target_vpns(config)))
+            excludes, _warnings = self._vpn_server_routes(config, vpns)
             generated = build_mihomo_config(
                 config, vpns, excludes, windows_system_proxy())
         else:
@@ -3843,8 +3919,7 @@ if ($service) {{
                               for name, value in expected_vpns.items()}
             if _vpn_connection_signature(vpns, _target_vpns(config)) != expected_state:
                 raise RoutingError('VPN 连接状态再次变化，本次自动切换已取消，保留现有运行态')
-        excludes, resolve_warnings = _resolve_vpn_server_routes(
-            vpns, set(_target_vpns(config)))
+        excludes, resolve_warnings = self._vpn_server_routes(config, vpns)
         warnings.extend(resolve_warnings)
         staging = os.path.join(self._data_dir, 'staging')
         test_data = os.path.join(staging, 'data')

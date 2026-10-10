@@ -123,7 +123,7 @@ def invalid_manual_proxy(state):
                 str(state.get('server') or '').strip() in ('', ':'))
 
 
-def _wininet_manual_proxy_flags(flags=None, *, wininet=None):
+def _wininet_manual_proxy_flags(flags=None, *, wininet=None, preserved=None):
     """只读 LAN 标志，或移除手动代理；不触碰 PAC、绕过或命名 RAS 连接。"""
     import ctypes
     from ctypes import wintypes
@@ -141,7 +141,10 @@ def _wininet_manual_proxy_flags(flags=None, *, wininet=None):
                     ('options', ctypes.POINTER(Option))]
 
     wininet = wininet or ctypes.WinDLL('wininet', use_last_error=True)
-    items = (Option * (1 if flags is None else 2))()
+    strings = [(2, '')] if flags is not None else []
+    if flags is not None and preserved is not None:
+        strings.extend(((3, preserved['override']), (4, preserved['auto_config'])))
+    items = (Option * (1 + len(strings)))()
     settings = Options(ctypes.sizeof(Options), None, len(items), 0, items)
     if flags is None:
         # 无效服务器会使联合查询返回 ERROR_INVALID_PARAMETER，因此只查标志。
@@ -156,9 +159,12 @@ def _wininet_manual_proxy_flags(flags=None, *, wininet=None):
         return int(items[0].value.number)
     items[0].option = 1  # INTERNET_PER_CONN_FLAGS
     items[0].value.number = flags
-    items[1].option = 2  # INTERNET_PER_CONN_PROXY_SERVER
-    empty = ctypes.create_unicode_buffer('')
-    items[1].value.string = ctypes.cast(empty, ctypes.c_void_p).value
+    buffers = []
+    for index, (option, value) in enumerate(strings, 1):
+        items[index].option = option
+        buffer = ctypes.create_unicode_buffer(value)
+        buffers.append(buffer)
+        items[index].value.string = ctypes.cast(buffer, ctypes.c_void_p).value
     setter = wininet.InternetSetOptionW
     setter.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
     setter.restype = wintypes.BOOL
@@ -166,7 +172,51 @@ def _wininet_manual_proxy_flags(flags=None, *, wininet=None):
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def repair_invalid_manual_proxy(*, registry=None, wininet=None, base=None):
+def _refresh_wininet_proxy_settings(wininet=None):
+    import ctypes
+    from ctypes import wintypes
+
+    wininet = wininet or ctypes.WinDLL('wininet', use_last_error=True)
+    setter = wininet.InternetSetOptionW
+    setter.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
+    setter.restype = wintypes.BOOL
+    changed = bool(setter(None, _INTERNET_OPTION_SETTINGS_CHANGED, None, 0))
+    refreshed = bool(setter(None, _INTERNET_OPTION_REFRESH, None, 0))
+    return changed, refreshed
+
+
+def _clear_invalid_proxy_residue(expected, expected_flags, registry=None, wininet=None):
+    """WinINet 已移除手动代理时，只清理仍为空/冒号的注册表残留。"""
+    if registry is None:
+        import winreg
+        registry = winreg
+    if str(expected['server']).strip() not in ('', ':'):
+        raise OSError('Windows 代理服务器已变化，未清理残留')
+    key = registry.OpenKey(registry.HKEY_CURRENT_USER, REG_PATH, 0,
+                           registry.KEY_READ | registry.KEY_SET_VALUE)
+    try:
+        if (read_proxy_state(registry, strict=True) != expected or
+                _wininet_manual_proxy_flags(wininet=wininet) != expected_flags):
+            raise OSError('Windows 代理设置已变化，未清理残留')
+        registry.SetValueEx(key, 'ProxyEnable', 0, registry.REG_DWORD, 0)
+        # 两字段写入不具备跨软件原子性；第二次写入前再保护新接管的端点。
+        if read_proxy_state(registry, strict=True) != dict(expected, enable=False):
+            raise OSError('Windows 代理设置已变化，未清空服务器残留')
+        registry.SetValueEx(key, 'ProxyServer', 0, registry.REG_SZ, '')
+    finally:
+        registry.CloseKey(key)
+
+
+def _proxy_repair_summary(before, after, flags, expected_flags):
+    server = '空' if not after['server'] else '冒号' if after['server'] == ':' else '非空(隐藏)'
+    return (
+        f'ProxyEnable={int(after["enable"])}，ProxyServer={server}，'
+        f'ProxyOverrideChanged={after["override"] != before["override"]}，'
+        f'AutoConfigURLChanged={after["auto_config"] != before["auto_config"]}，'
+        f'WinINetFlags={flags:#x}，ExpectedFlags={expected_flags:#x}')
+
+
+def repair_invalid_manual_proxy(*, registry=None, wininet=None, base=None, log=None):
     """备份并修复当前用户的无效手动代理；合法代理和已关闭状态保持原值。"""
     before = read_proxy_state(registry, strict=True)
     if not invalid_manual_proxy(before):
@@ -179,12 +229,41 @@ def repair_invalid_manual_proxy(*, registry=None, wininet=None, base=None):
     if (read_proxy_state(registry, strict=True) != before or
             _wininet_manual_proxy_flags(wininet=wininet) != flags):
         raise OSError('Windows 代理设置已变化，未修复无效地址')
-    _wininet_manual_proxy_flags(flags & ~2, wininet=wininet)
-    after = read_proxy_state(registry, strict=True)
+    expected_flags = flags & ~2 or 1  # 移除唯一的手动代理位后仍需保留直连模式。
+    _wininet_manual_proxy_flags(expected_flags, wininet=wininet, preserved=before)
+
+    def readback():
+        changed, refreshed = _refresh_wininet_proxy_settings(wininet)
+        if not (changed and refreshed):
+            raise OSError(
+                f'Windows 无效手动代理修复后刷新失败：'
+                f'WinINetChanged={changed}，WinINetRefresh={refreshed}')
+        state = read_proxy_state(registry, strict=True)
+        current_flags = _wininet_manual_proxy_flags(wininet=wininet)
+        summary = _proxy_repair_summary(before, state, current_flags, expected_flags)
+        if log is not None:
+            try:
+                log(f'[routing] 无效手动代理修复回读：{summary}')
+            except Exception:
+                # 诊断输出失败不能阻断系统设置修复与状态确认。
+                pass
+        return state, current_flags, summary
+
+    after, after_flags, summary = readback()
+    preserved_unchanged = all(after[key] == before[key] for key in ('override', 'auto_config'))
+    if (preserved_unchanged and after_flags == expected_flags and
+            after['server'] in ('', ':') and (after['enable'] or after['server'])):
+        if log is not None:
+            try:
+                log('[routing] WinINet 手动代理已关闭，开始清理 HKCU 空地址/冒号残留（最多一次）')
+            except Exception:
+                pass
+        _clear_invalid_proxy_residue(after, expected_flags, registry, wininet)
+        after, after_flags, summary = readback()
     if (after['enable'] or after['server'] or
             any(after[key] != before[key] for key in ('override', 'auto_config')) or
-            _wininet_manual_proxy_flags(wininet=wininet) != flags & ~2):
-        raise OSError('Windows 无效手动代理修复后回读不一致')
+            after_flags != expected_flags):
+        raise OSError(f'Windows 无效手动代理修复后回读不一致：{summary}')
     return True
 
 
@@ -203,20 +282,13 @@ def refresh_user_proxy_settings(timeout_ms=1000, wininet=None, user32=None):
 
     wininet = wininet or ctypes.WinDLL('wininet', use_last_error=True)
     user32 = user32 or ctypes.WinDLL('user32', use_last_error=True)
-    set_option = wininet.InternetSetOptionW
-    set_option.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD]
-    set_option.restype = wintypes.BOOL
     send_message = user32.SendMessageTimeoutW
     send_message.argtypes = [
         wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
         wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
     send_message.restype = wintypes.LPARAM
 
-    settings_changed = bool(set_option(
-        None, _INTERNET_OPTION_SETTINGS_CHANGED, None, 0))
-    refreshed = bool(set_option(
-        None, _INTERNET_OPTION_REFRESH, None, 0))
+    settings_changed, refreshed = _refresh_wininet_proxy_settings(wininet)
     section = ctypes.create_unicode_buffer('Internet Settings')
     message_result = ctypes.c_size_t()
     broadcast = bool(send_message(

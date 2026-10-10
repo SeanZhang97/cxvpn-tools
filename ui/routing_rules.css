@@ -124,6 +124,10 @@
   background: linear-gradient(145deg, rgba(99,102,241,.22), rgba(34,211,238,.08));
   box-shadow: inset 0 1px rgba(255,255,255,.07), 0 9px 22px rgba(37,38,110,.16);
 }
+.routing-node.located, .routing-node:focus {
+  border-color: rgba(34,211,238,.76);
+  box-shadow: 0 0 24px rgba(34,211,238,.12);
+}
 .routing-node strong { font-size: 12.5px; }
 .routing-node small { color: #8fa0bb; font-size: 10.5px; }
 .routing-node-action {

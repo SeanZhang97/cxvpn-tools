@@ -25,7 +25,7 @@ assert.deepEqual(
   [
     'builtin-rules-type', 'connections-sort', 'proxy-log-level', 'proxy-log-order', 'otp-algorithm', 'otp-digits',
     'routing-builtin-pack', 'routing-capture-mode', 'routing-default', 'routing-interface',
-    'routing-auto-policy-tolerance-unit', 'routing-dns-enhanced', 'routing-dns-mode', 'routing-node-group', 'routing-node-sort',
+    'routing-auto-policy-tolerance-unit', 'routing-dns-enhanced', 'routing-dns-mode', 'routing-node-group', 'routing-node-sort', 'routing-node-region-more',
     'routing-proxy-strategy', 'routing-traffic-mode',
   ].sort(),
   '新增业务下拉框必须登记并接入自定义组件，禁止回退为原生 select');
@@ -227,7 +227,7 @@ assert.match(html, /id="routing-node-grid"/);
 assert.match(html, /id="routing-node-regions"/);
 assert.match(html, /id="routing-node-sort"/);
 assert.match(html, /id="btn-routing-locate-current"/);
-assert.match(html, /<script src="routing_nodes\.js"><\/script>\s*<script src="routing_telemetry\.js"><\/script>\s*<script src="routing_workspace\.js"><\/script>\s*<script src="routing\.js"><\/script>\s*<script src="proxy\.js"><\/script>\s*<script src="routing_activity\.js"><\/script>/);
+assert.match(html, /<script src="routing_regions\.js"><\/script>\s*<script src="routing_nodes\.js"><\/script>\s*<script src="routing_region_picker\.js"><\/script>\s*<script src="routing_telemetry\.js"><\/script>\s*<script src="routing_workspace\.js"><\/script>\s*<script src="routing\.js"><\/script>\s*<script src="proxy\.js"><\/script>\s*<script src="routing_activity\.js"><\/script>/);
 assert.match(source, /nodeTools\.regionOptions/);
 assert.match(source, /nodeTools\.sortNodes/);
 assert.match(source, /function locateCurrentNode/);

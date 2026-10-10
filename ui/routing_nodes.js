@@ -1,30 +1,24 @@
 /* routing_nodes.js - 节点工作台的纯筛选与排序工具 */
 (() => {
-  const REGION_LABELS = Object.freeze({
-    HK: '香港', TW: '台湾', JP: '日本', SG: '新加坡', US: '美国', KR: '韩国',
-    GB: '英国', DE: '德国', FR: '法国', CA: '加拿大', AU: '澳大利亚',
-    RU: '俄罗斯', IN: '印度', BR: '巴西', CN: '中国', OTHER: '其他',
-  });
+  const REGION_LABELS = Object.freeze(Object.fromEntries(
+    Object.entries(window.RoutingRegionCatalog).map(([code, [label]]) => [code, label])));
   const REGION_PRIORITY = Object.freeze([
     'HK', 'TW', 'JP', 'SG', 'US', 'KR', 'GB', 'DE', 'FR', 'CA', 'AU', 'RU', 'IN', 'BR', 'CN', 'OTHER',
   ]);
-  const REGION_HINTS = Object.freeze([
-    ['HK', /香港|hong\s*kong|\bhkg?\b/i],
-    ['TW', /台湾|台灣|taiwan|taipei|台北|\btw\b/i],
-    ['JP', /日本|东京|東京|大阪|名古屋|japan|tokyo|osaka|\bjp\b/i],
-    ['SG', /新加坡|狮城|獅城|singapore|\bsg\b/i],
-    ['US', /美国|美國|洛杉矶|洛杉磯|西雅图|西雅圖|纽约|紐約|united\s*states|los\s*angeles|seattle|new\s*york|\bus\b/i],
-    ['KR', /韩国|韓國|首尔|首爾|korea|seoul|\bkr\b/i],
-    ['GB', /英国|英國|伦敦|倫敦|united\s*kingdom|london|\buk\b|\bgb\b/i],
-    ['DE', /德国|德國|法兰克福|法蘭克福|germany|frankfurt|\bde\b/i],
-    ['FR', /法国|法國|巴黎|france|paris|\bfr\b/i],
-    ['CA', /加拿大|多伦多|多倫多|canada|toronto|\bca\b/i],
-    ['AU', /澳大利亚|澳大利亞|澳洲|悉尼|australia|sydney|\bau\b/i],
-    ['RU', /俄罗斯|俄羅斯|莫斯科|russia|moscow|\bru\b/i],
-    ['IN', /印度|孟买|孟買|india|mumbai|\bin\b/i],
-    ['BR', /巴西|圣保罗|聖保羅|brazil|sao\s*paulo|\bbr\b/i],
-    ['CN', /中国|中國|大陆|大陸|china|\bcn\b/i],
-  ]);
+  const REGION_HINTS = [];
+  const REGION_CODES = [];
+  Object.entries(window.RoutingRegionCatalog).forEach(([code, [, aliases]]) => {
+    aliases.forEach(alias => {
+      const text = normalizedText(alias);
+      const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+      const pattern = /^[\x00-\x7F]+$/.test(text)
+        ? `(?:^|[^A-Za-z0-9])${escaped}(?=$|[^A-Za-z0-9])` : escaped;
+      const hint = [code, new RegExp(pattern, /^[A-Z]{2}$/.test(text) ? '' : 'i'), text.length];
+      (/^[A-Z]{2,3}$/.test(text) ? REGION_CODES : REGION_HINTS).push(hint);
+    });
+  });
+  // 先匹配完整长名称，避免印度抢先命中印度尼西亚、几内亚抢先命中巴布亚新几内亚。
+  REGION_HINTS.sort((left, right) => right[2] - left[2]);
 
   function nodeText(node) {
     return String(node?.display_name || node?.name || '未命名节点').trim();
@@ -35,9 +29,11 @@
   }
 
   function flagRegionCode(value) {
-    const match = String(value || '').match(/^(?:\[[^\]]+\]\s*)?([\u{1F1E6}-\u{1F1FF}]{2})\s*/u);
+    const match = String(value || '').replace(/^\[[^\]]+\]\s*/, '')
+      .match(/([\u{1F1E6}-\u{1F1FF}]{2})/u);
     if (!match) return '';
-    return [...match[1]].map(char => String.fromCharCode(char.codePointAt(0) - 0x1F1E6 + 65)).join('');
+    const code = [...match[1]].map(char => String.fromCharCode(char.codePointAt(0) - 0x1F1E6 + 65)).join('');
+    return REGION_LABELS[code] ? code : '';
   }
 
   function splitNodeLabel(node) {
@@ -52,11 +48,12 @@
     const raw = nodeText(node);
     const flag = flagRegionCode(raw);
     if (flag) return flag;
-    const searchable = normalizedText(raw);
-    return REGION_HINTS.find(([, pattern]) => pattern.test(searchable))?.[0] || 'OTHER';
+    const searchable = normalizedText(raw.replace(/^\[[^\]]+\]\s*/, ''));
+    return REGION_HINTS.find(([, pattern]) => pattern.test(searchable))?.[0]
+      || REGION_CODES.find(([, pattern]) => pattern.test(searchable))?.[0] || 'OTHER';
   }
 
-  function regionOptions(nodes, limit = 7) {
+  function regionOptions(nodes) {
     const counts = new Map();
     (nodes || []).forEach(node => {
       const code = regionCode(node);
@@ -68,7 +65,6 @@
     };
     const regions = [...counts.entries()]
       .sort((left, right) => right[1] - left[1] || priority(left[0]) - priority(right[0]) || left[0].localeCompare(right[0]))
-      .slice(0, Math.max(1, Number(limit) || 7))
       .map(([code, count]) => ({ code, label: REGION_LABELS[code] || code, count }));
     return [{ code: 'all', label: '全部', count: (nodes || []).length }, ...regions];
   }

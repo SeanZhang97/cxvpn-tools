@@ -156,7 +156,8 @@ def _unseal(row):
 
 
 def _rows(conn):
-    cursor = conn.execute('SELECT * FROM otp_accounts ORDER BY created_at,id')
+    cursor = conn.execute('SELECT a.* FROM otp_accounts a LEFT JOIN otp_account_order o '
+                          'ON o.account_id=a.id ORDER BY o.position IS NULL,o.position,a.created_at,a.id')
     names = [column[0] for column in cursor.description]
     return [dict(zip(names, row)) for row in cursor.fetchall()]
 
@@ -194,6 +195,23 @@ class AccountStore:
         if row is None:
             raise TwoFactorError('账号已删除，请刷新列表')
         return {'ok': True, **current_code(_unseal(row)), 'now': time.time()}
+
+    def reorder(self, ids, expected_order):
+        def validate(value):
+            if (not isinstance(value, list) or len(value) > MAX_ACCOUNTS or
+                    any(not isinstance(item, str) or not item or len(item) > 128 for item in value) or
+                    len(set(value)) != len(value)):
+                raise TwoFactorError('账号顺序格式无效')
+        validate(ids)
+        validate(expected_order)
+        with state_store.transaction(self.root) as conn:
+            current = [row['id'] for row in _rows(conn)]
+            if current != expected_order or set(ids) != set(current):
+                raise TwoFactorError('账号或顺序已变化，请刷新后重新调整')
+            conn.execute('DELETE FROM otp_account_order')
+            conn.executemany('INSERT INTO otp_account_order(account_id,position) VALUES(?,?)',
+                             [(account_id, index) for index, account_id in enumerate(ids)])
+        return {'ok': True}
 
     def save(self, payload):
         if not isinstance(payload, dict):
@@ -234,7 +252,7 @@ class AccountStore:
     def export_records(self):
         return [_unseal(row) for row in self.records()]
 
-    def prepare_import(self, incoming):
+    def prepare_import(self, incoming, restore_unreadable=True):
         rows = self.records()
         existing = {_identity(row): row for row in rows}
         additions, replacements, conflicts, duplicates = [], [], [], 0
@@ -246,6 +264,9 @@ class AccountStore:
                 try:
                     original = _unseal(previous)
                 except TwoFactorError:
+                    if not restore_unreadable:
+                        conflicts.append({'issuer': value['issuer'], 'account': value['account']})
+                        continue
                     # 当前 Windows 用户无法读取旧密文时，允许从已验证密码的备份恢复。
                     record = {**value, 'id': previous['id'], 'secret': _seal(value, previous['id'])}
                     replacements.append(record)
@@ -268,7 +289,7 @@ class AccountStore:
     def apply_import(self, prepared):
         with state_store.transaction(self.root) as conn:
             if _signature(_rows(conn)) != prepared['signature']:
-                raise TwoFactorError('预览后账号已变化，请重新选择备份并预览')
+                raise TwoFactorError('预览后账号已变化，请重新选择文件并预览')
             now = time.time_ns()
             conn.executemany('UPDATE otp_accounts SET algorithm=?,digits=?,period=?,secret=?, '
                              'revision=revision+1,updated_at=? WHERE id=?', [
