@@ -628,8 +628,13 @@ def _launch_installer(installer_path, version, fallback_dir='', log=None,
     attempt = uuid.uuid4().hex
     script = _write_update_guard_script(attempt)
     result_path = os.path.join(updates_root(), f'update-result-{attempt}.json')
-    creationflags = (getattr(subprocess, 'DETACHED_PROCESS', 0) |
+    # DETACHED_PROCESS 会让 Windows PowerShell 在无标准流时直接退出，
+    # CREATE_NO_WINDOW 已负责隐藏窗口，独立进程组允许旧应用退出后继续升级。
+    creationflags = (getattr(subprocess, 'CREATE_NO_WINDOW', 0) |
                      getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
+    process_env = os.environ.copy()
+    # 不继承 PowerShell 7 的模块目录，让 Windows PowerShell 建立自己的默认路径。
+    process_env.pop('PSMODULEPATH', None)
     log('[app-update] 升级安装任务已提交: installer=%s version=%s guard_timeout=%ss' % (
         os.path.basename(installer_path), version, GUARD_TIMEOUT_SECONDS))
     try:
@@ -641,7 +646,7 @@ def _launch_installer(installer_path, version, fallback_dir='', log=None,
              '-ResultPath', result_path,
              '-TimeoutSeconds', str(GUARD_TIMEOUT_SECONDS),
              '-FallbackDir', str(fallback_dir or '')],
-            creationflags=creationflags | getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            creationflags=creationflags, env=process_env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as exc:
         log('[app-update] 升级守护启动失败: type=%s' % type(exc).__name__)

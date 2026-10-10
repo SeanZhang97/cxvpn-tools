@@ -145,10 +145,46 @@ class HardenedUpdateTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'nt', 'PowerShell Windows fixtures')
 class UpdateGuardFixtureTests(unittest.TestCase):
+    def test_actual_guard_claims_launch_and_detects_changed_installer_without_uac(self):
+        with tempfile.TemporaryDirectory(prefix='cxvpn-升级-é-🇨🇳-') as folder:
+            base = Path(folder)
+            installer = base / 'CXVPNTools-9.9.9-setup.exe'
+            installer.write_bytes(b'fixture')
+            original_write = app_update._write_update_guard_script
+
+            def change_after_verification(attempt):
+                script = original_write(attempt)
+                # 仅改变隔离测试文件，确保子进程在 UAC/安装器之前终止。
+                installer.write_bytes(b'changed fixture')
+                return script
+
+            with mock.patch.object(app_update, 'updates_root', return_value=folder), \
+                    mock.patch.object(app_update, '_write_update_guard_script',
+                                      side_effect=change_after_verification), \
+                    mock.patch.dict(os.environ, {'PSModulePath': str(base / 'missing-modules')}):
+                launched = app_update.launch_installer(
+                    str(installer), '9.9.9', expected_sha256=hashlib.sha256(b'fixture').hexdigest())
+            self.assertTrue(launched['ok'])
+            guard = launched['_guard']
+            try:
+                self.assertEqual(1, guard.wait(timeout=10))
+            finally:
+                if guard.poll() is None:
+                    guard.kill()
+                    guard.wait(timeout=5)
+            outcome = app_update.read_install_result(launched['result_path'])
+            self.assertIsNotNone(outcome, '真实无窗口守护必须执行脚本并写入结果')
+            self.assertEqual('failed', outcome['phase'])
+            self.assertEqual(9001, outcome['exit_code'])
+            self.assertEqual('9.9.9', outcome['version'])
+            self.assertIn('RuntimeException', outcome['message'])
+            self.assertNotIn('installer_pid', outcome)
+
     def test_guard_exit_codes_and_startup_without_real_installers(self):
         wrapper = r'''
 param([string]$Guard, [string]$ResultPath, [string]$Scenario, [string]$Installer, [string]$ExpectedHash)
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 # Get-FileHash 是 Microsoft.PowerShell.Utility 的模块高级函数：模块一经加载，
 # 子脚本（& 调用的守卫）内的调用无法被本脚本定义的同名函数覆盖，
 # 因此改用真实 fixture.exe 文件与真实 SHA-256，hash 场景通过传入错误期望值模拟。
