@@ -1098,9 +1098,14 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
     for provider in config['proxy_providers']:
         if not provider['enabled']:
             continue
-        parsed = urllib.parse.urlparse(provider['url'])
-        if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
-            raise RoutingError(f'代理订阅“{provider["name"]}”必须填写有效的 http/https URL')
+        if provider['url']:
+            parsed = urllib.parse.urlparse(provider['url'])
+            if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+                raise RoutingError(f'代理订阅“{provider["name"]}”必须填写有效的 http/https URL')
+        elif not subscription_store.cache_status(provider).get('available'):
+            raise RoutingError(
+                f'代理订阅“{provider["name"]}”没有订阅 URL，'
+                '也没有已导入的节点缓存；请先在订阅卡片“导入 YAML”后再应用')
     return warnings
 
 
@@ -1357,7 +1362,13 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
         generated['proxy-providers'] = {}
         generated['proxy-groups'] = []
         for provider in enabled_providers:
-            download = _provider_download_route(provider, system_proxy)
+            if provider['url']:
+                download = _provider_download_route(provider, system_proxy)
+            else:
+                # 本地导入订阅没有远端地址，无需下载出口链路。
+                download = {'mode': 'local', 'target': 'PHYSICAL',
+                            'proxy_url': '', 'upstream': '',
+                            'self_bootstrap': False}
             if download['proxy_url']:
                 upstream = download.get('upstream') or download['target']
                 if not any(item['name'] == upstream for item in generated['proxies']):
@@ -1431,12 +1442,7 @@ def _proxy_provider_config(provider, path, prefix='', health_check=True,
                            interface_name='', download_proxy=''):
     """生成统一的 provider 配置，保持运行态与独立预览行为一致。"""
     result = {
-        'type': 'http',
-        'url': provider['url'],
         'path': path,
-        'size-limit': SUBSCRIPTION_SIZE_LIMIT,
-        'header': {'User-Agent': [provider.get(
-            'user_agent') or SUBSCRIPTION_USER_AGENT]},
         'health-check': {
             'enable': bool(health_check),
             'url': HEALTH_CHECK_URL,
@@ -1445,19 +1451,30 @@ def _proxy_provider_config(provider, path, prefix='', health_check=True,
             'lazy': True,
         },
     }
-    if provider.get('auto_update'):
-        result['interval'] = provider['interval']
     if prefix:
         result['override'] = {'additional-prefix': prefix}
     if interface_name:
         result.setdefault('override', {})['interface-name'] = interface_name
-    if download_proxy:
-        result['proxy'] = download_proxy
-    if provider['filter']:
+    if provider.get('filter'):
         result['filter'] = provider['filter']
-    if provider['exclude_filter']:
+    if provider.get('exclude_filter'):
         result['exclude-filter'] = provider['exclude_filter']
-    return result
+    if not provider['url']:
+        # 本地导入订阅没有远端地址，Mihomo 只读导出的缓存文件。
+        return {'type': 'file', **result}
+    http_result = {
+        'type': 'http',
+        'url': provider['url'],
+        'size-limit': SUBSCRIPTION_SIZE_LIMIT,
+        'header': {'User-Agent': [provider.get(
+            'user_agent') or SUBSCRIPTION_USER_AGENT]},
+        **result,
+    }
+    if provider.get('auto_update'):
+        http_result['interval'] = provider['interval']
+    if download_proxy:
+        http_result['proxy'] = download_proxy
+    return http_result
 
 
 def _proxy_group_config(name, strategy, *, provider_keys=None,
@@ -2067,6 +2084,10 @@ if ($service) {{
         self._group_identity(normalized, provider_id)
         provider = next(item for item in normalized['proxy_providers']
                         if item['id'] == provider_id)
+        if not provider['url']:
+            raise RoutingError(
+                f'订阅“{provider["name"]}”没有远端地址，无法在线更新；'
+                '请在订阅卡片重新“导入 YAML”来更新节点')
         provider_name = f'provider-{provider_id}'
         path = f'/providers/proxies/{urllib.parse.quote(provider_name, safe="")}'
         started_at = time.monotonic()
@@ -2309,9 +2330,20 @@ if ($service) {{
             'default_outbound': 'physical',
         })
         provider = normalized['proxy_providers'][0]
-        parsed = urllib.parse.urlparse(provider['url'])
-        if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
-            raise RoutingError('请填写有效的 http/https 订阅 URL')
+        if not provider['url']:
+            # 本地导入订阅：只解析导入的缓存或本次导入内容，
+            # 不触发远端下载与在线更新。
+            if _seed_payload is None and not subscription_store.cache_status(
+                    provider).get('available'):
+                raise RoutingError(
+                    '该订阅未填写订阅 URL，也没有本地节点缓存；'
+                    '请先在订阅卡片“导入 YAML”，或填写 http/https 订阅地址')
+            _cache_only = True
+            _refresh_cache = False
+        else:
+            parsed = urllib.parse.urlparse(provider['url'])
+            if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+                raise RoutingError('请填写有效的 http/https 订阅 URL')
         network_source = network if isinstance(network, dict) else {}
         physical_interface = str(
             network_source.get('physical_interface') or '').strip()

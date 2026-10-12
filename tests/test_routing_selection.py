@@ -90,6 +90,44 @@ class RoutingSelectionTests(unittest.TestCase):
         self.assertEqual(
             generated['proxy-providers']['provider-alpha']['interval'], 3600)
 
+    def test_local_provider_without_url_renders_file_provider(self):
+        config = routing.normalize_config(provider_config(url=''))
+
+        generated = routing.build_mihomo_config(config, [])
+        provider = generated['proxy-providers']['provider-alpha']
+
+        self.assertEqual(provider['type'], 'file')
+        self.assertTrue(provider['path'].startswith('./providers/alpha-'))
+        for key in ('url', 'proxy', 'interval', 'size-limit', 'header'):
+            self.assertNotIn(key, provider)
+        group_names = [item['name'] for item in generated['proxy-groups']]
+        self.assertNotIn('SUBSCRIPTION-UPDATE-alpha', group_names)
+        self.assertNotIn('SUBSCRIPTION-UPSTREAM-alpha', group_names)
+
+    def test_local_provider_requires_imported_cache_before_apply(self):
+        source = provider_config(url='')
+        source['capture_mode'] = 'system-proxy'
+        source['enabled'] = True
+        config = routing.normalize_config(source)
+
+        with mock.patch.object(
+                routing.subscription_store, 'cache_status',
+                return_value={'available': False, 'node_count': 0,
+                              'updated_at': 0, 'source': ''}):
+            with self.assertRaisesRegex(routing.RoutingError, '导入 YAML'):
+                routing.validate_environment(
+                    config, vpns=[], interfaces=[{'name': '以太网'}],
+                    conflicts=[])
+
+        with mock.patch.object(
+                routing.subscription_store, 'cache_status',
+                return_value={'available': True, 'node_count': 1,
+                              'updated_at': 1, 'source': '导入 YAML'}):
+            warnings = routing.validate_environment(
+                config, vpns=[], interfaces=[{'name': '以太网'}],
+                conflicts=[])
+        self.assertEqual(warnings, [])
+
     def test_removed_manual_node_is_reported_before_start(self):
         config = routing.normalize_config(provider_config(
             selection_mode='manual', selected_node='Removed Node'))
