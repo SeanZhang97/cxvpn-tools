@@ -215,13 +215,23 @@ $seen = @{}
 $result = foreach ($route in $routes) {
   if ($seen.ContainsKey($route.InterfaceAlias)) { continue }
   $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
-  if (-not $adapter -or $adapter.Status -ne 'Up' -or -not $adapter.HardwareInterface) { continue }
-  $text = "$($route.InterfaceAlias) $($adapter.InterfaceDescription)"
+  $description = ''
+  if ($adapter) {
+    if ($adapter.Status -ne 'Up' -or -not $adapter.HardwareInterface) { continue }
+    $description = [string]$adapter.InterfaceDescription
+  } else {
+    # PPP 拨号等 WAN 隧道接口不在 Get-NetAdapter 视野内，
+    # 但它们可能是整机唯一的外网出口（企业拨号/SSL VPN 拨号器）。
+    $ipInterface = Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex `
+      -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    if (-not $ipInterface -or $ipInterface.ConnectionState -ne 'Connected') { continue }
+  }
+  $text = "$($route.InterfaceAlias) $description"
   if ($text -match '(?i)vpn|wintun|wireguard|mihomo|clash|sing-box|tap|loopback') { continue }
   $seen[$route.InterfaceAlias] = $true
   [pscustomobject]@{
     name = [string]$route.InterfaceAlias
-    description = [string]$adapter.InterfaceDescription
+    description = $description
     index = [int]$route.InterfaceIndex
     metric = [int]($route.RouteMetric + $route.InterfaceMetric)
   }

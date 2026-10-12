@@ -100,6 +100,15 @@ class AutomaticInterfaceTests(unittest.TestCase):
         self.assertIn('HardwareInterface', script)
         self.assertIn('$_.RouteMetric + $_.InterfaceMetric', script)
 
+    def test_physical_scan_accepts_ppp_tunnel_default_route(self):
+        # PPP 拨号隧道（企业拨号器）不在 Get-NetAdapter 视野内，
+        # 但可能是整机唯一的外网出口，必须进入候选。
+        with patch.object(routing, '_run_powershell_json', return_value=[]) as run:
+            routing.list_physical_interfaces()
+        script = run.call_args.args[0]
+        self.assertIn('Get-NetIPInterface', script)
+        self.assertIn("ConnectionState -ne 'Connected'", script)
+
 
 class NetworkWorkerTests(unittest.TestCase):
     def setUp(self):
