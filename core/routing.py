@@ -3484,12 +3484,17 @@ if ($service) {{
             address = f'http://127.0.0.1:{config["mixed_port"]}'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({
                 'http': address, 'https': address}))
-            self._probe_connectivity(opener, '显式本地 mixed-port 链路')
+            self._probe_connectivity(opener, '显式本地 mixed-port 链路', groups)
         else:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            self._probe_connectivity(opener, 'TUN 系统链路')
+            self._probe_connectivity(opener, 'TUN 系统链路', groups)
 
-    def _probe_connectivity(self, opener, source):
+    def _probe_connectivity(self, opener, source, proxy_groups):
+        if not proxy_groups:
+            advice = ('当前配置所有流量都走直连，本次失败说明物理网络本身当前不可用；'
+                      '请恢复网络后重试，或先在高级分流把默认出口改为代理订阅')
+        else:
+            advice = '请检查当前节点或网络设置'
         deadline = time.monotonic() + 8
         def check(endpoint):
             host = urllib.parse.urlparse(endpoint).hostname or 'endpoint'
@@ -3519,7 +3524,8 @@ if ($service) {{
                 min(4.5, remaining), first_success=True)
             if results:
                 return next(iter(results.values()))
-        raise RoutingError(f'{source}当前无法建立可用连接，已恢复 Windows 原始路由。请检查当前节点或网络设置')
+        raise RoutingError(
+            f'{source}当前无法建立可用连接，已恢复 Windows 原始路由。{advice}')
 
     def _install(self, config_path, config, runtime_mode='active',
                  fast_toggle_ready=False, allow_reload=True):
