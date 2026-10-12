@@ -215,13 +215,23 @@ $seen = @{}
 $result = foreach ($route in $routes) {
   if ($seen.ContainsKey($route.InterfaceAlias)) { continue }
   $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
-  if (-not $adapter -or $adapter.Status -ne 'Up' -or -not $adapter.HardwareInterface) { continue }
-  $text = "$($route.InterfaceAlias) $($adapter.InterfaceDescription)"
+  $description = ''
+  if ($adapter) {
+    if ($adapter.Status -ne 'Up' -or -not $adapter.HardwareInterface) { continue }
+    $description = [string]$adapter.InterfaceDescription
+  } else {
+    # PPP 拨号等 WAN 隧道接口不在 Get-NetAdapter 视野内，
+    # 但它们可能是整机唯一的外网出口（企业拨号/SSL VPN 拨号器）。
+    $ipInterface = Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex `
+      -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    if (-not $ipInterface -or $ipInterface.ConnectionState -ne 'Connected') { continue }
+  }
+  $text = "$($route.InterfaceAlias) $description"
   if ($text -match '(?i)vpn|wintun|wireguard|mihomo|clash|sing-box|tap|loopback') { continue }
   $seen[$route.InterfaceAlias] = $true
   [pscustomobject]@{
     name = [string]$route.InterfaceAlias
-    description = [string]$adapter.InterfaceDescription
+    description = $description
     index = [int]$route.InterfaceIndex
     metric = [int]($route.RouteMetric + $route.InterfaceMetric)
   }
@@ -1088,9 +1098,14 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
     for provider in config['proxy_providers']:
         if not provider['enabled']:
             continue
-        parsed = urllib.parse.urlparse(provider['url'])
-        if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
-            raise RoutingError(f'代理订阅“{provider["name"]}”必须填写有效的 http/https URL')
+        if provider['url']:
+            parsed = urllib.parse.urlparse(provider['url'])
+            if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+                raise RoutingError(f'代理订阅“{provider["name"]}”必须填写有效的 http/https URL')
+        elif not subscription_store.cache_status(provider).get('available'):
+            raise RoutingError(
+                f'代理订阅“{provider["name"]}”没有订阅 URL，'
+                '也没有已导入的节点缓存；请先在订阅卡片“导入 YAML”后再应用')
     return warnings
 
 
@@ -1347,7 +1362,13 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
         generated['proxy-providers'] = {}
         generated['proxy-groups'] = []
         for provider in enabled_providers:
-            download = _provider_download_route(provider, system_proxy)
+            if provider['url']:
+                download = _provider_download_route(provider, system_proxy)
+            else:
+                # 本地导入订阅没有远端地址，无需下载出口链路。
+                download = {'mode': 'local', 'target': 'PHYSICAL',
+                            'proxy_url': '', 'upstream': '',
+                            'self_bootstrap': False}
             if download['proxy_url']:
                 upstream = download.get('upstream') or download['target']
                 if not any(item['name'] == upstream for item in generated['proxies']):
@@ -1421,12 +1442,7 @@ def _proxy_provider_config(provider, path, prefix='', health_check=True,
                            interface_name='', download_proxy=''):
     """生成统一的 provider 配置，保持运行态与独立预览行为一致。"""
     result = {
-        'type': 'http',
-        'url': provider['url'],
         'path': path,
-        'size-limit': SUBSCRIPTION_SIZE_LIMIT,
-        'header': {'User-Agent': [provider.get(
-            'user_agent') or SUBSCRIPTION_USER_AGENT]},
         'health-check': {
             'enable': bool(health_check),
             'url': HEALTH_CHECK_URL,
@@ -1435,19 +1451,30 @@ def _proxy_provider_config(provider, path, prefix='', health_check=True,
             'lazy': True,
         },
     }
-    if provider.get('auto_update'):
-        result['interval'] = provider['interval']
     if prefix:
         result['override'] = {'additional-prefix': prefix}
     if interface_name:
         result.setdefault('override', {})['interface-name'] = interface_name
-    if download_proxy:
-        result['proxy'] = download_proxy
-    if provider['filter']:
+    if provider.get('filter'):
         result['filter'] = provider['filter']
-    if provider['exclude_filter']:
+    if provider.get('exclude_filter'):
         result['exclude-filter'] = provider['exclude_filter']
-    return result
+    if not provider['url']:
+        # 本地导入订阅没有远端地址，Mihomo 只读导出的缓存文件。
+        return {'type': 'file', **result}
+    http_result = {
+        'type': 'http',
+        'url': provider['url'],
+        'size-limit': SUBSCRIPTION_SIZE_LIMIT,
+        'header': {'User-Agent': [provider.get(
+            'user_agent') or SUBSCRIPTION_USER_AGENT]},
+        **result,
+    }
+    if provider.get('auto_update'):
+        http_result['interval'] = provider['interval']
+    if download_proxy:
+        http_result['proxy'] = download_proxy
+    return http_result
 
 
 def _proxy_group_config(name, strategy, *, provider_keys=None,
@@ -2057,6 +2084,10 @@ if ($service) {{
         self._group_identity(normalized, provider_id)
         provider = next(item for item in normalized['proxy_providers']
                         if item['id'] == provider_id)
+        if not provider['url']:
+            raise RoutingError(
+                f'订阅“{provider["name"]}”没有远端地址，无法在线更新；'
+                '请在订阅卡片重新“导入 YAML”来更新节点')
         provider_name = f'provider-{provider_id}'
         path = f'/providers/proxies/{urllib.parse.quote(provider_name, safe="")}'
         started_at = time.monotonic()
@@ -2299,9 +2330,20 @@ if ($service) {{
             'default_outbound': 'physical',
         })
         provider = normalized['proxy_providers'][0]
-        parsed = urllib.parse.urlparse(provider['url'])
-        if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
-            raise RoutingError('请填写有效的 http/https 订阅 URL')
+        if not provider['url']:
+            # 本地导入订阅：只解析导入的缓存或本次导入内容，
+            # 不触发远端下载与在线更新。
+            if _seed_payload is None and not subscription_store.cache_status(
+                    provider).get('available'):
+                raise RoutingError(
+                    '该订阅未填写订阅 URL，也没有本地节点缓存；'
+                    '请先在订阅卡片“导入 YAML”，或填写 http/https 订阅地址')
+            _cache_only = True
+            _refresh_cache = False
+        else:
+            parsed = urllib.parse.urlparse(provider['url'])
+            if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+                raise RoutingError('请填写有效的 http/https 订阅 URL')
         network_source = network if isinstance(network, dict) else {}
         physical_interface = str(
             network_source.get('physical_interface') or '').strip()
@@ -2813,6 +2855,15 @@ if ($service) {{
                 raise RoutingError('节点切换未确认生效，已保留原节点偏好') from original
         except RoutingError:
             raise
+        except urllib.error.HTTPError as exc:
+            # HTTPError 是 URLError 的子类，必须单独处理，否则控制端可达但
+            # 未加载代理组（如默认出口为物理网络）时会误报为连接失败。
+            if exc.code == 404:
+                raise RoutingError(
+                    f'运行中的 Mihomo 未加载代理组“{display_name}”；'
+                    '请先在高级分流把默认出口或规则指向代理订阅，应用后再切换节点') from exc
+            raise RoutingError(
+                f'Mihomo 控制端响应异常（HTTP {exc.code}），请稍后重试') from exc
         except (OSError, ValueError, urllib.error.URLError) as exc:
             raise RoutingError('无法连接正在运行的 Mihomo 控制端') from exc
         groups = self.proxy_overview(normalized)
@@ -3465,12 +3516,17 @@ if ($service) {{
             address = f'http://127.0.0.1:{config["mixed_port"]}'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({
                 'http': address, 'https': address}))
-            self._probe_connectivity(opener, '显式本地 mixed-port 链路')
+            self._probe_connectivity(opener, '显式本地 mixed-port 链路', groups)
         else:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            self._probe_connectivity(opener, 'TUN 系统链路')
+            self._probe_connectivity(opener, 'TUN 系统链路', groups)
 
-    def _probe_connectivity(self, opener, source):
+    def _probe_connectivity(self, opener, source, proxy_groups):
+        if not proxy_groups:
+            advice = ('当前配置所有流量都走直连，本次失败说明物理网络本身当前不可用；'
+                      '请恢复网络后重试，或先在高级分流把默认出口改为代理订阅')
+        else:
+            advice = '请检查当前节点或网络设置'
         deadline = time.monotonic() + 8
         def check(endpoint):
             host = urllib.parse.urlparse(endpoint).hostname or 'endpoint'
@@ -3500,7 +3556,8 @@ if ($service) {{
                 min(4.5, remaining), first_success=True)
             if results:
                 return next(iter(results.values()))
-        raise RoutingError(f'{source}当前无法建立可用连接，已恢复 Windows 原始路由。请检查当前节点或网络设置')
+        raise RoutingError(
+            f'{source}当前无法建立可用连接，已恢复 Windows 原始路由。{advice}')
 
     def _install(self, config_path, config, runtime_mode='active',
                  fast_toggle_ready=False, allow_reload=True):

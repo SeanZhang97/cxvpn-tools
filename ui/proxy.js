@@ -33,6 +33,14 @@
     return values.some(value => value === 'proxy' || String(value || '').startsWith('proxy:'));
   }
 
+  function runtimeUsesProxy(config) {
+    // 与内核生成条件对齐：全局模式下用户规则不参与分流，只有默认出口生效。
+    const rules = config?.traffic_mode === 'global' ? [] : config?.rules || [];
+    const values = [config?.default_outbound, ...rules
+      .filter(item => item.enabled !== false).map(item => item.outbound)];
+    return values.some(value => value === 'proxy' || String(value || '').startsWith('proxy:'));
+  }
+
   function outboundName(value) {
     const raw = String(value || 'physical');
     if (raw === 'physical') return '物理网络';
@@ -507,7 +515,16 @@
     setModeUi(config.traffic_mode || selectedMode);
     const actualCapture = running ? status.capture_mode || config.capture_mode : config.capture_mode;
     setText('proxy-capture-status', actualCapture === 'tun' ? 'TUN（高级）' : 'Windows 系统代理');
-    setText('proxy-default-outbound', outboundName(config.default_outbound));
+    const directOutbound = running && !runtimeUsesProxy(config);
+    setText('proxy-default-outbound', directOutbound
+      ? `${outboundName(config.default_outbound)}（未使用代理，流量直连）`
+      : outboundName(config.default_outbound));
+    const outboundCell = byId('proxy-default-outbound');
+    if (outboundCell) {
+      outboundCell.title = directOutbound
+        ? '代理已开启，但默认出口和规则未指向代理订阅，系统流量仍然直连；请在高级分流调整默认出口或规则'
+        : '';
+    }
     const builtinCount = status.builtin_rule_pack?.rule_count || 0;
     const cnFallback = config.system_proxy_bypass?.include_cn_direct ? ' / GEOIP CN' : '';
     setText('proxy-rule-composition', `${(config.rules || []).filter(item => item.enabled !== false).length} user / ${config.traffic_mode === 'global' ? 0 : builtinCount} builtin${cnFallback} / MATCH`);
@@ -691,10 +708,13 @@
     const needsConfirmation = nextEnabled
       ? !nativeServiceReady || config.capture_mode === 'tun' || cached.dirty || repairing
       : needsUac;
+    const directNotice = nextEnabled && !runtimeUsesProxy(config)
+      ? `注意：当前默认出口为「${outboundName(config.default_outbound)}」且规则未使用代理订阅，开启后系统流量仍将直连；如需走代理，请先在高级分流调整默认出口或规则。`
+      : '';
     const confirmed = !needsConfirmation || await confirmAction({
       title: nextEnabled ? (repairing ? '修复网络代理' : '开启网络代理') : '关闭网络代理',
       message: nextEnabled
-        ? `${repairing ? '将重新检查并修复代理服务' : config.capture_mode === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, selectedMode)}。${draftNotice}确认后会自动检查节点和网络，失败会恢复原设置。${config.capture_mode === 'tun' ? '请先关闭其他代理软件的 TUN 模式和 Windows 系统代理。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
+        ? `${repairing ? '将重新检查并修复代理服务' : config.capture_mode === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, selectedMode)}。${draftNotice}${directNotice}确认后会自动检查节点和网络，失败会恢复原设置。${config.capture_mode === 'tun' ? '请先关闭其他代理软件的 TUN 模式和 Windows 系统代理。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
         : needsUac
           ? '将停止并迁移旧版 Mihomo TUN 服务，系统恢复使用 Windows 当前路由。该操作需要 UAC。'
           : fastToggleReady

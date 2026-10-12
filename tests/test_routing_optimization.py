@@ -4,6 +4,7 @@ import copy
 import threading
 import time
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 
 from api import Api
@@ -199,6 +200,25 @@ class RoutingOptimizationTests(unittest.TestCase):
         manager._controller_request = Mock(side_effect=[{'all': [name], 'now': name}, {}, {'now': name}])
         manager.proxy_overview = Mock(return_value=[])
         self.assertEqual(manager.select_proxy_node(value, 'alpha', name)['groups'][0]['selected'], name)
+
+    def test_missing_runtime_group_reports_truthful_error_instead_of_offline(self):
+        manager = routing.RoutingManager()
+        value = config()
+        value['default_outbound'] = 'physical'
+        url = 'http://127.0.0.1:19090/proxies/PROXY-alpha'
+        manager._controller_request = Mock(side_effect=urllib.error.HTTPError(
+            url, 404, 'Not Found', None, None))
+        with self.assertRaises(routing.RoutingError) as caught:
+            manager.select_proxy_node(value, 'alpha', '节点 B 🇯🇵')
+        message = str(caught.exception)
+        self.assertIn('未加载代理组', message)
+        self.assertIn(value['proxy_providers'][0]['name'], message)
+        self.assertNotIn('无法连接', message)
+        manager._controller_request = Mock(side_effect=urllib.error.HTTPError(
+            url, 500, 'Server Error', None, None))
+        with self.assertRaises(routing.RoutingError) as caught:
+            manager.select_proxy_node(value, 'alpha', '节点 B 🇯🇵')
+        self.assertIn('HTTP 500', str(caught.exception))
 
     def test_standby_manual_selection_is_confirmed_before_save(self):
         api = api_instance()
