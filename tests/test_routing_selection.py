@@ -385,6 +385,66 @@ class RoutingSelectionTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['config']['default_outbound'], 'physical')
 
+    @mock.patch('api.cfgmod.save')
+    def test_dormant_running_core_saves_manual_preference_without_runtime_switch(
+            self, save):
+        current = routing.normalize_config(provider_config(
+            selection_mode='manual', selected_node='旧节点'))
+        current['default_outbound'] = 'physical'
+        instance = Api.__new__(Api)
+        instance._lock = threading.Lock()
+        instance._routing_lock = threading.Lock()
+        instance.cfg = {'routing': current}
+        instance.routing = mock.Mock()
+        instance.routing.status.return_value = {
+            'running': True, 'core_running': True, 'runtime_mode': 'active'}
+        instance.log = mock.Mock()
+        provider = current['proxy_providers'][0]
+        node_name = '中文 e\u0301 \U0001f1ef\U0001f1f5'
+
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.dict(os.environ, {'LOCALAPPDATA': root}):
+            subscription_store.persist_node_snapshot(provider, [{'name': node_name}])
+            result = instance.save_proxy_preference('alpha', 'manual', node_name)
+
+        self.assertTrue(result['ok'])
+        self.assertIn('默认出口未指向代理订阅', result['msg'])
+        self.assertFalse(result['requires_apply'])
+        instance.routing.select_proxy_node.assert_not_called()
+        stored = instance.cfg['routing']
+        self.assertEqual(stored['default_outbound'], 'physical')
+        self.assertEqual(stored['proxy_providers'][0]['selected_node'], node_name)
+        save.assert_called_once()
+
+    @mock.patch('api.cfgmod.save')
+    def test_standby_core_still_confirms_manual_selection(self, save):
+        current = routing.normalize_config(provider_config(
+            selection_mode='manual', selected_node='旧节点'))
+        current['default_outbound'] = 'physical'
+        instance = Api.__new__(Api)
+        instance._lock = threading.Lock()
+        instance._routing_lock = threading.Lock()
+        instance.cfg = {'routing': current}
+        instance.routing = mock.Mock()
+        instance.routing.status.return_value = {
+            'running': False, 'core_running': True, 'standby': True}
+        instance.routing.select_proxy_node.return_value = {'groups': []}
+        instance.log = mock.Mock()
+        provider = current['proxy_providers'][0]
+
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.dict(os.environ, {'LOCALAPPDATA': root}):
+            subscription_store.persist_node_snapshot(provider, [{'name': 'Tokyo 01'}])
+            result = instance.save_proxy_preference('alpha', 'manual', 'Tokyo 01')
+
+        self.assertTrue(result['ok'])
+        self.assertIn('确认生效', result['msg'])
+        instance.routing.select_proxy_node.assert_called_once_with(
+            mock.ANY, 'alpha', '[订阅一] Tokyo 01')
+        self.assertEqual(instance.cfg['routing']['proxy_providers'][0]['selected_node'],
+                         'Tokyo 01')
+        save.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

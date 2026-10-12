@@ -2823,6 +2823,15 @@ if ($service) {{
                 raise RoutingError('节点切换未确认生效，已保留原节点偏好') from original
         except RoutingError:
             raise
+        except urllib.error.HTTPError as exc:
+            # HTTPError 是 URLError 的子类，必须单独处理，否则控制端可达但
+            # 未加载代理组（如默认出口为物理网络）时会误报为连接失败。
+            if exc.code == 404:
+                raise RoutingError(
+                    f'运行中的 Mihomo 未加载代理组“{display_name}”；'
+                    '请先在高级分流把默认出口或规则指向代理订阅，应用后再切换节点') from exc
+            raise RoutingError(
+                f'Mihomo 控制端响应异常（HTTP {exc.code}），请稍后重试') from exc
         except (OSError, ValueError, urllib.error.URLError) as exc:
             raise RoutingError('无法连接正在运行的 Mihomo 控制端') from exc
         groups = self.proxy_overview(normalized)

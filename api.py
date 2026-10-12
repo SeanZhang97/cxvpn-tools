@@ -1304,8 +1304,15 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                     })
                 runtime_result = None
                 core_running = status.get('core_running', status.get('running', False))
+                standby_core = (bool(status.get('standby')) or
+                                str(status.get('runtime_mode') or '') == 'standby')
+                # 与 build_mihomo_config 的生成条件保持一致：待机核心始终加载
+                # 代理组；启用中的核心仅在配置真正使用代理时才会加载。
+                runtime_groups_loaded = bool(
+                    standby_core or routing._uses_proxy(normalized))
                 self._routing_changed()
-                if core_running and target_mode == 'manual' and previous_mode == 'manual':
+                if (core_running and runtime_groups_loaded and
+                        target_mode == 'manual' and previous_mode == 'manual'):
                     runtime_result = self.routing.select_proxy_node(
                         normalized, target_id, f'[{provider["name"]}] {selected}')
                 try:
@@ -1329,10 +1336,14 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                     self.routing.remember_selection(normalized, current_cfg['routing'])
                 self._routing_changed()
                 requires_apply = bool(core_running and structural_change)
+                dormant_core = bool(core_running and not runtime_groups_loaded)
                 msg = ('节点偏好已保存，开启代理时将重新应用'
                        if requires_apply else
                        '节点偏好与订阅草稿已保存，请先在订阅管理启用该订阅'
                        if not provider.get('enabled') else
+                       '节点偏好已保存；当前默认出口未指向代理订阅，'
+                       '在高级分流调整并应用后自动生效'
+                       if dormant_core else
                        '节点偏好已保存并确认生效' if runtime_result is not None else
                        '节点偏好已保存，开启代理时将自动应用')
                 self.log(f'[routing] 节点偏好保存成功: provider={target_id}, mode={target_mode}')
