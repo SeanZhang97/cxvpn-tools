@@ -154,6 +154,7 @@ def prepare_restore(content, current_config):
         key for key in (
             'capture_mode', 'traffic_mode', 'physical_interface',
             'proxy_strategy', 'aggregate_selection', 'default_outbound', 'builtin_rule_pack',
+            'proxy_outbounds', 'business_rules',
             'mixed_port', 'dns_servers', 'default_nameserver',
             'proxy_server_nameserver', 'direct_nameserver',
             'dns_mode', 'dns_enhanced_mode', 'dns_respect_rules',

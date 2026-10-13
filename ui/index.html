@@ -339,7 +339,7 @@
               <span class="proxy-current-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></span><span class="proxy-current-copy"><small>当前订阅</small><strong id="proxy-provider-name">尚未配置</strong></span><em id="proxy-provider-meta">前往添加订阅</em>
             </button>
             <button id="proxy-current-node" class="proxy-current-row" type="button">
-              <span class="proxy-current-icon proxy-current-icon-node" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span><span class="proxy-current-copy"><small>当前节点</small><strong id="proxy-node-name">等待选择</strong></span><em id="proxy-node-delay">查看节点</em>
+              <span class="proxy-current-icon proxy-current-icon-node" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span><span class="proxy-current-copy"><small>默认出口节点</small><strong id="proxy-node-name">等待选择</strong></span><em id="proxy-node-delay">查看节点</em>
             </button>
           </div>
         </section>
@@ -639,6 +639,19 @@
       </div>
 
       <div id="routing-panel-rules" class="routing-tab-panel" role="tabpanel" aria-labelledby="routing-tab-rules" aria-hidden="true" data-routing-panel="rules">
+        <section class="card business-section">
+          <div class="routing-rules-head"><div><h3>代理出口</h3><p>为不同业务固定节点，不跟随首页选点；节点失效时拒绝连接。</p></div><button id="btn-business-outbound-add" class="btn ghost" type="button">添加出口</button></div>
+          <div id="routing-business-outbounds"></div>
+          <p id="business-outbounds-empty" class="business-empty">尚无代理出口。启用订阅并获取节点后，点击“添加出口”。</p>
+        </section>
+        <section class="card business-section">
+          <div class="routing-rules-head"><div><h3>业务域名规则集</h3><p>选择业务，再指定代理出口；按从上到下的顺序匹配。</p></div></div>
+          <div id="business-template-tools" class="business-actions business-template-tools"></div>
+          <p id="business-mode-warning" class="business-mode-warning" role="status"></p>
+          <div id="routing-business-sets"></div>
+          <p id="business-sets-empty" class="business-empty">先创建代理出口，再添加 ChatGPT、GitHub 或自定义规则集。</p>
+          <details class="business-help"><summary>规则优先级与模板范围</summary><p>安全绕过、用户逐条规则优先于业务规则集。修改后点击“保存并应用”。模板仅覆盖主要域名，可直接编辑；模板更新不会覆盖已添加的规则集。</p><p>ChatGPT 包含 OpenAI API、关联入口及部分登录、验证、语音、CDN 和支付主机；共享主机也会影响其他网站。不保证完整支付或纯 IP/UDP 语音覆盖，不包含 Azure 动态通配域名。GitHub 不保证覆盖 Copilot 等扩展服务，系统代理无法自动接管 Git SSH。</p></details>
+        </section>
         <section class="card routing-default-card">
           <div class="routing-rules-head"><div><h3 class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 4 4h-1"/></svg></span><span>默认出口与命中测试</span></h3><p>规则从上到下匹配；未命中时使用默认出口。仅支持域名，不支持 URL 路径。</p></div></div>
           <div class="routing-rule-tools">
@@ -1237,6 +1250,7 @@
 <script src="routing_region_picker.js"></script>
 <script src="routing_telemetry.js"></script>
 <script src="routing_workspace.js"></script>
+<script src="routing_business.js"></script>
 <script src="routing.js"></script>
 <script src="proxy.js"></script>
 <script src="routing_activity.js"></script>

@@ -52,7 +52,7 @@ for (const page of ['subscriptions', 'nodes', 'rules', 'connections', 'logs']) {
 }
 assert.match(source, /preview_routing/);
 assert.match(source, /apply_routing/);
-assert.match(source, /schema_version: 9/);
+assert.match(source, /schema_version: 10/);
 assert.match(html, /id="routing-dns-mode"/);
 assert.match(html, /id="routing-dns-advanced"/);
 assert.match(html, /阿里 DNS \+ DNSPod DoH/);
@@ -72,7 +72,7 @@ assert.match(source, /system_proxy_bypass/);
 assert.match(source, /include_cn_direct/);
 assert.match(source, /function renderCnBypassSummary/);
 assert.match(source, /function splitMaintenanceLines[\s\S]*?\.split\(\/\\r\?\\n\/\)/);
-assert.match(source, /bypass → user → builtin/);
+assert.match(source, /bypass → user → business → builtin/);
 assert.match(source, /function preferredNodeGroupId\(\)/);
 assert.match(source, /outbound\.startsWith\('proxy:'\)/);
 assert.match(source, /selection_mode === 'manual' && String\(item\.selected_node \|\| ''\)\.trim\(\)/);
@@ -227,7 +227,7 @@ assert.match(html, /id="routing-node-grid"/);
 assert.match(html, /id="routing-node-regions"/);
 assert.match(html, /id="routing-node-sort"/);
 assert.match(html, /id="btn-routing-locate-current"/);
-assert.match(html, /<script src="routing_regions\.js"><\/script>\s*<script src="routing_nodes\.js"><\/script>\s*<script src="routing_region_picker\.js"><\/script>\s*<script src="routing_telemetry\.js"><\/script>\s*<script src="routing_workspace\.js"><\/script>\s*<script src="routing\.js"><\/script>\s*<script src="proxy\.js"><\/script>\s*<script src="routing_activity\.js"><\/script>/);
+assert.match(html, /<script src="routing_regions\.js"><\/script>\s*<script src="routing_nodes\.js"><\/script>\s*<script src="routing_region_picker\.js"><\/script>\s*<script src="routing_telemetry\.js"><\/script>\s*<script src="routing_workspace\.js"><\/script>\s*<script src="routing_business\.js"><\/script>\s*<script src="routing\.js"><\/script>\s*<script src="proxy\.js"><\/script>\s*<script src="routing_activity\.js"><\/script>/);
 assert.match(source, /nodeTools\.regionOptions/);
 assert.match(source, /nodeTools\.sortNodes/);
 assert.match(source, /function locateCurrentNode/);
@@ -380,7 +380,7 @@ outbound.value = 'physical';
 outbound.onchange();
 assert.equal(ruleContext.window.ruleDirtyCount, 1);
 let collected = ruleApi.collectConfig();
-assert.equal(collected.schema_version, 9);
+assert.equal(collected.schema_version, 10);
 assert.equal(collected.rules[0].outbound, 'physical');
 assert.equal(collected.rules[0].physical_fallback, undefined,
   'switching outbound must not create fallback state');

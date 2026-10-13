@@ -300,6 +300,11 @@
           `${strategyLabel(provider.strategy)} · 独立选点`));
       });
     }
+    if (select.id !== 'routing-default') {
+      (routingConfig?.proxy_outbounds || []).forEach(item => {
+        select.append(option(`outbound:${item.id}`, `代理出口 · ${item.name}`, '独立固定节点，失效时拒绝连接'));
+      });
+    }
     select.append(option('block', '阻止连接', '直接拒绝，不回退到其他出口'));
     if (includeVpn) {
       (setup?.vpns || []).forEach(vpn => {
@@ -892,6 +897,8 @@
     const summary = nodeSummary(routingConfig);
     const readyProviders = providers.filter(providerReady);
     const activeRules = (routingConfig?.rules || []).filter(rule => rule.enabled !== false);
+    const businessRules = (routingConfig?.business_rules || []).filter(rule => rule.enabled !== false);
+    const businessCount = businessRules.reduce((count, rule) => count + rule.domains.length, 0);
     const nodeDetail = summary.source === 'runtime'
       ? `${summary.alive} 个已测速可用 · ${summary.tested} 个已有检测结果`
       : summary.source === 'preview'
@@ -928,9 +935,9 @@
       const vpn = vpnRows.get(name);
       return vpn && !vpn.ipv4_default_gateway && !vpn.ipv6_default_gateway;
     });
-    const proxyRequired = [routingConfig.default_outbound, ...(routingConfig.rules || [])
+    const proxyRequired = [routingConfig.default_outbound, ...businessRules.map(rule => rule.outbound), ...(routingConfig.rules || [])
       .filter(rule => rule.enabled !== false).map(item => item.outbound)]
-      .some(value => value === 'proxy' || value?.startsWith('proxy:'));
+      .some(value => value === 'proxy' || value?.startsWith('proxy:') || value?.startsWith('outbound:'));
     const checks = [
       physicalInterfaceCheck(routingConfig.physical_interface, setup.interfaces || []),
       [routingConfig?.capture_mode !== 'tun' || !(setup?.tun_conflicts || []).length, '接管方式', routingConfig?.capture_mode === 'tun'
@@ -968,9 +975,9 @@
     const bypassCount = (bypass.domains?.length || 0) + (bypass.processes?.length || 0);
     const hasCnFallback = !!bypass.include_cn_direct;
     // 授权入口例外至多占一条，显式阻止时由后端省略；MATCH 固定占一条。
-    const actual = bypassCount + (routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length + builtinCount) + (hasCnFallback ? 1 : 0) + 2;
-    const flow = `授权入口例外 → bypass → user → builtin${hasCnFallback ? ' → GEOIP(CN)' : ''} → MATCH`;
-    byId('routing-rule-composition').textContent = `自定义绕过 ${bypassCount} 条 · 用户规则 ${routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length} 条 · 内置规则 ${routingConfig?.traffic_mode === 'global' ? 0 : builtinCount} 条（${routingConfig?.builtin_rule_pack || 'off'}） · 最多 ${actual} 条；顺序固定为 ${flow}，重复项会自动合并。`;
+    const actual = bypassCount + (routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length + businessCount + builtinCount) + (hasCnFallback ? 1 : 0) + 2;
+    const flow = `授权入口例外 → bypass → user → business → builtin${hasCnFallback ? ' → GEOIP(CN)' : ''} → MATCH`;
+    byId('routing-rule-composition').textContent = `自定义绕过 ${bypassCount} 条 · 用户规则 ${routingConfig?.traffic_mode === 'global' ? 0 : activeRules.length} 条 · 业务域名 ${routingConfig?.traffic_mode === 'global' ? 0 : businessCount} 条 · 内置规则 ${routingConfig?.traffic_mode === 'global' ? 0 : builtinCount} 条（${routingConfig?.builtin_rule_pack || 'off'}） · 最多 ${actual} 条；顺序固定为 ${flow}，重复项会自动合并。`;
     renderBuiltinRules();
   }
 
@@ -1618,7 +1625,7 @@
       if (byId('page-proxy')?.classList.contains('active')) window.ProxyWorkspace?.sync?.();
       return;
     }
-    renderNodes(); renderProviders(); renderOverview(); renderAllProxyChoice();
+    renderNodes(); renderProviders(); renderOverview(); renderAllProxyChoice(); renderBusiness();
     window.ProxyWorkspace?.sync?.();
   }
 
@@ -2221,6 +2228,11 @@
   }
 
   function aggregateProviderIsPinned(providerId) {
+    const exits = (routingConfig.proxy_outbounds || []).filter(item => item.provider_id === providerId);
+    if (exits.length) {
+      feedback(`该订阅被代理出口引用：${exits.map(item => item.name).join('、')}。请先改绑或删除出口，再停用或删除订阅。`, 'warning');
+      return true;
+    }
     const target = routingConfig.aggregate_selection;
     if (target?.mode !== 'manual' || target.provider_id !== providerId) return false;
     feedback('该订阅包含“全部代理订阅”的固定节点，请先到节点页重选节点或切回自动，再停用或删除订阅。', 'warning');
@@ -2539,7 +2551,20 @@
     });
   }
 
+  function renderBusiness() {
+    window.RoutingBusiness?.render({
+      config: routingConfig, busy: busy || !!preferenceBusy, groups: nodeGroups(),
+      templates: setup?.business_rule_templates || [],
+      nodes: group => partitionNodes(group?.nodes || []).selectable,
+      rawName: preferenceNodeName, enhance: enhanceRoutingSelect, destroy: destroyRoutingSelects,
+      changed: () => { setDirty(); renderOverview(); },
+      refresh: () => { renderRules(); renderOverview(); }, feedback,
+      openNodes: id => { pendingNodeGroup = id; setRoutingTab('nodes'); },
+    });
+  }
+
   function renderRules() {
+    renderBusiness();
     const root = byId('routing-rules');
     destroyRoutingSelects(root);
     root.replaceChildren();
@@ -2713,6 +2738,7 @@
       if (result?.ok === false) throw new Error(result.msg);
       const match = result.result;
       const source = match.source === 'bypass' ? `bypass · 安全绕过（${match.rule_domain}）`
+        : match.source === 'business' ? `业务规则集 · ${match.business_name}（${match.rule_domain}）`
         : match.source === 'user' ? `user · 第 ${match.rule_index} 条规则（${match.rule_domain}）`
         : match.source === 'builtin' ? `builtin · ${routingConfig.builtin_rule_pack}（${match.rule_domain}）`
         : match.runtime_geoip_fallback ? 'runtime · GEOIP(CN) 后再进入 MATCH'
@@ -2731,7 +2757,7 @@
   function collectConfig() {
     return {
       ...routingConfig,
-      schema_version: 9,
+      schema_version: 10,
       enabled: byId('routing-enabled').checked,
       capture_mode: byId('routing-capture-mode').value,
       traffic_mode: byId('routing-traffic-mode').value,
@@ -3311,6 +3337,7 @@
           ...(routingConfig.system_proxy_bypass || {}), lan: true, include_cn_direct: element.checked,
         };
         syncDirty(); renderCnBypassSummary(); renderOverview(); updateApplyButton();
+        if (id === 'routing-traffic-mode') renderBusiness();
       });
     });
     byId('routing-dns-mode').onchange = () => {

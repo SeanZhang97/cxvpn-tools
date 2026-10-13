@@ -28,7 +28,14 @@
   }
 
   function usesProxy(config) {
-    const values = [config?.default_outbound, ...(config?.rules || [])
+    const values = [config?.default_outbound, ...(config?.traffic_mode === 'global' ? [] :
+      [...(config?.rules || []), ...(config?.business_rules || [])])
+      .filter(item => item.enabled !== false).map(item => item.outbound)];
+    return values.some(value => value === 'proxy' || /^(proxy:|outbound:)/.test(String(value || '')));
+  }
+
+  function usesSubscriptionSelection(config) {
+    const values = [config?.default_outbound, ...(config?.traffic_mode === 'global' ? [] : config?.rules || [])
       .filter(item => item.enabled !== false).map(item => item.outbound)];
     return values.some(value => value === 'proxy' || String(value || '').startsWith('proxy:'));
   }
@@ -489,6 +496,7 @@
     const phase = servicePhase(config, status);
     const running = phase === 'running';
     const aggregate = config.default_outbound === 'proxy';
+    const defaultUsesProxy = aggregate || String(config.default_outbound || '').startsWith('proxy:');
     const provider = targetProvider(config);
     selectedGroupId = aggregate ? 'all' : provider?.id || 'all';
     const group = aggregate ? groups.find(item => item.id === 'all') : preferredGroup(groups, provider);
@@ -500,7 +508,7 @@
       : null;
     const manualCurrent = running && provider?.selection_mode === 'manual' &&
       runtimeUsesPreference(group, provider);
-    const guard = usesProxy(config) ? selectionGuard(setup, provider, group)
+    const guard = usesSubscriptionSelection(config) ? selectionGuard(setup, provider, group)
       : { valid: true, reason: '' };
     const summary = window.RoutingWorkspace?.nodeSummary?.(selectedGroupId) || {};
     renderOperationNotice();
@@ -510,7 +518,9 @@
     setText('proxy-default-outbound', outboundName(config.default_outbound));
     const builtinCount = status.builtin_rule_pack?.rule_count || 0;
     const cnFallback = config.system_proxy_bypass?.include_cn_direct ? ' / GEOIP CN' : '';
-    setText('proxy-rule-composition', `${(config.rules || []).filter(item => item.enabled !== false).length} user / ${config.traffic_mode === 'global' ? 0 : builtinCount} builtin${cnFallback} / MATCH`);
+    const businessCount = config.traffic_mode === 'global' ? 0 : (config.business_rules || [])
+      .filter(item => item.enabled !== false).reduce((count, item) => count + item.domains.length, 0);
+    setText('proxy-rule-composition', `${(config.rules || []).filter(item => item.enabled !== false).length} user / ${businessCount} business / ${config.traffic_mode === 'global' ? 0 : builtinCount} builtin${cnFallback} / MATCH`);
 
     const serviceDot = byId('proxy-service-dot');
     serviceDot?.classList.toggle('on', running);
@@ -599,7 +609,11 @@
       : aggregate ? '全部代理订阅 · 出口偏好已保存' : provider ? `${provider.name} · 目标偏好已保存` : '等待配置订阅');
     byId('proxy-recent-delay')?.classList.toggle('on', !!node?.delay);
     byId('proxy-current-provider').disabled = busy;
-    byId('proxy-current-node').disabled = busy || !provider;
+    if (!defaultUsesProxy) {
+      setText('proxy-node-name', outboundName(config.default_outbound));
+      setText('proxy-node-delay', '默认出口不使用代理节点');
+    }
+    byId('proxy-current-node').disabled = busy || !provider || !defaultUsesProxy;
     syncNodeStats();
     reconcileTelemetry(running);
   }
@@ -616,7 +630,9 @@
       if (result?.ok === false) throw new Error(result.msg || message);
       window.RoutingWorkspace?.acceptApplyResult?.(result);
       void window.RoutingWorkspace?.refreshBackground?.(true);
-      toast({ ok: true, msg: result.msg || message });
+      const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+      toast({ ok: true, tone: warnings.length ? 'warning' : 'success',
+        msg: [result.msg || message, ...warnings].join('；') });
       return true;
     } catch (error) {
       const detail = typeof friendlyError === 'function' ? friendlyError(error) : String(error);
@@ -669,7 +685,7 @@
       openSubscriptions();
       return;
     }
-    const guard = usesProxy(config) ? selectionGuard(cachedSetup, provider, targetGroup)
+    const guard = usesSubscriptionSelection(config) ? selectionGuard(cachedSetup, provider, targetGroup)
       : { valid: true, reason: '' };
     if (nextEnabled && !guard.valid) {
       toast({ ok: false, tone: 'warning', msg: guard.reason });

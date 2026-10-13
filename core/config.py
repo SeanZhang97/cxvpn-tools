@@ -57,7 +57,7 @@ DEFAULT = {
     'vlm': {'base': '', 'key': '', 'model': ''},
     'codex_api': {'base_url': '', 'api_key': ''},
     'routing': {
-        'schema_version': 9,
+        'schema_version': 10,
         'enabled': False,
         'capture_mode': 'system-proxy',
         'traffic_mode': 'rule',
@@ -65,6 +65,8 @@ DEFAULT = {
         'proxy_strategy': 'url-test',
         'aggregate_selection': {'mode': 'auto', 'provider_id': '', 'node_name': ''},
         'proxy_providers': [],
+        'proxy_outbounds': [],
+        'business_rules': [],
         'default_outbound': 'physical',
         'builtin_rule_pack': 'cn-direct-v1',
         'system_proxy_bypass': {

@@ -7,6 +7,9 @@ const html = fs.readFileSync(path.join(root, 'ui', 'index.html'), 'utf8');
 const proxy = fs.readFileSync(path.join(root, 'ui', 'proxy.js'), 'utf8');
 const routing = fs.readFileSync(path.join(root, 'ui', 'routing.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'ui', 'style.css'), 'utf8');
+assert.match(proxy, /Array\.isArray\(result\.warnings\)/);
+assert.match(proxy, /tone: warnings\.length \? 'warning' : 'success'/);
+assert.match(proxy, /result\.msg \|\| message, \.\.\.warnings/);
 
 assert.match(html, /data-page="proxy"/);
 assert.match(html, /id="page-proxy"/);

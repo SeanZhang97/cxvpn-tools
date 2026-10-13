@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>业务分流隔离预览</title>
+<style>html,body,iframe{margin:0;width:100%;height:100%;border:0}</style>
+<iframe id="preview" src="../../ui/index.html"></iframe>
+<script>
+document.getElementById('preview').onload = function () {
+  const w = this.contentWindow, d = w.document;
+  d.querySelectorAll('.page').forEach(e => e.classList.remove('active'));
+  d.getElementById('page-rules').classList.add('active');
+  d.querySelectorAll('nav [data-page]').forEach(e => e.classList.toggle('active', e.dataset.page === 'rules'));
+  const config = { traffic_mode: 'rule', proxy_providers: [{id:'demo',name:'示例订阅',enabled:true}], rules:[],
+    proxy_outbounds: [{id:'chat',name:'ChatGPT 专用',provider_id:'demo',node_name:'示例节点 A'},
+      {id:'git',name:'GitHub 专用',provider_id:'demo',node_name:'示例节点 B'}],
+    business_rules: [{id:'chat',name:'ChatGPT',enabled:true,outbound:'outbound:chat',domains:['chatgpt.com','openai.com','oaistatic.com','oaiusercontent.com'],exclude_domains:['api.openai.com']},
+      {id:'git',name:'GitHub',enabled:true,outbound:'outbound:git',domains:['github.com','githubusercontent.com','githubassets.com'],exclude_domains:[]}] };
+  const ctx = { config, busy:false, groups:[{id:'demo',preview:true,nodes:Array.from({length:150},(_,i)=>({name:i<2?`示例节点 ${i?'B':'A'}`:`日本节点 ${i+1}`,tested:true,alive:true,delay:20+i}))}],
+    templates:[{id:'chatgpt',name:'ChatGPT',domains:['chatgpt.com']},{id:'github',name:'GitHub',domains:['github.com']}],
+    nodes:g=>g?.nodes||[],rawName:n=>n.name,enhance:w.RoutingWorkspace.enhanceSelect,
+    destroy:root=>root.querySelectorAll('select').forEach(s=>s._routingWidget?.destroy()),
+    changed(){},feedback:message=>{d.getElementById('business-mode-warning').textContent=message;},openNodes(){} };
+  ctx.refresh=()=>w.RoutingBusiness.render(ctx); ctx.refresh();
+  d.getElementById('btn-routing-apply').disabled=true;
+  d.getElementById('btn-routing-preview').disabled=true;
+};
+</script></html>

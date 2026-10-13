@@ -35,10 +35,10 @@ class RoutingServiceClient:
     def __init__(self, binary=None):
         self.binary = binary or binary_path(SERVICE_BINARY)
 
-    def status(self):
+    def status(self, timeout=2):
         try:
             return self.request({'op': 'status'}, connect_timeout_ms=600,
-                                response_timeout=2)
+                                response_timeout=timeout)
         except ServiceUnavailable:
             return None
 

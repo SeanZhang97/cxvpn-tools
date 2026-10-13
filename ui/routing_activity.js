@@ -28,7 +28,9 @@
   }
 
   function chainText(item) {
-    return (item.chains || []).map(name => name === 'PHYSICAL' ? '物理网络' : name).join(' → ') || 'DIRECT';
+    const exits = window.RoutingWorkspace?.state?.().appliedConfig?.proxy_outbounds || [];
+    return (item.chains || []).map(name => name === 'PHYSICAL' ? '物理网络'
+      : exits.find(exit => `OUTBOUND-${exit.id}` === name)?.name || name).join(' → ') || 'DIRECT';
   }
 
   function filteredConnections(snapshot, scope, query, sort) {

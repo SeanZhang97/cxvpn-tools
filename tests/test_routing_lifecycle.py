@@ -109,7 +109,7 @@ class RoutingLifecycleTests(unittest.TestCase):
 
     def test_fast_enable_does_not_enable_foreign_endpoint(self):
         value = routing.normalize_config({'enabled': True, 'capture_mode': 'system-proxy'})
-        self.manager._verify_runtime_egress = mock.Mock()
+        self.manager._verify_runtime_egress = mock.Mock(return_value=[])
         self.manager._native_service.set_system_proxy_enabled.side_effect = [
             {'runtime_mode': 'active', 'system_proxy_active': True},
             {'runtime_mode': 'standby', 'system_proxy_active': False},

@@ -43,7 +43,7 @@
 `config.json.routing` 的稳定字段为：
 
 - `enabled`：期望启用状态，默认 `false`。
-- `schema_version`：当前为 `9`。旧配置缺少版本时按首版语义迁移为 `capture_mode=tun`、
+- `schema_version`：当前为 `10`（2026-10-13 验证）。旧配置缺少版本时按首版语义迁移为 `capture_mode=tun`、
   `builtin_rule_pack=off`，不得套用新安装默认值改变既有流量路径。
 - `capture_mode`：`system-proxy` 或 `tun`，二者互斥。新安装推荐默认是
   `system-proxy`；TUN 是需要透明接管 UDP/不遵循系统代理应用时的高级模式。
@@ -120,8 +120,9 @@
   `external-controller-cors`；Controller 继续 `allow-lan=false`、绑定 `127.0.0.1` 并要求随机
   Bearer secret。
 - `rules[]`：`id`、`enabled`、`match_type`、`domain`、`outbound`。
+- `proxy_outbounds[]` 和 `business_rules[]`：命名固定节点出口及可编辑业务域名规则集；普通规则可以引用 `outbound:<id>`，默认出口保持原有选项。详见 [业务域名独立代理出口](业务域名独立代理出口.md)。
 
-规则严格按“自定义 bypass → 启用的用户 `rules[]` → 本地规则包 → 可选 `GEOIP,CN` → `MATCH`”输出：
+规则严格按“自定义 bypass → 启用的用户 `rules[]` → 启用的业务规则集 → 本地规则包 → 可选 `GEOIP,CN` → `MATCH`”输出：
 `exact` → `DOMAIN`，`suffix` → `DOMAIN-SUFFIX`，`wildcard` → `DOMAIN-WILDCARD`。
 后端拒绝协议、端口、路径、
 空域名和重复的“匹配方式 + 域名”。国际化域名在保存时转为 IDNA。停用规则仍保留在
