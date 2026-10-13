@@ -18,10 +18,12 @@
 无法知道被残留覆盖之前的原始设置。
 """
 import json
+import logging
 import os
 import socket
 import tempfile
 import time
+import traceback
 import urllib.parse
 
 from core import config as cfgmod
@@ -397,6 +399,58 @@ def _snapshot(base, state, reason):
 
 
 # ---------- 两条清扫路径 ----------
+def _cleanup_log(log, message):
+    """诊断输出失败不得中断代理清扫或脏标记维护。"""
+    try:
+        log(message)
+    except Exception as exc:
+        try:
+            logging.getLogger(__name__).warning(
+                'Proxy cleanup log callback failed: %s', type(exc).__name__)
+        except Exception:
+            pass
+
+
+def _clear_stale_proxy(state, reason, log, registry, base, port_check=None):
+    """备份、复核、写入和回读；不追写其它程序在检查期间接管的新配置。"""
+    started = time.monotonic()
+    stage = '备份'
+    _cleanup_log(log, f'[proxy] 本地代理清扫开始: source={reason}，target=当前用户手动代理')
+    try:
+        _snapshot(base, state, reason)
+        stage = '写前复核'
+        if read_proxy_state(registry, strict=True) != state:
+            raise OSError('Windows 代理设置已变化，已停止清扫')
+        if port_check:
+            entries, _ = loopback_entries(state['server'])
+            if any(port_check(*entry) for entry in entries):
+                _cleanup_log(log, f'[proxy] 本地代理清扫取消: source={reason}，端口已恢复监听，'
+                             f'耗时={time.monotonic() - started:.3f}s')
+                return None
+        # 端口探测和磁盘快照均可能耗时，完成后再核对四字段。
+        # Windows 注册表没有跨软件比较交换，不能承诺消除最后一次读写间的竞态。
+        if read_proxy_state(registry, strict=True) != state:
+            raise OSError('Windows 代理设置已变化，已停止清扫')
+        stage = '关闭手动代理'
+        set_proxy_enabled(False, registry)
+        stage = '刷新 WinINet'
+        changed, refreshed = _refresh_wininet_proxy_settings()
+        if not (changed and refreshed):
+            raise OSError('Windows 代理清扫刷新失败，尚未确认生效')
+        stage = '结果回读'
+        if read_proxy_state(registry, strict=True) != dict(state, enable=False):
+            raise OSError('Windows 代理清扫后回读不一致，已停止重写')
+    except Exception as exc:
+        # 不输出异常文本或原始代理/PAC 地址，保留阶段、类型及调用位置。
+        _cleanup_log(log, f'[proxy] 本地代理清扫失败: source={reason}，stage={stage}，'
+                     f'type={type(exc).__name__}，耗时={time.monotonic() - started:.3f}s\n'
+                     + ''.join(traceback.format_tb(exc.__traceback__)))
+        raise
+    _cleanup_log(log, f'[proxy] 本地系统代理残留已关闭并回读确认: source={reason}，'
+                 f'耗时={time.monotonic() - started:.3f}s')
+    return state['server']
+
+
 def startup_check(log=print, registry=None, base=None, port_check=None):
     """启动自检：脏标记 + 仅回环条目 + 端口无人监听 -> 关闭手动代理。
 
@@ -404,16 +458,13 @@ def startup_check(log=print, registry=None, base=None, port_check=None):
     """
     repaired = None
     if is_last_run_dirty(base):
-        state = read_proxy_state(registry)
+        state = read_proxy_state(registry, strict=True)
         loopback, foreign = loopback_entries(state['server'])
         checker = port_check or port_listening
-        alive = [entry for entry in loopback if checker(*entry)]
-        if state['enable'] and loopback and not foreign and not alive:
-            _snapshot(base, state, 'startup_repair')
-            set_proxy_enabled(False, registry)
-            repaired = state['server']
-            log(f'[proxy] 检测到上次异常退出残留的系统代理 '
-                f'{state["server"] or "（空）"}，已自动关闭')
+        if (state['enable'] and loopback and not foreign and
+                not any(checker(*entry) for entry in loopback)):
+            repaired = _clear_stale_proxy(
+                state, 'startup_repair', log, registry, base, checker)
     mark_running(base)
     return repaired
 
@@ -424,13 +475,10 @@ def shutdown_cleanup(log=print, registry=None, base=None):
     返回被关闭的代理服务器串，未处理返回 None。
     """
     cleared = None
-    state = read_proxy_state(registry)
+    state = read_proxy_state(registry, strict=True)
     loopback, foreign = loopback_entries(state['server'])
     if state['enable'] and loopback and not foreign:
-        _snapshot(base, state, 'shutdown_cleanup')
-        set_proxy_enabled(False, registry)
-        cleared = state['server']
-        log(f'[proxy] 关机前检测到本地系统代理 '
-            f'{state["server"] or "（空）"}，已关闭')
+        cleared = _clear_stale_proxy(
+            state, 'shutdown_cleanup', log, registry, base)
     mark_clean(base)
     return cleared

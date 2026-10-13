@@ -9,6 +9,39 @@ from api import Api
 from core import routing
 
 
+class ProxyShutdownTests(unittest.TestCase):
+    def make_api(self):
+        target = Api.__new__(Api)
+        target.log = mock.Mock()
+        for name in ('_manual_event', '_manual_sms_ev', 'routing_telemetry',
+                     'routing_activity', '_ui_state_stream', 'routing_updates',
+                     'routing_network', 'routing_vpn', 'worker'):
+            setattr(target, name, mock.Mock())
+        return target
+
+    def test_shutdown_keeps_dirty_marker_after_cleanup_failure(self):
+        target = self.make_api()
+        with mock.patch('api.proxy_guard.shutdown_cleanup', side_effect=OSError('readback')), \
+                mock.patch('api.proxy_guard.mark_clean') as clean:
+            target._os_shutdown_cleanup()
+            target.shutdown()
+        clean.assert_not_called()
+        target.worker.stop.assert_called_once_with()
+        self.assertTrue(any('清扫失败' in call.args[0] for call in target.log.call_args_list))
+
+    def test_successful_cleanup_and_normal_exit_can_clear_marker(self):
+        for os_shutdown in (False, True):
+            with self.subTest(os_shutdown=os_shutdown):
+                target = self.make_api()
+                with mock.patch('api.proxy_guard.shutdown_cleanup') as cleanup, \
+                        mock.patch('api.proxy_guard.mark_clean') as clean:
+                    if os_shutdown:
+                        target._os_shutdown_cleanup()
+                    target.shutdown()
+                self.assertEqual(os_shutdown, cleanup.called)
+                clean.assert_called_once_with()
+
+
 class ProxyPostCommitTests(unittest.TestCase):
     def make_api(self):
         target = Api.__new__(Api)

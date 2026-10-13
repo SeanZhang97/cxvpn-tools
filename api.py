@@ -436,10 +436,10 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
 
     def _os_shutdown_cleanup(self):
         """系统关机/注销前同步清扫本地代理残留；异常不影响退出。"""
+        self._proxy_cleanup_failed = True
         try:
-            cleared = proxy_guard.shutdown_cleanup(log=self.log)
-            if cleared:
-                self.log(f'[proxy] 关机前已关闭本地系统代理 {cleared}')
+            proxy_guard.shutdown_cleanup(log=self.log)
+            self._proxy_cleanup_failed = False
         except Exception as exc:
             self.log(f'[proxy] 关机代理清扫失败: {exc}')
 
@@ -592,10 +592,11 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         self.routing_network.stop()
         self.routing_vpn.stop()
         self.worker.stop()
-        # 正常退出即视为优雅结束，清除脏标记；仅系统关机路径会在此前
-        # 由 _os_shutdown_cleanup 先清扫代理（用户点击退出的场景不碰代理）。
+        # 关机清扫失败时保留恢复依据；不能由通用退出流程覆盖其失败结果。
+        # 用户普通退出仍只清标记，不碰代理。
         try:
-            proxy_guard.mark_clean()
+            if not getattr(self, '_proxy_cleanup_failed', False):
+                proxy_guard.mark_clean()
         except Exception as exc:
             self.log(f'[proxy] 清除代理脏标记失败: {exc}')
         writer = getattr(self, '_log_writer', None)
