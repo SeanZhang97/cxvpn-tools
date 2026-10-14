@@ -26,7 +26,7 @@ class ProxyCoreConfirmationTests(unittest.TestCase):
     def _manager(self):
         manager = routing.RoutingManager()
         manager._native_service = mock.Mock()
-        manager._verify_runtime_egress = mock.Mock()
+        manager._verify_runtime_egress = mock.Mock(return_value=[])
         manager.status = mock.Mock(return_value={'running': False})
         return manager
 
@@ -188,6 +188,23 @@ class ProxyCoreConfirmationTests(unittest.TestCase):
                 api.routing.apply.assert_not_called()
                 self.assertFalse(any(
                     '复核失败' in call.args[0] for call in api.log.call_args_list))
+
+    def test_startup_reports_incompatible_native_service_without_apply(self):
+        api = self._api_for_startup_reconcile(True)
+        api.routing._service_state.return_value = {
+            'installed': True, 'backend': 'native',
+            'runtime_running': True, 'runtime_mode': 'active',
+            'service_compatible': False,
+        }
+        with mock.patch(
+                'api.routing.windows_system_proxy',
+                return_value='http://127.0.0.1:17890'):
+            api._start_routing_standby_reconcile()
+            api._routing_standby_thread.join(1)
+        api.routing.apply.assert_not_called()
+        self.assertTrue(any(
+            '原生服务与内置运行时不一致' in call.args[0]
+            for call in api.log.call_args_list))
 
     def test_service_commits_and_port_changes_leave_codex_alone(self):
         for mode in ('system-proxy', 'tun'):

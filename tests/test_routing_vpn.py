@@ -25,8 +25,9 @@ class VpnWorkerTests(unittest.TestCase):
         self.manager._runtime_vpns = {'公司': True}
         self.apply = Mock(return_value={'ok': True})
         self.lock = threading.Lock()
+        self.worker_log = Mock()
         self.worker = RoutingVpnWorker(lambda: {'routing': copy.deepcopy(self.config)},
-            self.manager, self.lock, self.apply, Mock())
+            self.manager, self.lock, self.apply, self.worker_log)
         clock = patch('core.routing_vpn.time.monotonic', return_value=100)
         scan = patch('core.routing_vpn.bounded_calls',
             return_value=({'vpns': [{'name': '公司', 'status': 'Disconnected'}]}, {}))
@@ -145,6 +146,31 @@ class VpnWorkerTests(unittest.TestCase):
         self.worker.check()
         self.scan.assert_not_called()
         self.apply.assert_not_called()
+
+    def _incompat_log_calls(self):
+        return [call for call in self.worker_log.call_args_list
+                if '不一致' in call.args[0]]
+
+    def test_incompatible_service_logs_throttled_and_skips_scan(self):
+        self.manager._native_service._compatible.return_value = False
+        self.worker.check()
+        self.worker.check()
+        self.assertEqual(len(self._incompat_log_calls()), 1)
+        self.scan.assert_not_called()
+        self.apply.assert_not_called()
+        self.clock.return_value = 1900
+        self.worker.check()
+        self.assertEqual(len(self._incompat_log_calls()), 2)
+
+    def test_recovered_service_resets_incompatibility_throttle(self):
+        self.manager._native_service._compatible.return_value = False
+        self.worker.check()
+        self.manager._native_service._compatible.return_value = True
+        self.worker.check()
+        self.manager._native_service._compatible.return_value = False
+        self.clock.return_value = 101
+        self.worker.check()
+        self.assertEqual(len(self._incompat_log_calls()), 2)
 
 
 if __name__ == '__main__':

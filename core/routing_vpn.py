@@ -20,6 +20,7 @@ class RoutingVpnWorker:
         self._candidate = None
         self._observed_at = 0
         self._retry_at = 0
+        self._incompat_logged_at = None
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -59,10 +60,21 @@ class RoutingVpnWorker:
         if not isinstance(state, dict):
             self._candidate = None
             return
+        if not self._manager._native_service._compatible(state):
+            # 服务二进制与内置运行时不一致是升级完成前的持续停摆态，
+            # 不能像瞬时条件一样静默跳过；限频留痕避免 15 秒轮询刷屏。
+            self._candidate = None
+            now = time.monotonic()
+            if (self._incompat_logged_at is None or
+                    now - self._incompat_logged_at >= 1800):
+                self._incompat_logged_at = now
+                self._log('[routing-vpn] 原生服务与内置运行时不一致，'
+                          'VPN 状态联动暂停；修改分流配置或重开分流会触发服务提权升级')
+            return
+        self._incompat_logged_at = None
         signature = self._manager._config_signature(config)
         if (not state.get('runtime_running') or state.get('runtime_mode') != 'active'
                 or state.get('pending_transaction')
-                or not self._manager._native_service._compatible(state)
                 or not (state.get('applied_config_signature') == signature
                         or self._manager.runtime_matches(config, state))):
             self._candidate = None

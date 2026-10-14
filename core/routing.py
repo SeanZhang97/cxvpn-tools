@@ -3792,13 +3792,22 @@ if ($service) {{
         else:
             self._log_best_effort(
                 '[routing] 待机核心配置开始生成：TUN=off，系统代理=off，监听仅限回环')
+            vpns = []
             generated = build_mihomo_config(
-                config, [], system_proxy=windows_system_proxy(), standby=True)
+                config, vpns, system_proxy=windows_system_proxy(), standby=True)
         _write_json(config_path, generated)
         self._test_config(config_path, test_data)
         self._install(
             config_path, config, runtime_mode='standby',
             fast_toggle_ready=fast_toggle_ready)
+        # 待机配置与正式配置一样固化了生成时的 VPN 连接状态；基线必须与
+        # 常驻核心内嵌的假设一致，否则 VPN 状态对称翻转后 RoutingVpnWorker
+        # 的差分逻辑无法发现快切激活的是陈旧出口。
+        self._runtime_vpns = _vpn_connection_signature(vpns)
+        connected = [name for name, up in self._runtime_vpns.items() if up]
+        self._log_best_effort(
+            f'[routing] 待机核心 VPN 状态基线已记录：已连接={len(connected)}，'
+            f'快切将复核目标 VPN 是否仍为该状态')
 
     @staticmethod
     def _can_fast_toggle_system_proxy(config, service_state):
@@ -3925,11 +3934,30 @@ if ($service) {{
             allow_fast_toggle and expected_vpns is None and
             self._can_fast_toggle_system_proxy(config, service_state) and
             (not config['enabled'] or self.runtime_matches(config, service_state)))
-        if can_fast_toggle and config['enabled'] and not config['physical_interface']:
-            # 自动模式的待机核心可能仍绑定上一张网卡，开启前复核而非直接复用。
-            available = self._environment.snapshot(False, fresh=True)['interfaces']
-            can_fast_toggle = bool(available and available[0]['name'] ==
-                                   service_state.get('applied_physical_interface'))
+        if can_fast_toggle and config['enabled']:
+            needs_interface_check = not config['physical_interface']
+            vpn_targets = (_target_vpns(config)
+                           if self._runtime_vpns is not None else [])
+            environment_now = (
+                None if not needs_interface_check and not vpn_targets
+                else self._environment.snapshot(False, fresh=True))
+            if needs_interface_check:
+                # 自动模式的待机核心可能仍绑定上一张网卡，开启前复核而非直接复用。
+                available = environment_now['interfaces']
+                can_fast_toggle = bool(available and available[0]['name'] ==
+                                       service_state.get('applied_physical_interface'))
+            if can_fast_toggle and vpn_targets:
+                # 常驻核心固化了待机生成时的 VPN 连接状态；开启前复核当前
+                # 状态，不一致时降级为完整应用，避免激活陈旧的 vpn: 出口解析。
+                current = _vpn_connection_signature(
+                    environment_now['vpns'], vpn_targets)
+                baked = {name: bool(self._runtime_vpns.get(name, False))
+                         for name in vpn_targets}
+                if current != baked:
+                    can_fast_toggle = False
+                    self.log(
+                        '[routing] VPN 连接状态与常驻核心生成时不一致，'
+                        '快切降级为完整应用以重新生成 VPN 出口规则')
         if can_fast_toggle:
             return self._fast_toggle_system_proxy(config, config['enabled'])
         if not config['enabled']:

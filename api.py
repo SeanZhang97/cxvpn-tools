@@ -331,6 +331,14 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                 current = routing.normalize_config(
                     (self._cfg_get().get('routing') or {}))
                 state = self.routing._service_state()
+                # 打包升级后服务二进制可能与内置运行时不一致：对账结论看似
+                # “一致”，但 VPN 联动 worker 会持续停摆，必须留下可定位线索。
+                if (state.get('installed') and
+                        state.get('backend') == 'native' and
+                        state.get('service_compatible') is False):
+                    self.log(
+                        '[routing] 启动时检测到原生服务与内置运行时不一致：'
+                        'VPN 状态联动暂停，完整应用分流时将自动提权升级服务')
 
                 # 异常重启可能留下仍指向 CXVPN mixed-port 的 Windows 手动代理，
                 # 但持久化配置已经是关闭状态；反过来，配置仍是开启状态且系统

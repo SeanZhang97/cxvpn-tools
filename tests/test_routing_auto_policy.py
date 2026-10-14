@@ -48,6 +48,11 @@ def policy_config(**policy_changes):
 
 class RoutingAutoPolicyTests(unittest.TestCase):
     def test_catalog_unicode_survives_subprocess_json(self):
+        if isinstance(subprocess.Popen, mock.Mock):
+            # 离线守卫全局禁用真实子进程；本用例验证的是真实 UTF-8 进程边界，
+            # 属于打包前编码回归，应在 run_routing_offline 之外单独执行。
+            raise unittest.SkipTest(
+                '离线套件已禁用子进程，子进程 UTF-8 编码回归请在套件外运行')
         completed = subprocess.run([
             sys.executable, '-c',
             "import json; from core.routing_auto_policy import region_label; "
