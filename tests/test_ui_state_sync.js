@@ -142,6 +142,7 @@ function testVpnRowsUpdateWithoutClearingTable() {
   };
   const context = {
     CFG: { vpn_name: '工作 VPN', credential_status: {} },
+    VpnOrder: { sort: list => list, attach: () => ({ active: () => false }) },
     $(id) { return id === 'vpn-tbody' ? tbody : summary; },
     renderVpnRow(vpn) {
       return { dataset: {

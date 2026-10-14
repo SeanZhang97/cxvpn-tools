@@ -14,7 +14,7 @@ from core import routing
 BACKUP_VERSION = 1
 MAX_IMPORT_BYTES = 2 * 1024 * 1024
 SAFE_CONFIG_FIELDS = (
-    'vpn_name', 'renew_hours', 'auto_renew', 'auto_connect', 'close_to_tray',
+    'vpn_name', 'vpn_order', 'renew_hours', 'auto_renew', 'auto_connect', 'close_to_tray',
     'captcha_max_attempts', 'captcha_gate_max_refresh', 'sms_timeout',
     'browser_data_dir',
 )
@@ -115,12 +115,14 @@ def read_backup_file(path):
 
 
 def prepare_restore(content, current_config):
+    from core.config import validate_vpn_order
     document = _parse_document(content)
     backed = document['config']
     candidate = _clone(current_config or {})
     for key in SAFE_CONFIG_FIELDS:
         if key in backed:
             candidate[key] = copy.deepcopy(backed[key])
+    validate_vpn_order(candidate.get('vpn_order', []))
 
     incoming_routing = copy.deepcopy(backed.get('routing') or {})
     current_routing = routing.normalize_config(

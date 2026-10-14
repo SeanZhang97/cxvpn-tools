@@ -801,16 +801,27 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         unknown = set(cfg).difference(cfgmod.DEFAULT)
         if unknown:
             raise ValueError('配置更新包含未知字段')
+        if 'vpn_order' in cfg:
+            cfgmod.validate_vpn_order(cfg['vpn_order'])
+            self.log('[vpn-order] 排序保存请求已领取，开始写入本地配置')
         with self._lock:
             old_default = self.cfg.get('vpn_name', '')
             old_auto_connect = bool(self.cfg.get('auto_connect', False))
             committed = json.loads(json.dumps(self.cfg))
             committed.update(json.loads(json.dumps(cfg)))
-            cfgmod.save(committed)
+            try:
+                cfgmod.save(committed)
+            except Exception as exc:
+                if 'vpn_order' in cfg:
+                    self.log('[vpn-order] 保存失败: %s: %s' % (type(exc).__name__, exc))
+                    self.log(traceback.format_exc())
+                raise
             self.cfg = committed
             new_default = self.cfg.get('vpn_name', '')
             new_auto_connect = bool(self.cfg.get('auto_connect', False))
         self.log('[config] 已保存')
+        if 'vpn_order' in cfg:
+            self.log('[vpn-order] 排序保存成功: count=%s' % len(cfg['vpn_order']))
         if new_default != old_default:
             self.worker.update_default_target(new_default)
         elif new_auto_connect and not old_auto_connect:
@@ -1824,6 +1835,10 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         if ok:
             with self._lock:
                 changed = False
+                order = self.cfg.get('vpn_order', [])
+                if name in order:
+                    self.cfg['vpn_order'] = [item for item in order if item != name]
+                    changed = True
                 if self.cfg.get('vpn_name') == name:
                     self.cfg['vpn_name'] = ''
                     changed = True

@@ -42,6 +42,34 @@
 
 ## 架构与调用链
 
+### VPN 手工顺序
+
+最后验证：2026-10-14，main。代码路径：`ui/vpn_order.js`、`ui/app.js`、
+`core/config.py`、`core/config_maintenance.py`、`api.py`。
+
+- `vpn_order` 保存 VPN 名称数组，默认空数组，复用主库 `kv_config` 和兼容 JSON 导出，
+  不增加表或 schema 版本。通用 `save_config` 只提交该字段，锁内合并最新配置，持久化成功才替换内存配置。
+- 总览及 VPN 管理页统一按保存顺序展示；未记录名称按名称稳定排序追加，连接状态和默认目标不参与排序。
+  启动预览包含顺序中的名称，但在完整系统快照就绪前禁止拖拽。
+- 总览及 VPN 配置表格名称列的手柄提供拖拽和键盘（Enter/Space、上下键、Home/End、Escape/Tab）操作；拖动/提交期间
+  当前列表暂停 DOM 更新，结束时两页重放最新快照，保存失败恢复原顺序。共用排序控制器互斥，跨页保存期间不能发起第二次排序。不调用 Windows VPN 写入或拨号接口。
+- 应用内删除 VPN 同时移除其顺序项；系统外删除的名称不会在完整快照中展示，未主动清理持久化名称。
+  新名称位于已保存条目之后，下次拖拽保存时纳入完整当前顺序。
+- 配置备份导入导出包含 `vpn_order`，导入及写入拒绝非列表、重复名称、空名称和超限值。
+
+### 总览编辑回显契约
+
+VPN 配置表格服务器列固定使用两行内容：服务器地址，以及连接 IP/前缀（有值时）与网关说明的合并摘要。
+摘要统一转义并禁止自动换行，避免已连接项多出一行导致行高不齐；拖拽手柄不改变信息行数。
+
+最后验证：2026-10-14，main。代码路径：`ui/app.js`。
+
+- 总览先用 `configuredVpnPreviewProfiles` 显示启动预览，再用状态快照中的
+  `vpn_status.profiles` 更新完整 Windows VPN 配置；预览带 `pending_system_check`，不可用于编辑。
+- `renderVpnConnections` 按名称复用行；`updateConnectionRow` 必须在连接按钮状态签名的提前返回之前更新编辑回调，使其引用本次 `view.profile`。连接状态不变不代表配置不变。
+- 创建及更新行时，预览配置的编辑按钮均禁用，完整配置到达后启用。
+  `openModal` 回填名称、服务器、类型和 IPv4/IPv6 默认网关；编辑模式的密钥留空表示保留，账号密码另由凭据入口管理。
+
 - main.py 创建 pywebview 主窗口（ui/index.html，js_api=Api）并启动 Worker 线程；
   `webview.start(private_mode=False, storage_path=%LOCALAPPDATA%\CXVPNTools\webview_data)`
   持久化 cookie。主窗口统一
