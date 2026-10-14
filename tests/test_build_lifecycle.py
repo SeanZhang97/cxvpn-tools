@@ -67,7 +67,41 @@ class BuildLifecycleTest(unittest.TestCase):
         self.assertIn("'CX VPN TOOLS'", script)
         self.assertIn("'CXVPN管理器'", script)
         self.assertIn('AddSeconds(15)', script)
-        self.assertEqual(run.call_args.kwargs['timeout'], 20)
+        self.assertEqual(
+            run.call_args.kwargs.get(
+                'timeout', build_lifecycle.POWERSHELL_TIMEOUT_SECONDS),
+            build_lifecycle.POWERSHELL_TIMEOUT_SECONDS)
+
+    @mock.patch('build_lifecycle._powershell')
+    def test_stop_running_apps_signals_graceful_shutdown_before_force(self, run):
+        run.return_value = 'CXVPN_GRACEFUL_SIGNAL=1\n'
+        build_lifecycle.stop_running_apps()
+
+        script = run.call_args.args[0]
+        self.assertIn(
+            f"[System.Threading.EventWaitHandle]::OpenExisting("
+            f"'{build_lifecycle.GRACEFUL_SHUTDOWN_EVENT}')", script)
+        self.assertIn('$shutdown.Set()', script.replace('[void]$', '$'))
+        self.assertIn(
+            f'AddSeconds({build_lifecycle.GRACEFUL_EXIT_WAIT_SECONDS})',
+            script)
+        self.assertIn('Stop-Process', script)
+        # 优雅等待必须在强杀之前执行。
+        self.assertLess(
+            script.index('AddSeconds('
+                         f'{build_lifecycle.GRACEFUL_EXIT_WAIT_SECONDS})'),
+            script.index('Stop-Process'))
+
+    @mock.patch('build_lifecycle._powershell')
+    def test_stop_running_apps_reports_graceful_signal_in_output(self, run):
+        run.return_value = (
+            'CXVPN_GRACEFUL_SIGNAL=1\n'
+            'CXVPN_RUNNING_ROOT=D:\\develop\\CXVPNTools\n')
+
+        roots = build_lifecycle.stop_running_apps()
+
+        self.assertEqual(
+            roots, [os.path.abspath('D:\\develop\\CXVPNTools')])
 
     @mock.patch('build_lifecycle._powershell')
     def test_stop_running_apps_returns_exact_running_install_roots(self, run):

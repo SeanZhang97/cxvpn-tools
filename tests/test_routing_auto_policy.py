@@ -65,6 +65,32 @@ class RoutingAutoPolicyTests(unittest.TestCase):
         self.assertEqual(json.loads(completed.stdout)['display_name'],
                          '老挝 e\u0301 \U0001f1f1\U0001f1e6')
 
+    def test_node_region_code_matches_names_like_ui(self):
+        cases = {
+            'pro-家庭宽带·香港cmhk': 'HK',
+            'lite-美国01': 'US',
+            '直连: 韩国01': 'KR',
+            '日本大阪JP02': 'JP',
+            '🇯🇵 东京 01': 'JP',
+            '[订阅一] 🇸🇬狮城 02': 'SG',
+            'HK-01': 'HK',
+            'Hong Kong 03': 'HK',
+            '随便一个节点': 'OTHER',
+            '': 'OTHER',
+        }
+        for name, code in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    routing_auto_policy.node_region_code(name), code)
+
+    def test_node_region_code_requires_code_boundaries_and_case(self):
+        self.assertEqual(
+            routing_auto_policy.node_region_code('STATUS'), 'OTHER')
+        self.assertEqual(
+            routing_auto_policy.node_region_code('hk-01'), 'OTHER')
+        self.assertEqual(
+            routing_auto_policy.node_region_code('lite-美国01'), 'US')
+
     def test_worldwide_catalog_can_be_saved_and_compiled(self):
         catalog = json.loads((Path(__file__).resolve().parents[1] /
                               'ui/routing_regions.json').read_text(encoding='utf-8'))

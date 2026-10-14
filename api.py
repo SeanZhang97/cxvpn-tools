@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -14,7 +15,8 @@ from contextlib import nullcontext
 
 from core import config as cfgmod
 from core import (config_maintenance, ip_info, proxy_guard, ras_cred, routing,
-                  sms_receiver, vpn_connect, vpn_os, windows_desktop)
+                  routing_auto_policy, sms_receiver, vpn_connect, vpn_os,
+                  windows_desktop)
 from core import codex_proxy, codex_runtime
 from core import vpn_service
 from core import app_update
@@ -34,6 +36,19 @@ from core.worker import Worker
 
 LOG_MAX = 500
 LOG_FILE_MAX = 2 * 1024 * 1024  # 运行日志文件上限 2MB, 超限截断保留尾部
+
+# 订阅信息伪节点（剩余流量/套餐到期等）不是可选节点；规则须与
+# ui/routing.js 的 isMetadataNode 保持同步。
+_TRAY_METADATA_NODE_RE = re.compile(
+    r'(?:剩余|可用|已用|总计|套餐|流量|重置|到期|过期|有效期|官网|网站|公告|通知|客服|群组|QQ群|TG群|Telegram|更新时间|订阅信息)[：:\s]'
+    r'|(?:GB|MB|TB)\s*(?:剩余|可用)'
+    r'|(?:距离|下次).*重置'
+    r'|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}', re.IGNORECASE)
+
+
+def _is_tray_metadata_node(name):
+    text = str(name or '').strip()
+    return bool(text) and bool(_TRAY_METADATA_NODE_RE.search(text))
 
 
 def _log_single_line(value):
@@ -442,6 +457,31 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
     def _attach_desktop(self, desktop):
         self._desktop = desktop
 
+    def _desktop_prepare_update_exit(self):
+        """提交升级后提前隐藏托盘图标，避免安装器强杀进程时残留图标。"""
+        desktop = getattr(self, '_desktop', None)
+        if desktop is None:
+            return
+        try:
+            desktop.prepare_update_exit()
+        except Exception:
+            self.log('[app-update] 升级前托盘预清理失败，不影响升级流程')
+        else:
+            self.log('[app-update] 升级已提交：托盘图标已提前隐藏，'
+                     '旧版停止后由新版重建，避免强杀残留残影')
+
+    def _desktop_restore_from_update_exit(self):
+        """升级未完成、旧版继续运行时恢复托盘图标与关闭到托盘行为。"""
+        desktop = getattr(self, '_desktop', None)
+        if desktop is None:
+            return
+        try:
+            desktop.restore_from_update_exit()
+        except Exception:
+            self.log('[app-update] 升级未完成：托盘恢复失败，请重启应用恢复托盘')
+        else:
+            self.log('[app-update] 升级未完成：托盘图标与关闭到托盘行为已恢复')
+
     def _os_shutdown_cleanup(self):
         """系统关机/注销前同步清扫本地代理残留；异常不影响退出。"""
         self._proxy_cleanup_failed = True
@@ -739,6 +779,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
             return result
         self._app_install_result = result.get('result_path', '')
         self._app_update_guard = result.pop('_guard', None)
+        self._desktop_prepare_update_exit()
         threading.Thread(
             target=self._monitor_app_update_install, args=(version,),
             name='app-update-install-monitor', daemon=True).start()
@@ -785,6 +826,9 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                 self.log('[app-update] 升级返回终态: phase=%s exit=%s' % (
                     phase, outcome.get('exit_code')))
                 self._poke_ui_state()
+                # 旧版仍在运行时必须恢复托盘，否则图标残影清不掉且
+                # 关闭到托盘已被抑制。
+                self._desktop_restore_from_update_exit()
                 return
         unresolved = bool(guard is not None and guard.poll() is None)
         with self._app_update_lock:
@@ -796,6 +840,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                 self._poke_ui_state()
         self.log('[app-update] 升级监控超时: version=%s timeout=%ss' % (
             version, timeout))
+        self._desktop_restore_from_update_exit()
 
     def save_config(self, cfg):
         if not isinstance(cfg, dict):
@@ -1703,27 +1748,46 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
             if not provider.get('enabled'):
                 continue
             snapshot = routing.subscription_store.load_node_snapshot(provider)
-            rows = list(snapshot.get('nodes') or [])
             selected = str(provider.get('selected_node') or '')
+            rows = [item for item in snapshot.get('nodes') or []
+                    if not _is_tray_metadata_node(item.get('name'))]
             rows.sort(key=lambda item: (
                 str(item.get('name') or '') != selected,
                 item.get('alive') is False,
                 int(item.get('delay') or 1 << 30),
                 str(item.get('name') or '').casefold()))
             nodes = []
-            for item in rows[:24]:
+            for item in rows[:windows_desktop.TRAY_SNAPSHOT_NODE_LIMIT]:
                 name = str(item.get('name') or '').strip()
                 if name:
                     nodes.append({
                         'name': name,
                         'selected': (provider.get('selection_mode') == 'manual'
                                      and name == selected),
+                        'alive': item.get('alive'),
+                        'delay': item.get('delay'),
                     })
-            if nodes:
-                providers.append({
-                    'id': provider['id'], 'name': provider['name'],
-                    'nodes': nodes,
-                })
+            if not nodes:
+                continue
+            region_nodes = {}
+            for node in nodes:
+                region_nodes.setdefault(
+                    routing_auto_policy.node_region_code(node['name']),
+                    []).append(node)
+            priority = routing_auto_policy.REGION_PRIORITY
+            groups = [{
+                'code': code,
+                'label': routing_auto_policy.region_label(code),
+                'nodes': region_nodes[code],
+            } for code in sorted(
+                region_nodes,
+                key=lambda code: (-len(region_nodes[code]),
+                                  priority.index(code) if code in priority
+                                  else len(priority), code))]
+            providers.append({
+                'id': provider['id'], 'name': provider['name'],
+                'groups': groups,
+            })
         return {
             'enabled': current['enabled'],
             'traffic_mode': current['traffic_mode'],

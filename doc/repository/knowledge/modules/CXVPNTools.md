@@ -96,7 +96,17 @@ VPN 配置表格服务器列固定使用两行内容：服务器地址，以及�
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，命令指向当前程序绝对
   路径并附带 `--startup`；该模式使用 pywebview `hidden=True` 静默启动。托盘基于
   已有 WinForms 消息循环创建 `NotifyIcon`，左键单击或菜单恢复窗口，菜单可显式退出；
-  关闭到托盘不发送驻留气泡，人工验证码等需要介入的功能提醒仍会发送。入口使用
+  关闭到托盘不发送驻留气泡，人工验证码等需要介入的功能提醒仍会发送。「切换节点」
+  下拉在 `_on_menu_opening` 每次打开时按快照重建：`Api.desktop_quick_snapshot`
+  先剔除订阅信息伪节点（`_TRAY_METADATA_NODE_RE`，与 `ui/routing.js`
+  `isMetadataNode` 同步），每订阅最多提供 `TRAY_SNAPSHOT_NODE_LIMIT`（200）
+  个节点（选中置顶→存活→延迟→名称排序），再按 `routing_auto_policy.
+  node_region_code`（镜像 `ui/routing_nodes.js`：国旗 emoji 优先→长别名→带
+  词边界的大小写敏感短码→OTHER，`lru_cache` 缓存）分组输出 `groups`，地区
+  顺序=数量降序→`REGION_PRIORITY`→代码。托盘端订阅内多地区时渲染地区子菜单
+  （「香港 (21)」），单一地区保持平铺；节点文本追加「· 66ms」「· 不可用」
+  状态后缀；一级/订阅/地区三级下拉统一 `TRAY_MAX_DROPDOWN_ITEMS`（12）触发
+  WinForms 原生上下滚动箭头。入口使用
   `Local\CXVPNTools.Singleton.v1` 命名互斥保证单实例；同时持有旧
   `Local\CXVPNManager.Singleton.v1` 以阻止新旧版本并行。重复启动优先查找标题为
   `CXVPNTools` 的窗口，并兼容唤醒旧版 `CX VPN TOOLS` / `CXVPN管理器`窗口，
@@ -107,6 +117,26 @@ VPN 配置表格服务器列固定使用两行内容：服务器地址，以及�
   退出必须放行。`CloseReason.WindowsShutDown/TaskManagerClosing` 会先经
   `on_os_shutdown` 同步清扫本地系统代理残留（见 `modules/系统代理残留清扫.md`），
   `Api.start()` 首位做对应启动自检，修复结果以仅气泡的 `notify` 投递。
+  升级安装器用 `taskkill /F` 强杀旧进程，进程死亡时仍可见的 `NotifyIcon` 会在托盘
+  留下残影（鼠标划过才被 Explorer 清除）。因此 `Api.apply_app_update` 提交安装器
+  成功后立即调用 `DesktopController.prepare_update_exit()`：隐藏托盘图标并抑制
+  关闭到托盘（等待安装期间点关闭必须真退出，否则窗口藏入不存在的托盘）；安装
+  监控线程在 failed/timed_out/restart_required/超时等"旧版仍在运行"的终态调用
+  `restore_from_update_exit()` 恢复图标与关闭到托盘。completed 终态时旧进程已被
+  杀，无需恢复。该修复只对"从带修复的版本升级"生效。
+  打包脚本的重启是另一条强杀路径：`build_lifecycle.stop_running_apps()` 先对
+  `Local\CXVPNTools.Shutdown.v1` 命名事件 `Set()`（`DesktopController.start()`
+  在托盘就绪后创建并派 `tray-shutdown-watch` 线程监听），等待实例最多 8 秒内走
+  `request_exit()`（托盘"退出"同路径：UI 线程清理图标后完整收尾）自行退出；
+  超时或旧版本无该事件才 `Stop-Process -Force` 兜底。修改外部杀进程逻辑时必须
+  保留"先优雅信号、后强杀"的顺序，否则残影回归。
+  **`win.evaluate_js` 绝不允许在 UI 线程调用**：pywebview edgechromium 的
+  evaluate_js 用 `webview.Invoke` 排队 JS 执行并把完成回调经 UI 线程同步上下文
+  （`syncContextTaskScheduler`）排回，随后 `semaphore.acquire()` 同步等待——在
+  UI 线程上调用即自死锁（信号量等回调、回调排在被阻塞的 UI 线程后面）。托盘
+  菜单 Click 处理器运行在 UI 线程，因此 `DesktopController.open_page` 只把
+  `_show_native()` 留在 UI 线程，页面导航（evaluate_js）必须经 `tray-open-page`
+  后台线程执行；从后台线程调用 evaluate_js 是 pywebview 设计内的正常用法。
   退出会先解除人工等待、设置 worker `_stop_event` 并 `join`，该字段
   不得命名为 `_stop`，否则会覆盖 `threading.Thread._stop()`。`DesktopController`
   持有原生对象，必须保持 `_serializable=False`。
