@@ -3467,6 +3467,7 @@
     }),
     nodeSummary: (groupId = 'all', useDraft = false) => nodeSummary(
       useDraft ? routingConfig : appliedConfig, groupId, true),
+    isMetadataNode,
     openNodes: (groupId = '') => {
       pendingNodeGroup = groupId || pendingNodeGroup;
       renderNodes();

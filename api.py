@@ -1551,7 +1551,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         with self._routing_lock:
             return self._apply_routing_locked(value, 'manual')
 
-    def set_routing_enabled(self, enabled, traffic_mode=''):
+    def set_routing_enabled(self, enabled, traffic_mode='', capture_mode=''):
         """首页快开关：只修改启用状态，避免前端旧快照覆盖完整配置。"""
         if not isinstance(enabled, bool):
             return {'ok': False, 'msg': '代理启用状态无效'}
@@ -1559,13 +1559,43 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         mode = str(traffic_mode or '').strip().lower()
         if mode and mode not in routing.TRAFFIC_MODES:
             return {'ok': False, 'msg': '流量模式无效'}
+        capture = str(capture_mode or '').strip().lower()
+        if capture and capture not in routing.CAPTURE_MODES:
+            return {'ok': False, 'msg': '接管方式无效'}
         with self._routing_lock:
             current = routing.normalize_config(
                 self._cfg_get().get('routing') or routing.default_config())
             current['enabled'] = target
             if target and mode:
                 current['traffic_mode'] = mode
+            if target and capture:
+                current['capture_mode'] = capture
             return self._apply_routing_locked(current, 'proxy_toggle')
+
+    def set_routing_default_outbound(self, outbound):
+        """首页快速切换默认出口：只修改默认出口，避免前端旧快照覆盖完整配置。"""
+        value = str(outbound or '').strip()
+        if (value not in ('physical', 'proxy', 'block')
+                and not value.startswith(('proxy:', 'vpn:'))):
+            self.log(f'[routing] 默认出口切换请求被拒绝：无效值 {value!r}')
+            return {'ok': False, 'msg': '默认出口无效'}
+        self.log(f'[routing] 默认出口切换请求已提交：目标={value}，等待路由互斥锁')
+        with self._routing_lock:
+            self.log(f'[routing] 后台已领取默认出口切换请求，开始执行：目标={value}')
+            current = routing.normalize_config(
+                self._cfg_get().get('routing') or routing.default_config())
+            if str(current.get('default_outbound') or 'physical') == value:
+                self.log(f'[routing] 默认出口已是 {value}，无需变更')
+                return {'ok': True, 'msg': '默认出口未变化'}
+            current['default_outbound'] = value
+            result = self._apply_routing_locked(current, 'proxy_outbound')
+            if result.get('ok'):
+                self.log(f'[routing] 默认出口切换成功：{value}')
+            else:
+                self.log(
+                    '[routing] 默认出口切换失败：'
+                    f'{result.get("msg") or "未知原因"}')
+            return result
 
     @staticmethod
     def _routing_matches_except_enabled(previous, requested):

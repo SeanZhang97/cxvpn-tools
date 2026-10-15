@@ -2957,7 +2957,9 @@ if ($service) {{
 
     def setup(self, config):
         normalized = normalize_config(config)
-        environment = self._environment.snapshot(normalized['capture_mode'] == 'tun')
+        # TUN 冲突扫描与 VPN/网卡并行执行；首页接管方式开关需要冲突数据
+        # 预禁用 TUN 入口，不能只在已选 TUN 时才采集。
+        environment = self._environment.snapshot(True)
         vpns, interfaces, conflicts = (environment['vpns'], environment['interfaces'],
                                        environment['tun_conflicts'])
         status = self.status(normalized)
@@ -3927,7 +3929,8 @@ if ($service) {{
         config = normalize_config(value)
         self.log(
             f'[routing] 收到分流应用请求：enabled={config["enabled"]}，'
-            f'mode={config["traffic_mode"]}，规则 {len(config["rules"])} 条')
+            f'mode={config["traffic_mode"]}，capture={config["capture_mode"]}，'
+            f'规则 {len(config["rules"])} 条')
         service_state = self._service_state()
         # VPN 状态基线复核必须重新生成配置；快路径只切系统代理开关。
         can_fast_toggle = bool(

@@ -316,16 +316,16 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 .proxy-current-row strong { overflow: hidden; color: #f0f4ff; font-size: 15px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; transition: color .15s; }
 .proxy-current-row em { flex: none; color: #67e8f9; font-size: 11px; font-style: normal; }
 .proxy-dashboard-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-top: 12px; }
-.proxy-summary-card, .proxy-mode-card, .proxy-traffic-card, .proxy-recent-card {
+.proxy-summary-card, .proxy-traffic-card, .proxy-recent-card {
   min-width: 0; padding: 16px 18px; border: 1px solid rgba(129,140,248,.14);
   border-radius: 14px; background: rgba(12,18,36,.68);
 }
-.proxy-summary-card header, .proxy-mode-card header, .proxy-traffic-card header, .proxy-recent-card header {
+.proxy-summary-card header, .proxy-traffic-card header, .proxy-recent-card header {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 13px;
 }
-.proxy-summary-card h3, .proxy-mode-card h3, .proxy-traffic-card h3, .proxy-recent-card h3 { font-size: 12.5px; font-weight: 650; }
+.proxy-summary-card h3, .proxy-traffic-card h3, .proxy-recent-card h3 { font-size: 12.5px; font-weight: 650; }
 .proxy-summary-card header button { border: 0; color: #7dd3fc; background: transparent; font: 11px inherit; cursor: pointer; }
-.proxy-mode-card header span, .proxy-traffic-card header span, .proxy-recent-card header span { color: #71809b; font-size: 10.5px; }
+.proxy-traffic-card header span, .proxy-recent-card header span { color: #71809b; font-size: 10.5px; }
 .proxy-status-pair { display: flex; align-items: center; gap: 8px; }
 .proxy-stream-state { display: inline-flex; align-items: center; gap: 5px; }
 .proxy-stream-state::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #64748b; }
@@ -351,7 +351,7 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 .proxy-summary-list dt { color: #7f8ba4; font-size: 10.5px; }
 .proxy-summary-list dd { overflow: hidden; color: #dce5f5; font-size: 11.5px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 .proxy-subscription-health {
-  display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; margin-top: 12px; padding-top: 11px;
+  display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; margin-top: auto; padding-top: 11px;
   border-top: 1px solid rgba(255,255,255,.075);
 }
 .proxy-subscription-health span { min-width: 0; }
@@ -360,11 +360,6 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 .proxy-subscription-health strong { margin-top: 4px; color: #cbd5e1; font-size: 10.5px; font-weight: 650; }
 .proxy-subscription-health.warning strong { color: #fbbf24; }
 .proxy-subscription-health.danger strong { color: #fb7185; }
-.proxy-mode-switch { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid rgba(129,140,248,.16); border-radius: 10px; background: rgba(3,8,20,.5); }
-.proxy-mode-switch button { min-height: 34px; border: 0; border-radius: 8px; color: #95a3bd; background: transparent; font-size: 11.5px; font-family: inherit; cursor: pointer; }
-.proxy-mode-switch button.active { color: #eff6ff; background: rgba(79,70,229,.7); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
-.proxy-mode-switch button:focus-visible { outline: 2px solid rgba(34,211,238,.72); outline-offset: 2px; }
-.proxy-mode-card > p { margin-top: 10px; color: #75819a; font-size: 10px; line-height: 1.55; }
 .proxy-traffic-values { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
 .proxy-traffic-values div { min-width: 0; }
 .proxy-traffic-values div + div { padding-left: 9px; border-left: 1px solid rgba(255,255,255,.07); }
@@ -413,11 +408,9 @@ h3 { font-size: 14px; margin-bottom: 6px; }
   .proxy-toggle { padding: 13px 28px; }
   .proxy-current-stack { padding: 24px 26px; }
   .proxy-dashboard-grid { gap: 14px; margin-top: 14px; }
-  .proxy-summary-card, .proxy-mode-card, .proxy-traffic-card { min-height: 178px; padding: 19px 21px; }
-  .proxy-summary-card header, .proxy-mode-card header, .proxy-traffic-card header { margin-bottom: 17px; }
+  .proxy-summary-card, .proxy-traffic-card { min-height: 178px; padding: 19px 21px; }
+  .proxy-summary-card header, .proxy-traffic-card header { margin-bottom: 17px; }
   .proxy-summary-list { gap: 12px; }
-  .proxy-mode-switch button { min-height: 38px; }
-  .proxy-mode-card > p { margin-top: 14px; }
   .proxy-traffic-values { align-items: center; min-height: 72px; }
   .proxy-recent-card { min-height: 76px; margin-top: 14px; padding: 17px 21px; }
   .proxy-shortcuts { gap: 14px; margin-top: 14px; }
@@ -429,7 +422,6 @@ h3 { font-size: 14px; margin-bottom: 6px; }
   .proxy-connect-main { gap: 20px; padding: 24px; }
   .proxy-orbit { width: 134px; height: 134px; }
   .proxy-dashboard-grid { grid-template-columns: 1fr 1fr; }
-  .proxy-traffic-card { grid-column: 1 / -1; }
 }
 @media (max-width: 900px) {
   .proxy-connect-card { grid-template-columns: 1fr; }
@@ -438,7 +430,7 @@ h3 { font-size: 14px; margin-bottom: 6px; }
   .proxy-current-row + .proxy-current-row { border-top: 0; border-left: 1px solid rgba(255,255,255,.075); padding-left: 18px; }
   .proxy-shortcuts { grid-template-columns: 1fr; }
   .proxy-dashboard-grid { grid-template-columns: 1fr; }
-  .proxy-traffic-card { grid-column: auto; }
+  .mode-tiles { grid-template-columns: 1fr; }
   .proxy-subpage-heading { grid-template-columns: 1fr auto; }
   .proxy-subpage-heading > .btn { grid-column: 1 / -1; width: max-content; }
 }
@@ -2062,9 +2054,9 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
 /* 网络代理与分流控制面优先保证状态文字可读，不以极小字号换取密度。 */
 .proxy-state-kicker { font-size: 10.5px; }
 .proxy-connect-copy p { color: #aeb9cf; font-size: 12.5px; }
-.proxy-current-row small, .proxy-summary-list dt, .proxy-mode-card header span,
+.proxy-current-row small, .proxy-summary-list dt,
 .proxy-traffic-card header span, .proxy-recent-card header span { color: #96a4bd; font-size: 11.5px; }
-.proxy-current-row em, .proxy-summary-list dd, .proxy-mode-card > p,
+.proxy-current-row em, .proxy-summary-list dd,
 .proxy-traffic-values strong, .proxy-recent-row strong { font-size: 12px; }
 .proxy-traffic-values small, .proxy-recent-row > span:nth-of-type(2),
 .proxy-recent-row small, .proxy-shortcuts small, .proxy-shortcuts span,
@@ -2161,13 +2153,11 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
   background: linear-gradient(90deg, #22d3ee, rgba(99,102,241,.15));
 }
 .proxy-summary-card,
-.proxy-mode-card,
 .proxy-traffic-card {
   position: relative;
   overflow: hidden;
 }
 .proxy-summary-card::before,
-.proxy-mode-card::before,
 .proxy-traffic-card::before {
   content: "";
   position: absolute;
@@ -2234,72 +2224,58 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
 .proxy-rate-heading strong { color: #dce8fb; font-size: 11px; font-weight: 680; }
 .proxy-rate-heading small { color: #71809b; font-size: 9.5px; }
 .proxy-rate-pulse { width: 7px; height: 7px; border-radius: 50%; background: #67e8f9; box-shadow: 0 0 0 4px rgba(34,211,238,.08), 0 0 12px rgba(34,211,238,.7); }
-.proxy-rate-legend { display: flex; align-items: center; gap: 9px; color: #7f8ea8; font-size: 9.5px; }
+.proxy-rate-legend { display: flex; align-items: center; gap: 12px; color: #7f8ea8; font-size: 10px; font-variant-numeric: tabular-nums; }
 .proxy-rate-legend span { display: inline-flex; align-items: center; gap: 5px; }
-.proxy-rate-legend span::before { content: ""; width: 12px; height: 2px; border-radius: 99px; background: currentColor; }
-.proxy-rate-legend-up { color: #fbbf72; }
-.proxy-rate-legend-down { color: #22d3ee; }
-.proxy-rate-chart { display: block; width: 100%; height: 88px; margin-top: 9px; overflow: visible; }
+.proxy-rate-legend i { width: 10px; height: 3px; border-radius: 2px; }
+.proxy-rate-legend .lg-up i { background: #fbbf72; box-shadow: 0 0 6px rgba(251,191,114,.5); }
+.proxy-rate-legend .lg-down i { background: #22d3ee; box-shadow: 0 0 6px rgba(34,211,238,.5); }
+.proxy-rate-legend strong { color: #dbe4f5; font-weight: 640; }
+.proxy-rate-chart { margin-top: 6px; outline: none; }
+.proxy-rate-chart:focus-visible { outline: 1px dashed rgba(103,232,249,.55); outline-offset: 3px; }
 .proxy-rate-chart-wrap { position: relative; min-width: 0; }
-.proxy-rate-grid { fill: none; stroke: rgba(148,163,184,.11); stroke-width: 1; stroke-dasharray: 2 5; vector-effect: non-scaling-stroke; }
-.proxy-rate-line { fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 3px currentColor); transition: d .35s ease; }
-.proxy-rate-line-up { color: #fbbf72; stroke: currentColor; }
-.proxy-rate-line-down { color: #22d3ee; stroke: currentColor; }
-.proxy-rate-area { stroke: none; opacity: .1; transition: d .35s ease; }
-.proxy-rate-area-up { fill: #fbbf72; }
-.proxy-rate-area-down { fill: #22d3ee; opacity: .08; }
-.proxy-rate-hover-layer { pointer-events: none; }
-.proxy-rate-hover-target { fill: transparent; pointer-events: all; cursor: crosshair; outline: none; }
-.proxy-rate-hover-target:focus-visible { stroke: rgba(103,232,249,.55); stroke-width: 1; stroke-dasharray: 3 4; }
-.proxy-rate-crosshair { display: none; stroke: rgba(226,232,240,.28); stroke-width: 1; stroke-dasharray: 3 4; vector-effect: non-scaling-stroke; }
-.proxy-rate-hover-dot { display: none; stroke: #081126; stroke-width: 1.4; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px currentColor); }
-.proxy-rate-hover-dot-up { fill: #fbbf72; color: #fbbf72; }
-.proxy-rate-hover-dot-down { fill: #22d3ee; color: #22d3ee; }
+.proxy-rate-chart-wrap .u-over { cursor: crosshair; }
+.proxy-rate-chart-wrap .u-cursor-x, .proxy-rate-chart-wrap .u-cursor-y { border-color: rgba(226,232,240,.26) !important; border-style: dashed !important; }
+.proxy-rate-chart-wrap .u-cursor-pt { border-width: 2px !important; box-shadow: 0 0 8px currentColor; }
+.proxy-rate-empty {
+  position: absolute;
+  inset: 6px 0 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #66748f;
+  font-size: 11px;
+  letter-spacing: .4px;
+  background: rgba(5,10,24,.55);
+  backdrop-filter: blur(1.5px);
+}
 .proxy-rate-tooltip {
   position: absolute;
-  z-index: 4;
-  top: 6px;
-  left: 10px;
+  z-index: 5;
   display: grid;
-  min-width: 146px;
-  gap: 4px;
-  padding: 8px 10px;
-  border: 1px solid rgba(129,140,248,.32);
-  border-radius: 9px;
+  min-width: 158px;
+  gap: 5px;
+  padding: 9px 11px 8px;
+  border: 1px solid rgba(129,140,248,.3);
+  border-radius: 11px;
   color: #cfd9ec;
-  background: rgba(8,15,34,.96);
-  box-shadow: 0 10px 24px rgba(2,6,23,.42), inset 0 1px rgba(255,255,255,.06);
+  background: rgba(8,14,30,.94);
+  box-shadow: 0 14px 30px rgba(1,5,16,.5), inset 0 1px rgba(255,255,255,.06);
+  backdrop-filter: blur(8px);
   pointer-events: none;
-  transform: translateX(-50%);
+  transform: translateY(-4px);
+  opacity: 0;
+  transition: opacity .14s ease, transform .14s ease;
 }
-.proxy-rate-tooltip::after {
-  content: "";
-  position: absolute;
-  right: 22px;
-  bottom: -5px;
-  width: 8px;
-  height: 8px;
-  border-right: 1px solid rgba(129,140,248,.32);
-  border-bottom: 1px solid rgba(129,140,248,.32);
-  background: rgba(8,15,34,.96);
-  transform: rotate(45deg);
-}
-.proxy-rate-tooltip.is-below::after {
-  top: -5px;
-  bottom: auto;
-  border-top: 1px solid rgba(129,140,248,.32);
-  border-left: 1px solid rgba(129,140,248,.32);
-  border-right: 0;
-  border-bottom: 0;
-}
-.proxy-rate-tooltip time { color: #7889a7; font-size: 9px; letter-spacing: .02em; }
+.proxy-rate-tooltip.show { opacity: 1; transform: translateY(0); }
+.proxy-rate-tooltip time { color: #7889a7; font-size: 9.5px; letter-spacing: .03em; font-variant-numeric: tabular-nums; }
 .proxy-rate-tooltip strong { overflow: hidden; color: #edf4ff; font-size: 10.5px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.proxy-rate-tooltip > span { display: flex; align-items: center; gap: 6px; font-size: 10px; line-height: 1.25; }
-.proxy-rate-tooltip > span i { width: 7px; height: 2px; border-radius: 99px; background: currentColor; box-shadow: 0 0 6px currentColor; }
-.proxy-rate-tooltip-up { color: #fbbf72; }
-.proxy-rate-tooltip-down { color: #22d3ee; }
-.proxy-rate-tooltip-up span,
-.proxy-rate-tooltip-down span { color: #d7e1f2; }
+.proxy-rate-tooltip .tt-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; line-height: 1.3; }
+.proxy-rate-tooltip .tt-row i { width: 8px; height: 3px; border-radius: 99px; }
+.proxy-rate-tooltip .tt-up i { background: #fbbf72; box-shadow: 0 0 6px rgba(251,191,114,.6); }
+.proxy-rate-tooltip .tt-down i { background: #22d3ee; box-shadow: 0 0 6px rgba(34,211,238,.6); }
+.proxy-rate-tooltip .tt-row span { color: #d7e1f2; font-variant-numeric: tabular-nums; }
+.proxy-rate-tooltip .tt-row em { margin-left: auto; color: #7889a7; font-size: 9px; font-style: normal; }
 .proxy-traffic-values { position: relative; z-index: 1; }
 .proxy-traffic-values div { padding-top: 4px; }
 .proxy-traffic-values small { display: inline-flex; align-items: center; gap: 6px; }
@@ -2353,7 +2329,6 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
 @media (max-width: 700px) {
   .module-icon { width: 32px; height: 32px; border-radius: 10px; }
   .module-icon svg { width: 18px; height: 18px; }
-  .proxy-rate-chart { height: 78px; }
 }
 
 /* ---------- 网络代理首页重排：以连接状态为主线 ---------- */
@@ -2470,14 +2445,80 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
 .proxy-current-row strong { font-size: 14px; }
 .proxy-current-row em { color: #7dd3fc; }
 
+.outbound-switch { position: relative; display: flex; min-width: 0; min-height: 0; }
+.outbound-trigger { flex: 1; }
+.outbound-switch.open .outbound-trigger {
+  border-color: rgba(34,211,238,.4);
+  background: rgba(34,211,238,.07);
+  transform: none;
+}
+.ob-chev { display: grid; flex: none; place-items: center; color: #5d6b88; transition: transform .18s, color .18s; }
+.ob-chev svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.outbound-trigger:hover .ob-chev { color: #67e8f9; }
+.outbound-switch.open .ob-chev { color: #67e8f9; transform: rotate(180deg); }
+/* 必须压过 .proxy-current-row span（0,1,1）的 display: grid，否则转圈常显 */
+.proxy-current-row .ob-spin {
+  display: none; flex: none; width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid rgba(103,232,249,.25); border-top-color: #67e8f9;
+  animation: ob-spin .7s linear infinite;
+}
+@keyframes ob-spin { to { transform: rotate(360deg); } }
+.outbound-trigger.applying .ob-spin { display: block; }
+.outbound-trigger.applying .ob-chev { display: none; }
+.outbound-trigger.is-block .proxy-current-icon { color: #fca5a5; border-color: rgba(248,113,113,.24); background: rgba(248,113,113,.08); }
+.outbound-trigger.is-block em { color: #fca5a5; }
+.outbound-trigger.is-vpn .proxy-current-icon { color: #6ee7b7; border-color: rgba(52,211,153,.24); background: rgba(52,211,153,.08); }
+
+.outbound-pop {
+  position: fixed; z-index: 3200; display: flex; flex-direction: column;
+  border: 1px solid rgba(129,140,248,.28); border-radius: 16px;
+  background: rgba(12,18,36,.97); backdrop-filter: blur(14px);
+  box-shadow: 0 24px 52px rgba(2,6,18,.62), 0 0 0 1px rgba(34,211,238,.05);
+}
+.ob-pop-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 12px 14px 9px; border-bottom: 1px solid rgba(148,163,184,.1);
+}
+.ob-pop-head b { color: #dbe4ff; font-size: 12px; font-weight: 680; }
+.ob-pop-head small { color: #66748f; font-size: 10px; }
+.ob-opts { display: grid; gap: 2px; padding: 7px; overflow-y: auto; }
+.ob-opt {
+  display: flex; align-items: center; gap: 11px; width: 100%; padding: 9px 10px;
+  border: 1px solid transparent; border-radius: 11px; background: transparent;
+  color: inherit; font-family: inherit; text-align: left; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.ob-opt:hover, .ob-opt.kb-focus { background: rgba(34,211,238,.07); }
+.ob-opt.is-current { border-color: rgba(34,211,238,.38); background: rgba(34,211,238,.09); }
+.ob-ico {
+  display: grid; flex: none; place-items: center; width: 30px; height: 30px;
+  border-radius: 9px; background: rgba(99,102,241,.13); color: #a5b4fc;
+}
+.ob-ico svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.ob-opt.is-current .ob-ico { background: rgba(34,211,238,.15); color: #67e8f9; }
+.ob-opt.kind-vpn .ob-ico { background: rgba(52,211,153,.12); color: #6ee7b7; }
+.ob-opt.kind-block .ob-ico { background: rgba(248,113,113,.12); color: #fca5a5; }
+.ob-copy { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.ob-copy b { overflow: hidden; color: #edf1ff; font-size: 12.5px; font-weight: 640; text-overflow: ellipsis; white-space: nowrap; }
+.ob-copy small { overflow: hidden; color: #8291ad; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.ob-opt.kind-block .ob-copy b { color: #fecaca; }
+.ob-check { flex: none; color: #22d3ee; font-size: 13px; font-weight: 700; visibility: hidden; }
+.ob-opt.is-current .ob-check { visibility: visible; }
+.ob-pop-foot { display: flex; gap: 6px; padding: 9px 12px; border-top: 1px solid rgba(148,163,184,.1); }
+.ob-pop-foot button {
+  flex: 1; padding: 7px 10px; border: 1px solid rgba(148,163,184,.14); border-radius: 10px;
+  background: rgba(255,255,255,.03); color: #9db3d6; font-size: 11px; font-family: inherit; cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.ob-pop-foot button:hover { border-color: rgba(34,211,238,.35); background: rgba(34,211,238,.07); color: #a5f3fc; }
+
 .proxy-dashboard-grid {
   grid-template-columns: minmax(0,.92fr) minmax(0,1.08fr);
-  align-items: start;
+  align-items: stretch;
   gap: 14px;
   margin-top: 14px;
 }
 .proxy-summary-card,
-.proxy-mode-card,
 .proxy-traffic-card,
 .proxy-recent-card,
 .proxy-shortcuts button {
@@ -2486,14 +2527,14 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
     linear-gradient(145deg, rgba(19,29,56,.88), rgba(9,16,33,.78));
   box-shadow: 0 12px 28px rgba(1,5,16,.15), inset 0 1px rgba(255,255,255,.035);
 }
-.proxy-summary-card,
-.proxy-mode-card {
+.proxy-summary-card {
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 19px 21px 18px;
   border-radius: 17px;
 }
 .proxy-summary-card::before,
-.proxy-mode-card::before,
 .proxy-traffic-card::before {
   right: 24px;
   left: 24px;
@@ -2501,10 +2542,8 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
   opacity: 1;
   background: linear-gradient(90deg, rgba(34,211,238,.7), rgba(129,140,248,.25), transparent 82%);
 }
-.proxy-summary-card header,
-.proxy-mode-card header { margin-bottom: 17px; }
+.proxy-summary-card header { margin-bottom: 17px; }
 .proxy-summary-card h3,
-.proxy-mode-card h3,
 .proxy-traffic-card h3 { font-size: 13px; }
 .proxy-summary-card header button {
   padding: 5px 9px;
@@ -2522,47 +2561,17 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
 }
 .proxy-summary-list dt { color: #91a3c1; font-size: 11px; }
 .proxy-summary-list dd { color: #eef5ff; font-size: 12px; }
-.proxy-mode-switch {
-  padding: 4px;
-  border-color: rgba(129,140,248,.24);
-  border-radius: 12px;
-  background: rgba(3,8,20,.38);
-}
-.proxy-mode-switch button { min-height: 37px; font-size: 12px; }
-.proxy-mode-switch button.active {
-  background: linear-gradient(110deg, rgba(99,102,241,.95), rgba(37,99,235,.72));
-  box-shadow: 0 5px 14px rgba(79,70,229,.26), inset 0 1px rgba(255,255,255,.15);
-}
-.proxy-mode-card > p {
-  min-height: 38px;
-  margin-top: 12px;
-  color: #9baac5;
-  font-size: 11px;
-  line-height: 1.6;
-}
-.proxy-routing-dimensions { margin-top: 8px; }
-.proxy-routing-dimensions > div { min-height: 32px; }
 
 .proxy-traffic-card {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: minmax(255px,.72fr) minmax(0,1.28fr);
-  column-gap: 22px;
-  row-gap: 12px;
-  align-items: start;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 19px 21px 17px;
   border-radius: 17px;
 }
-.proxy-traffic-card header {
-  grid-column: 1 / -1;
-  margin-bottom: 1px;
-}
+.proxy-traffic-card header { margin-bottom: 13px; }
 .proxy-traffic-card header .proxy-status-pair { gap: 10px; }
 .proxy-rate-panel {
-  grid-column: 2;
-  grid-row: 2 / span 2;
-  min-height: 156px;
   margin: 0;
   padding: 14px 16px 12px;
   border-color: rgba(34,211,238,.17);
@@ -2571,16 +2580,13 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
     linear-gradient(180deg, rgba(5,15,31,.78), rgba(7,14,29,.52)),
     radial-gradient(360px 140px at 26% 0%, rgba(34,211,238,.09), transparent 75%);
 }
-.proxy-rate-chart { height: 112px; margin-top: 11px; }
 .proxy-rate-heading strong { font-size: 12px; }
 .proxy-rate-heading small { font-size: 10px; }
 .proxy-rate-legend { font-size: 10px; }
 .proxy-traffic-values {
-  grid-column: 1;
-  grid-row: 2;
   grid-template-columns: repeat(3,minmax(0,1fr));
   gap: 0 14px;
-  align-self: stretch;
+  margin-top: 14px;
 }
 .proxy-traffic-values div,
 .proxy-traffic-values div + div,
@@ -2596,13 +2602,55 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
 .proxy-traffic-values div:nth-child(5) strong { color: #fbd38d; }
 .proxy-traffic-values div:nth-child(6) strong { color: #75e5cf; }
 .proxy-traffic-foot {
-  grid-column: 1;
-  grid-row: 3;
-  align-self: end;
-  margin-top: 0;
+  margin-top: auto;
   padding-top: 11px;
   border-top-color: rgba(148,163,184,.1);
 }
+
+/* ---- 订阅概览：节点质量分布与优选节点 ---- */
+.node-quality { margin-top: 13px; padding-top: 13px; border-top: 1px solid rgba(255,255,255,.07); }
+.node-quality-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.node-quality-head small { color: #c2cde6; font-size: 11px; font-weight: 680; letter-spacing: .3px; }
+.node-quality-head span { color: #66748f; font-size: 10px; }
+.quality-bar { display: flex; height: 8px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.05); }
+.quality-bar i { display: block; transition: flex-grow .5s ease; }
+.quality-bar .q-fast { background: linear-gradient(90deg, #34d399, #22d3ee); }
+.quality-bar .q-good { background: rgba(52,211,153,.5); }
+.quality-bar .q-mid { background: rgba(251,191,36,.58); }
+.quality-bar .q-bad { background: rgba(248,113,113,.6); }
+.quality-bar .q-untested { background: rgba(100,116,139,.32); }
+.quality-legend { display: flex; flex-wrap: wrap; gap: 5px 13px; margin-top: 9px; }
+.quality-legend span { display: inline-flex; align-items: center; gap: 5px; color: #8d9bb5; font-size: 9.5px; }
+.quality-legend i { width: 7px; height: 7px; border-radius: 2px; }
+.quality-legend .lg-fast { background: #34d399; }
+.quality-legend .lg-good { background: rgba(52,211,153,.5); }
+.quality-legend .lg-mid { background: rgba(251,191,36,.58); }
+.quality-legend .lg-bad { background: rgba(248,113,113,.6); }
+.quality-legend .lg-untested { background: rgba(100,116,139,.4); }
+.quality-legend strong { color: #cbd5e1; font-weight: 650; }
+
+.top-nodes { margin-top: 13px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.07); }
+.top-nodes-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.top-nodes-head small { color: #c2cde6; font-size: 11px; font-weight: 680; letter-spacing: .3px; }
+.top-nodes-head button { border: 0; padding: 0; color: #67e8f9; background: transparent; font: 10px inherit; cursor: pointer; }
+.top-nodes-head button:hover { text-decoration: underline; }
+.top-node-row {
+  display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 5px 9px;
+  border: 1px solid transparent; border-radius: 10px; cursor: pointer; transition: border-color .15s, background .15s;
+}
+.top-node-row:hover { border-color: rgba(34,211,238,.28); background: rgba(34,211,238,.05); }
+.top-node-row:focus-visible { outline: 1px dashed rgba(103,232,249,.55); outline-offset: 2px; }
+.top-node-rank {
+  display: grid; place-items: center; width: 18px; height: 18px; flex: none; border-radius: 6px;
+  color: #9eb4ff; background: rgba(99,102,241,.14); font-size: 9.5px; font-weight: 750;
+}
+.top-node-row:first-child .top-node-rank { color: #fcd34d; background: rgba(251,191,36,.14); }
+.top-node-name { flex: 1; min-width: 0; overflow: hidden; color: #dbe4f5; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.top-node-current {
+  flex: none; padding: 1px 7px; border: 1px solid rgba(34,211,238,.32); border-radius: 99px;
+  color: #67e8f9; background: rgba(34,211,238,.07); font-size: 9px; font-weight: 650; letter-spacing: .4px;
+}
+.top-node-delay { flex: none; color: #6ee7b7; font-size: 10.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .proxy-recent-card {
   margin-top: 14px;
   padding: 15px 19px;
@@ -2633,16 +2681,199 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
   border-radius: 12px;
 }
 
+/* ---------- 接管与策略控制台 ---------- */
+.hero-mode-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.hero-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid rgba(129,140,248,.22);
+  border-radius: 999px;
+  background: rgba(99,102,241,.08);
+  color: #c3cdf0;
+  font-size: 10.5px;
+  font-weight: 620;
+}
+.hero-chip::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #818cf8; }
+.hero-chip.pending { border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.07); color: #fcd34d; }
+.hero-chip.pending::before { background: #fbbf24; }
+
+.mode-console {
+  position: relative;
+  overflow: hidden;
+  margin-top: 14px;
+  padding: 21px 23px 17px;
+  border: 1px solid rgba(129,140,248,.26);
+  border-radius: 20px;
+  background:
+    radial-gradient(420px 200px at 88% 0%, rgba(99,102,241,.1), transparent 70%),
+    linear-gradient(145deg, rgba(19,29,56,.9), rgba(9,16,33,.82));
+  box-shadow: 0 16px 38px rgba(1,5,16,.22), inset 0 1px rgba(255,255,255,.045);
+}
+.mode-console::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 26px;
+  left: 26px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(34,211,238,.75), rgba(129,140,248,.3), transparent 82%);
+}
+.mode-console > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 17px;
+}
+.mode-console h3 { font-size: 13.5px; font-weight: 680; }
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #71809b;
+  font-size: 10.5px;
+}
+.mode-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #64748b; }
+.mode-badge.running { color: #6ee7b7; }
+.mode-badge.running::before { background: #34d399; box-shadow: 0 0 7px rgba(52,211,153,.55); }
+.mode-badge.pending { color: #fcd34d; }
+.mode-badge.pending::before { background: #fbbf24; box-shadow: 0 0 7px rgba(251,191,36,.5); }
+
+.mode-group + .mode-group { margin-top: 16px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,.06); }
+.mode-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 11px;
+}
+.mode-group-head small { color: #c2cde6; font-size: 11.5px; font-weight: 680; letter-spacing: .3px; }
+.mode-group-hint { color: #66748f; font-size: 10px; }
+.mode-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.mode-tile {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  padding: 15px 16px 14px;
+  border: 1px solid rgba(148,163,184,.14);
+  border-radius: 15px;
+  background: rgba(255,255,255,.028);
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .18s, background .18s, transform .18s, box-shadow .18s;
+}
+.mode-tile:hover { transform: translateY(-2px); border-color: rgba(129,140,248,.42); background: rgba(99,102,241,.06); }
+.mode-tile:focus-visible { outline: 2px solid rgba(34,211,238,.72); outline-offset: 2px; }
+.mode-tile.selected {
+  border-color: rgba(99,102,241,.8);
+  background: linear-gradient(135deg, rgba(99,102,241,.17), rgba(34,211,238,.07));
+  box-shadow: 0 10px 26px rgba(79,70,229,.2), inset 0 1px rgba(255,255,255,.07);
+}
+.mode-tile.pending { border-style: dashed; border-color: rgba(251,191,36,.55); background: rgba(251,191,36,.045); }
+.mode-tile.pending::after {
+  content: "待生效";
+  position: absolute;
+  top: 10px;
+  right: 34px;
+  color: #fbbf24;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+.mode-tile.disabled { opacity: .55; cursor: not-allowed; }
+.mode-tile.disabled:hover { transform: none; border-color: rgba(148,163,184,.14); background: rgba(255,255,255,.028); }
+.mode-tile.disabled .tile-icon { color: #64748b; border-color: rgba(100,116,139,.25); background: rgba(100,116,139,.08); }
+.tile-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  background: linear-gradient(135deg, #6366f1, #2563eb);
+  box-shadow: 0 0 12px rgba(99,102,241,.65);
+  opacity: 0;
+  transform: scale(.55);
+  transition: opacity .18s, transform .18s;
+}
+.mode-tile.selected .tile-check { opacity: 1; transform: scale(1); }
+.tile-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(129,140,248,.25);
+  border-radius: 11px;
+  color: #9eb4ff;
+  background: rgba(99,102,241,.1);
+  transition: .18s;
+}
+.tile-icon svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.mode-tile.selected .tile-icon { color: #d3dbff; border-color: rgba(129,140,248,.55); background: rgba(99,102,241,.24); }
+.tile-text { min-width: 0; }
+.tile-text strong { display: flex; align-items: center; gap: 8px; color: #eef3ff; font-size: 13px; font-weight: 680; }
+.tile-text small { display: block; margin-top: 6px; color: #8ea0c0; font-size: 10.5px; line-height: 1.6; }
+.tile-text .badge {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 8.5px;
+  font-style: normal;
+  font-weight: 750;
+  letter-spacing: .9px;
+  line-height: 1.5;
+}
+.tile-text .badge.recommend { color: #7dd3fc; border: 1px solid rgba(34,211,238,.32); background: rgba(34,211,238,.08); }
+.tile-text .badge.advanced { color: #fbbf24; border: 1px solid rgba(251,191,36,.32); background: rgba(251,191,36,.07); }
+
+.mode-risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 10px 13px;
+  border: 1px solid rgba(251,191,36,.26);
+  border-radius: 11px;
+  background: rgba(251,191,36,.06);
+  color: #fcd34d;
+  font-size: 11px;
+  line-height: 1.65;
+}
+.mode-risk svg { flex: none; width: 14px; height: 14px; margin-top: 2px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.mode-risk.danger { border-color: rgba(248,113,113,.32); background: rgba(248,113,113,.06); color: #fca5a5; }
+
+.mode-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 17px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(255,255,255,.07);
+  font-size: 10.5px;
+}
+.strip-state { display: inline-flex; align-items: center; gap: 8px; color: #cbd5e1; font-weight: 640; }
+.strip-dot { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
+.strip-dot.on { background: #34d399; box-shadow: 0 0 7px rgba(52,211,153,.55); }
+.strip-dot.pending { background: #fbbf24; box-shadow: 0 0 7px rgba(251,191,36,.5); }
+.mode-strip > span:last-child { color: #66748f; }
+
 @media (max-width: 900px) {
   .proxy-dashboard-grid { grid-template-columns: 1fr; }
-  .proxy-traffic-card { grid-column: auto; }
-  .proxy-traffic-card {
-    display: block;
-  }
-  .proxy-traffic-card header { margin-bottom: 12px; }
-  .proxy-rate-panel { margin: 0 0 14px; }
-  .proxy-traffic-values { margin-top: 0; }
-  .proxy-traffic-foot { margin-top: 12px; }
 }
 @media (max-width: 560px) {
   .proxy-heading header h2 { font-size: 24px; }
