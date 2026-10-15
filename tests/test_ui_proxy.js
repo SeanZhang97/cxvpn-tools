@@ -154,6 +154,9 @@ assert.match(proxy, /function changeSeg/);
 assert.match(proxy, /bindSegKeyboard/);
 assert.match(proxy, /selectedCapture/);
 assert.match(proxy, /tun_conflicts/);
+// TUN 黄色预告只在决策窗口出现：未运行且 TUN 选择待生效；运行中隐藏，避免与红色冲突提示长期并存。
+assert.match(proxy, /else if \(pendingCapture && shownCapture === 'tun'\)/);
+assert.match(proxy, /检测到其他 TUN/);
 assert.match(proxy, /set_routing_enabled\(\s*nextEnabled, nextEnabled \? selectedMode : '', nextEnabled \? selectedCapture : ''\)/);
 assert.match(proxy, /set_routing_enabled\(true, '', capture\)/);
 assert.match(proxy, /已暂存：/);

@@ -620,10 +620,11 @@
         notice.classList.remove('hidden');
         notice.classList.add('danger');
         setText('proxy-tun-notice-text', `检测到其他 TUN（${names || '未知'}）正在承载默认路由，TUN 模式暂不可用；请先关闭对应客户端的 TUN 模式。`);
-      } else if (shownCapture === 'tun') {
+      } else if (pendingCapture && shownCapture === 'tun') {
+        // 预告只覆盖决策窗口：未运行且 TUN 待生效；已运行由磁贴选中态与运行徽章表达，常驻会稀释红色冲突提示。
         notice.classList.remove('hidden');
         notice.classList.remove('danger');
-        setText('proxy-tun-notice-text', 'TUN 将接管全部系统流量并自动关闭 Windows 系统代理；切换期间网络会短暂中断，失败自动恢复。');
+        setText('proxy-tun-notice-text', 'TUN 将接管全部系统流量并自动关闭 Windows 系统代理；开启后生效，切换期间网络会短暂中断，失败自动恢复。');
       } else {
         notice.classList.add('hidden');
       }
