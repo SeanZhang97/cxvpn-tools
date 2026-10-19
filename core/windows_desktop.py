@@ -18,6 +18,9 @@ LEGACY_INSTANCE_MUTEXES = (r'Local\CXVPNManager.Singleton.v1',)
 WINDOW_TITLE = 'CXVPNTools'
 LEGACY_WINDOW_TITLES = ('CX VPN TOOLS', 'CXVPN管理器')
 ERROR_ALREADY_EXISTS = 183
+TRAY_SNAPSHOT_NODE_LIMIT = 200
+TRAY_MAX_DROPDOWN_ITEMS = 12
+SHUTDOWN_EVENT_NAME = r'Local\CXVPNTools.Shutdown.v1'
 
 
 class SingleInstanceGuard:
@@ -237,6 +240,8 @@ class DesktopController:
         self._exiting = False
         self._started = False
         self._tray_items = {}
+        self._suppress_close_to_tray = False
+        self._shutdown_event = None
 
     def start(self):
         if self._started or os.name != 'nt' or self.window.native is None:
@@ -312,6 +317,30 @@ class DesktopController:
             self.log('[desktop] 系统托盘已启动')
 
         self._invoke(setup, wait=True)
+        try:
+            from System.Threading import EventResetMode, EventWaitHandle
+            self._shutdown_event = EventWaitHandle(
+                False, EventResetMode.AutoReset, SHUTDOWN_EVENT_NAME)
+            threading.Thread(
+                target=self._watch_shutdown_event, daemon=True,
+                name='tray-shutdown-watch').start()
+        except Exception as exc:
+            self.log(f'[desktop] 优雅关闭监听创建失败: {type(exc).__name__}')
+
+    def _watch_shutdown_event(self):
+        """外部（打包脚本等）通过命名事件请求优雅退出。"""
+        event = self._shutdown_event
+        while not self._exiting:
+            try:
+                signaled = bool(event.WaitOne(1000))
+            except Exception:
+                return
+            if self._exiting:
+                return
+            if signaled:
+                self.log('[desktop] 收到外部优雅关闭请求，正在退出并清理托盘')
+                self.request_exit()
+                return
 
     def _on_menu_opening(self, _sender, _args):
         try:
@@ -330,17 +359,42 @@ class DesktopController:
         nodes_menu.DropDownItems.Clear()
         providers = snapshot.get('providers') or []
         nodes_menu.Enabled = bool(providers)
+        nodes_menu.MaxDropDownItems = TRAY_MAX_DROPDOWN_ITEMS
         for provider in providers:
             submenu = self._menu_item_type(
                 str(provider.get('name') or '代理订阅'))
-            for node in provider.get('nodes') or []:
-                item = self._menu_item_type(
-                    str(node.get('name') or '未命名节点'))
-                item.Tag = f'{provider.get("id")}\0{node.get("name")}'
-                item.Checked = bool(node.get('selected'))
-                item.Click += self._on_select_node
-                submenu.DropDownItems.Add(item)
+            submenu.MaxDropDownItems = TRAY_MAX_DROPDOWN_ITEMS
+            groups = list(provider.get('groups') or [])
+            if len(groups) == 1:
+                for node in groups[0].get('nodes') or []:
+                    submenu.DropDownItems.Add(
+                        self._node_menu_item(provider, node))
+            else:
+                for group in groups:
+                    group_nodes = list(group.get('nodes') or [])
+                    group_item = self._menu_item_type(
+                        f'{group.get("label") or "其他"} ({len(group_nodes)})')
+                    group_item.MaxDropDownItems = TRAY_MAX_DROPDOWN_ITEMS
+                    for node in group_nodes:
+                        group_item.DropDownItems.Add(
+                            self._node_menu_item(provider, node))
+                    submenu.DropDownItems.Add(group_item)
             nodes_menu.DropDownItems.Add(submenu)
+
+    def _node_menu_item(self, provider, node):
+        name = str(node.get('name') or '未命名节点')
+        delay = node.get('delay')
+        if node.get('alive') is False:
+            text = f'{name} · 不可用'
+        elif isinstance(delay, (int, float)) and delay > 0:
+            text = f'{name} · {delay}ms'
+        else:
+            text = name
+        item = self._menu_item_type(text)
+        item.Tag = f'{provider.get("id")}\0{node.get("name")}'
+        item.Checked = bool(node.get('selected'))
+        item.Click += self._on_select_node
+        return item
 
     def _run_quick_action(self, action, label, *args):
         callback = self._quick_actions.get(action)
@@ -380,15 +434,23 @@ class DesktopController:
     def open_page(self, page):
         target = str(page or 'overview')
 
-        def navigate():
+        def show_and_dispatch():
             self._show_native()
-            try:
-                self._on_open_page(target)
-            except Exception as exc:
-                self.log(
-                    f'[desktop] 页面快捷入口失败: {type(exc).__name__}')
+            # pywebview evaluate_js 的完成回调经 UI 线程同步上下文排回，
+            # 在 UI 线程上同步等待它就是自死锁；托盘菜单点击正运行在
+            # UI 线程，页面导航必须离开 UI 线程执行。
+            threading.Thread(
+                target=self._navigate, args=(target,),
+                name='tray-open-page', daemon=True).start()
 
-        self._invoke(navigate)
+        self._invoke(show_and_dispatch)
+
+    def _navigate(self, target):
+        try:
+            self._on_open_page(target)
+        except Exception as exc:
+            self.log(
+                f'[desktop] 页面快捷入口失败: {type(exc).__name__}')
 
     def _invoke(self, action, wait=False):
         native = self._native
@@ -441,18 +503,28 @@ class DesktopController:
             self.show_window()
 
     def _on_exit(self, _sender, _args):
+        self._begin_exit()
+
+    def _begin_exit(self):
         if self._exiting:
             return
         self._exiting = True
         self._dispose_native()
         threading.Thread(target=self.on_exit, daemon=True).start()
 
+    def request_exit(self):
+        """外部优雅关闭入口：先清理托盘图标，再走与托盘退出相同的收尾。"""
+        self._invoke(self._begin_exit, wait=True)
+
     def _on_form_closing(self, _sender, args):
-        enabled = True
-        try:
-            enabled = bool(self.close_to_tray())
-        except Exception:
-            pass
+        # 升级等待安装器期间托盘图标已隐藏；此时点关闭必须真退出，
+        # 否则窗口藏入不存在的托盘后用户无法再唤起应用。
+        enabled = not self._suppress_close_to_tray
+        if enabled:
+            try:
+                enabled = bool(self.close_to_tray())
+            except Exception:
+                pass
         if should_hide_to_tray(args.CloseReason, self._exiting, enabled):
             args.Cancel = True
             self.hide_window()
@@ -491,3 +563,33 @@ class DesktopController:
                 self._dispose_native()
             except Exception:
                 pass
+        if self._shutdown_event is not None:
+            try:
+                self._shutdown_event.Close()
+            except Exception:
+                pass
+            self._shutdown_event = None
+
+    def prepare_update_exit(self):
+        """提交升级后立即隐藏托盘图标。
+
+        升级安装器用 taskkill /F 强杀旧进程，进程死亡时仍可见的
+        NotifyIcon 会以残影形态留在托盘，直到鼠标划过才被 Explorer 清掉；
+        提前把图标置为不可见可让强杀不再产生残影。等待安装期间用户点
+        关闭必须真退出，因此同时抑制关闭到托盘。
+        """
+        self._suppress_close_to_tray = True
+
+        def hide():
+            if self._notify:
+                self._notify.Visible = False
+        self._invoke(hide)
+
+    def restore_from_update_exit(self):
+        """升级未完成、旧版继续运行时恢复托盘图标与关闭到托盘行为。"""
+        self._suppress_close_to_tray = False
+
+        def show():
+            if self._notify:
+                self._notify.Visible = True
+        self._invoke(show)

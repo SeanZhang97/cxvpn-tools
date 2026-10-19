@@ -34,6 +34,7 @@ from core.routing_support import verify_runtime_files
 from core import routing_selection as _selection
 from core import routing_auto_policy as _auto_policy
 from core import routing_aggregate as _aggregate
+from core import routing_business as _business
 from core import routing_rules as _routing_rules
 from core import routing_service as _routing_service
 from core.routing_tasks import commit_scope
@@ -145,6 +146,8 @@ def default_config():
         'proxy_strategy': 'url-test',
         'aggregate_selection': _aggregate.default_selection(),
         'proxy_providers': [],
+        'proxy_outbounds': [],
+        'business_rules': [],
         'default_outbound': 'physical',
         'builtin_rule_pack': 'cn-direct-v1',
         'system_proxy_bypass': {
@@ -492,6 +495,10 @@ def normalize_config(value):
     result['proxy_providers'] = normalized_providers
     result['aggregate_selection'] = _aggregate.normalize(
         source.get('aggregate_selection'), normalized_providers, RoutingError)
+    result['proxy_outbounds'] = _business.normalize_outbounds(
+        source.get('proxy_outbounds'), normalized_providers, RoutingError)
+    result['business_rules'] = _business.normalize_sets(
+        source.get('business_rules'), result['proxy_outbounds'], _normalize_domain, RoutingError)
     result['default_outbound'] = str(source.get('default_outbound') or 'physical').strip()
     if result['default_outbound'].startswith('proxy:'):
         result['default_outbound'] = 'proxy:' + result['default_outbound'][6:].lower()
@@ -705,10 +712,13 @@ def normalize_config(value):
         if outbound.startswith('proxy:'):
             outbound = 'proxy:' + outbound[6:].lower()
         if (outbound not in {'physical', 'proxy', 'block'} and
-                not outbound.startswith(('vpn:', 'proxy:'))):
+                not outbound.startswith(('vpn:', 'proxy:', 'outbound:'))):
             raise RoutingError(f'第 {index + 1} 条规则的出口无效')
         if outbound.startswith('vpn:') and not outbound[4:].strip():
             raise RoutingError(f'第 {index + 1} 条规则未选择 VPN')
+        if outbound.startswith('outbound:') and not any(
+                outbound == 'outbound:' + item['id'] for item in result['proxy_outbounds']):
+            raise RoutingError(f'第 {index + 1} 条规则引用了不存在的代理出口')
         key = (match_type, domain)
         if key in seen:
             raise RoutingError(f'存在重复域名规则：{domain}')
@@ -745,7 +755,8 @@ def validate_auto_policy_nodes(provider):
 def _active_rules(config):
     if config.get('traffic_mode') == 'global':
         return []
-    return [rule for rule in config.get('rules', []) if rule.get('enabled', True)]
+    return ([rule for rule in config.get('rules', []) if rule.get('enabled', True)]
+            + _business.expanded_rules(config))
 
 
 def _builtin_rules(pack_id):
@@ -837,6 +848,8 @@ def system_proxy_bypass_domains(config):
 
 
 def _rule_matches_domain(rule, domain):
+    if any(domain == d or domain.endswith('.' + d) for d in rule.get('exclude_domains', [])):
+        return False
     pattern = rule['domain']
     if rule['match_type'] == 'exact':
         return domain == pattern
@@ -867,12 +880,8 @@ def _effective_rules(config):
     for raw in _bypass_rules(config):
         append(raw)
     if config.get('traffic_mode') != 'global':
-        rule_kind = {'exact': 'DOMAIN', 'suffix': 'DOMAIN-SUFFIX',
-                     'wildcard': 'DOMAIN-WILDCARD'}
         for rule in _active_rules(config):
-            append(
-                f'{rule_kind[rule["match_type"]]},{rule["domain"]},'
-                f'{rule["outbound"]}')
+            append(_business.rule_expression(rule))
         for raw in _builtin_rules(config['builtin_rule_pack']):
             append(raw)
     if (config.get('system_proxy_bypass') or {}).get('include_cn_direct'):
@@ -903,7 +912,7 @@ def _vpn_connection_signature(vpns, names=None):
 def _uses_proxy(config):
     values = [config.get('default_outbound', '')]
     values.extend(rule.get('outbound', '') for rule in _active_rules(config))
-    return any(value == 'proxy' or value.startswith('proxy:') for value in values)
+    return any(value == 'proxy' or value.startswith(('proxy:', 'outbound:')) for value in values)
 
 
 def _target_provider_ids(config):
@@ -954,16 +963,7 @@ def explain_domain(value, domain, vpns=None):
                 break
     matched = None
     for index, rule in enumerate([] if bypass_match else _active_rules(config), start=1):
-        pattern = rule['domain']
-        match_type = rule['match_type']
-        if match_type == 'exact':
-            hit = normalized_domain == pattern
-        elif match_type == 'suffix':
-            hit = (normalized_domain == pattern or
-                   normalized_domain.endswith('.' + pattern))
-        else:
-            hit = fnmatch.fnmatchcase(normalized_domain, pattern)
-        if hit:
+        if _rule_matches_domain(rule, normalized_domain):
             matched = (index, rule)
             break
 
@@ -998,6 +998,15 @@ def explain_domain(value, domain, vpns=None):
         available = bool(provider and provider['enabled'])
         detail = (f'独立订阅代理组，策略：{provider["strategy"]}' if provider
                   else '引用的订阅不存在')
+    elif outbound.startswith('outbound:'):
+        item = next(row for row in config['proxy_outbounds'] if 'outbound:' + row['id'] == outbound)
+        provider = providers[item['provider_id']]
+        outbound_name = item['name']
+        detail = f'固定节点：{provider["name"]} / {item["node_name"]}；节点失效时拒绝连接'
+        nodes = subscription_store.load_node_snapshot(provider).get('nodes', [])
+        available = any(n.get('name') == item['node_name'] for n in nodes)
+        if not available:
+            detail += '（当前节点快照未找到该节点，请刷新订阅核对）'
     elif outbound.startswith('vpn:'):
         name = outbound[4:]
         profile = vpn_profiles.get(name)
@@ -1018,7 +1027,8 @@ def explain_domain(value, domain, vpns=None):
     return {
         'domain': normalized_domain,
         'matched': bool(bypass_match or matched or builtin_match),
-        'source': ('bypass' if bypass_match else 'user' if matched else
+        'business_name': matched[1].get('business_name', '') if matched else '',
+        'source': ('bypass' if bypass_match else 'business' if matched and matched[1].get('business_name') else 'user' if matched else
                    'builtin' if builtin_match else 'default'),
         'rule_index': matched[0] if matched else 0,
         'match_type': (matched[1]['match_type'] if matched else 'suffix'
@@ -1041,7 +1051,7 @@ def validate_environment(config, vpns=None, interfaces=None, conflicts=None):
     vpns = vpn_os.list_vpns() if vpns is None else vpns
     interfaces = list_physical_interfaces() if interfaces is None else interfaces
     conflicts = list_tun_conflicts() if conflicts is None else conflicts
-    warnings = []
+    warnings = _business.warnings(config)
     if config.get('capture_mode') == 'tun' and conflicts:
         names = '、'.join(sorted({item.get('name', '') for item in conflicts}))
         raise RoutingError(f'检测到其他 TUN 正在接管默认路由（{names}），请先关闭其 TUN 模式')
@@ -1275,6 +1285,8 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
             return 'PROXY'
         if value.startswith('proxy:'):
             return provider_groups[value[6:]]
+        if value.startswith('outbound:'):
+            return 'OUTBOUND-' + value[9:]
         if value == 'block':
             return 'REJECT'
         if value[4:] not in connected_vpns:
@@ -1423,13 +1435,16 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
                                     for item in enabled_providers), default=300),
             proxy_names=[provider_groups[item['id']]
                          for item in enabled_providers]))
+        generated['proxy-groups'].extend(_business.build_groups(config, provider_keys))
     rules = [f'DOMAIN,{domain},PHYSICAL' for domain in vpn_domains]
     if standby:
         rules.append('MATCH,PROXY' if enabled_providers else 'MATCH,PHYSICAL')
     else:
         for raw in _effective_rules(config):
             parts = raw.split(',')
-            if parts[0] == 'MATCH':
+            if parts[0] == 'AND':
+                parts[-1] = target_name(parts[-1])
+            elif parts[0] == 'MATCH':
                 parts[1] = target_name(parts[1])
             elif len(parts) >= 3 and parts[2] != 'PHYSICAL':
                 parts[2] = target_name(parts[2])
@@ -1906,9 +1921,9 @@ if ($service) {{
             raw = response.read()
         return json.loads(raw.decode('utf-8')) if raw else {}
 
-    def _controller_version(self, config):
+    def _controller_version(self, config, timeout=1.5):
         try:
-            data = self._controller_request(config, '/version', timeout=1.5)
+            data = self._controller_request(config, '/version', timeout=timeout)
             return data.get('version', '')
         except (OSError, ValueError, urllib.error.URLError):
             return ''
@@ -2114,6 +2129,7 @@ if ($service) {{
                 '订阅更新请求已提交，但无法确认新节点列表；已保留当前界面数据，请稍后刷新')
         selection_invalid = _selection.selection_missing(
             provider, group.get('nodes') or [])
+        missing_outbounds = _business.missing_nodes(normalized, provider_id, group['nodes'])
         cache = None
         cache_warning = ''
         try:
@@ -2134,13 +2150,18 @@ if ($service) {{
                 '已保留服务侧最新缓存')
         base_message = ('代理订阅已更新，但原选择节点已失效，请重新选择'
                         if selection_invalid else '代理订阅远端更新成功')
+        warning = '；'.join(filter(None, [cache_warning,
+            ('固定节点已失效的代理出口：' + '、'.join(missing_outbounds) + '；请重新绑定，未自动更换节点')
+            if missing_outbounds else '']))
+        if missing_outbounds:
+            self._log_best_effort(f'[routing] 订阅更新完成但固定节点失效：provider={provider_id}，出口数量={len(missing_outbounds)}')
         return {
             'ok': True,
-            'msg': base_message + (f'；{cache_warning}' if cache_warning else ''),
+            'msg': base_message + (f'；{warning}' if warning else ''),
             'groups': groups,
             'selection_invalid': selection_invalid,
             'cache': cache,
-            'warning': cache_warning,
+            'warning': warning,
             'used_cache': False,
             'refreshed': True,
             'update_state': 'remote_updated',
@@ -2162,6 +2183,9 @@ if ($service) {{
         provider = normalized['proxy_providers'][0]
         route = provider['download_route']
         provider_name = provider['name']
+        if not provider['url']:
+            _cache_only = True
+            _refresh_cache = False
         kwargs = {
             '_seed_payload': _seed_payload,
             '_persist': _persist,
@@ -2662,12 +2686,15 @@ if ($service) {{
             if provider['download_route'] == 'physical'
             else '智能自动更新（缓存节点、物理网络、Windows 系统代理）')
         used_cache = cache_seeded and not refreshed and not candidate_seeded
-        if _cache_only:
+        if _cache_only and _run_delay_test:
             update_state = 'cache_tested'
             message = f'当前缓存节点测速完成，共检测 {len(nodes)} 个节点'
         elif candidate_seeded:
             update_state = 'cache_imported'
             message = f'节点文件导入成功，已解析并缓存 {len(nodes)} 个节点'
+        elif _cache_only:
+            update_state = 'cache_loaded'
+            message = f'已载入本地缓存中的 {len(nodes)} 个节点'
         elif used_cache:
             update_state = 'cache_retained'
             message = f'远端更新未完成，已载入上次成功缓存中的 {len(nodes)} 个节点'
@@ -2973,6 +3000,7 @@ if ($service) {{
             'builtin_rule_pack': _routing_rules.summary(
                 normalized['builtin_rule_pack']),
             'builtin_rule_packs': _routing_rules.catalog(),
+            'business_rule_templates': _business.templates(),
             'protected_fields': [
                 'mixed-port', 'tun', 'external-controller',
                 'secret', 'proxy-providers', 'proxy-groups', 'rules', 'dns'],
@@ -2986,7 +3014,9 @@ if ($service) {{
 
     def setup(self, config):
         normalized = normalize_config(config)
-        environment = self._environment.snapshot(normalized['capture_mode'] == 'tun')
+        # TUN 冲突扫描与 VPN/网卡并行执行；首页接管方式开关需要冲突数据
+        # 预禁用 TUN 入口，不能只在已选 TUN 时才采集。
+        environment = self._environment.snapshot(True)
         vpns, interfaces, conflicts = (environment['vpns'], environment['interfaces'],
                                        environment['tun_conflicts'])
         status = self.status(normalized)
@@ -3017,6 +3047,7 @@ if ($service) {{
             'builtin_rule_pack': _routing_rules.summary(
                 normalized['builtin_rule_pack']),
             'builtin_rule_packs': _routing_rules.catalog(),
+            'business_rule_templates': _business.templates(),
             'protected_fields': [
                 'mixed-port', 'tun', 'external-controller',
                 'secret', 'proxy-providers', 'proxy-groups', 'rules', 'dns'],
@@ -3395,21 +3426,28 @@ if ($service) {{
             })
         return rows
 
-    def _check_native_runtime(self):
+    def _check_native_runtime(self, timeout=2):
         # 原生 status 只观察退出；tick/rollback 负责清理并保留失败现场。
-        state = self._native_service.status()
+        state = self._native_service.status(timeout=timeout)
         if isinstance(state, dict) and state.get('runtime_running') is False:
             raise RoutingError('Mihomo 核心在启动期间已退出')
+
+    @staticmethod
+    def _remaining_timeout(deadline, maximum=2.5):
+        remaining = deadline - time.monotonic()
+        if remaining < .1:
+            raise RoutingError('运行就绪检查超过总期限，配置未提交')
+        return min(maximum, remaining)
 
     def _wait_native_ready(self, config, runtime_mode='active'):
         started_at = time.monotonic()
         self.log('[routing] 原生服务已领取配置事务，开始等待 Mihomo Controller（超时 25 秒）')
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
-            self._check_native_runtime()
-            if self._controller_version(config):
+            self._check_native_runtime(timeout=self._remaining_timeout(deadline, 2))
+            if self._controller_version(config, timeout=self._remaining_timeout(deadline, 1.5)):
                 break
-            time.sleep(0.25)
+            time.sleep(self._remaining_timeout(deadline, .25))
         else:
             raise RoutingError(ELEVATED_ERROR_MESSAGES[
                 'Mihomo controller did not become ready'])
@@ -3418,10 +3456,10 @@ if ($service) {{
 
         if runtime_mode == 'standby':
             self.log('[routing] 待机核心已就绪，不执行系统接管与出口连通性门控')
-            return
+            return []
 
         if _target_vpns(config):
-            capability = self._controller_request(config, '/version', timeout=1.5)
+            capability = self._controller_request(config, '/version', timeout=self._remaining_timeout(deadline, 1.5))
             if capability.get('cxvpn-vpn-routes') != 3:
                 raise RoutingError('当前 Mihomo 不支持 VPN 目标路由自动维护，请更新配套运行时')
 
@@ -3434,11 +3472,11 @@ if ($service) {{
             for provider_id in referenced
         }
         while pending and time.monotonic() < deadline:
-            self._check_native_runtime()
+            self._check_native_runtime(timeout=self._remaining_timeout(deadline, 2))
             for provider_id, (group_name, selected_node) in list(pending.items()):
                 path = f'/proxies/{urllib.parse.quote(group_name, safe="")}'
                 try:
-                    state = self._controller_request(config, path)
+                    state = self._controller_request(config, path, timeout=self._remaining_timeout(deadline))
                 except (OSError, ValueError, urllib.error.URLError):
                     continue
                 members = state.get('all') if isinstance(state, dict) else []
@@ -3447,7 +3485,7 @@ if ($service) {{
                 if ready:
                     pending.pop(provider_id, None)
             if pending:
-                time.sleep(0.25)
+                time.sleep(self._remaining_timeout(deadline, .25))
         if pending:
             if any(value[1] for value in pending.values()):
                 raise RoutingError(ELEVATED_ERROR_MESSAGES[
@@ -3456,14 +3494,14 @@ if ($service) {{
                 'Referenced proxy provider group did not become ready'])
         if referenced:
             self.log(f'[routing] 被引用代理组已加载，共 {len(referenced)} 个订阅')
-
         for provider_id, selected_node in manual_targets.items():
             group_name = _selection.runtime_group_name(provider_id)
             path = f'/proxies/{urllib.parse.quote(group_name, safe="")}'
             try:
                 self._controller_request(
-                    config, path, method='PUT', payload={'name': selected_node})
-                state = self._controller_request(config, path)
+                    config, path, method='PUT', payload={'name': selected_node},
+                    timeout=self._remaining_timeout(deadline))
+                state = self._controller_request(config, path, timeout=self._remaining_timeout(deadline))
             except (OSError, ValueError, urllib.error.URLError) as exc:
                 raise RoutingError(ELEVATED_ERROR_MESSAGES[
                     'Manual proxy selection could not be confirmed']) from exc
@@ -3473,7 +3511,30 @@ if ($service) {{
         if manual_targets:
             self.log(f'[routing] 手动节点已应用并回读确认，共 {len(manual_targets)} 个')
 
-        self._verify_runtime_egress(config)
+        self._verify_business_outbounds(config, deadline=deadline)
+        self._remaining_timeout(deadline)
+        return self._verify_runtime_egress(config) or []
+
+    def _verify_business_outbounds(self, config, deadline=None):
+        if not _business.referenced_outbounds(config):
+            return []
+        started = time.monotonic()
+        deadline = deadline if deadline is not None else started + 3
+        self.log('[routing] 开始回读独立代理出口，Controller /proxies，共用当前就绪期限')
+        try:
+            while True:
+                unavailable = _business.verify_runtime(config, self._controller_request(
+                    config, '/proxies', timeout=self._remaining_timeout(deadline, 3)), RoutingError)
+                if not unavailable or deadline - time.monotonic() <= .35:
+                    break
+                time.sleep(min(.25, deadline - time.monotonic()))
+        except Exception as exc:
+            self.log(f'[routing] 独立代理出口回读失败：{type(exc).__name__}，耗时={time.monotonic()-started:.2f}秒')
+            raise
+        warnings = [f'代理出口“{item["name"]}”固定节点尚未加载或已失效，命中流量将拒绝连接，请更新订阅或重新绑定'
+                    for item in unavailable]
+        self.log(f'[routing] 独立代理出口回读完成：不可用={len(warnings)}，耗时={time.monotonic()-started:.2f}秒')
+        return warnings
 
     @staticmethod
     def _traffic_proxy_groups(config):
@@ -3483,25 +3544,36 @@ if ($service) {{
         for outbound in values:
             group = ('PROXY' if outbound == 'proxy' else
                      f'PROXY-{outbound[6:]}' if outbound.startswith('proxy:')
+                     else f'OUTBOUND-{outbound[9:]}' if outbound.startswith('outbound:')
                      else '')
             if group and group not in result:
                 result.append(group)
         return result
 
     def _verify_runtime_egress(self, config):
-        """提交前确认当前选择，并以真实接管链路作为唯一可用性门控。"""
+        """确认实际选择和接管链路，独立出口探测失败作为警告保留绑定。"""
         groups = self._traffic_proxy_groups(config)
+        warnings = []
+        business = {f'OUTBOUND-{item["id"]}': item for item in _business.referenced_outbounds(config)}
+        healthy_business = {}
+        deadline = time.monotonic() + 8
         if groups:
             self.log(
                 f'[routing] 开始确认实际代理出口，共 {len(groups)} 个流量组')
             for group_name in groups:
                 group_path = f'/proxies/{urllib.parse.quote(group_name, safe="")}'
                 try:
-                    state = self._controller_request(config, group_path, timeout=5)
+                    state = self._controller_request(config, group_path, timeout=self._remaining_timeout(deadline, 5))
                 except (OSError, ValueError, urllib.error.URLError) as exc:
                     raise RoutingError(
                         f'无法确认代理组“{group_name}”的当前节点，已恢复 Windows 原始路由') from exc
                 selected = str(state.get('now') or '') if isinstance(state, dict) else ''
+                if group_name in business:
+                    _business.verify_runtime({**config, 'proxy_outbounds': [business[group_name]]},
+                        {'proxies': {group_name: state}}, RoutingError)
+                if group_name in business and selected == 'REJECT' and state.get('all') == ['REJECT']:
+                    warnings.append(f'代理出口“{business[group_name]["name"]}”当前拒绝连接，固定节点不可用')
+                    continue
                 if not selected or selected == 'REJECT':
                     raise RoutingError(
                         f'代理组“{group_name}”没有可用节点，已恢复 Windows 原始路由')
@@ -3511,6 +3583,10 @@ if ($service) {{
                         f'代理组“{group_name}”的当前节点状态不一致，'
                         '已恢复 Windows 原始路由')
                 self.log(f'[routing] 代理组 {group_name} 当前节点已确认')
+                if group_name in business:
+                    healthy_business[group_name] = business[group_name]
+
+        warnings.extend(self._probe_business_outbounds(config, healthy_business))
 
         if config['capture_mode'] == 'system-proxy':
             address = f'http://127.0.0.1:{config["mixed_port"]}'
@@ -3520,11 +3596,50 @@ if ($service) {{
         else:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             self._probe_connectivity(opener, 'TUN 系统链路', groups)
+        return warnings
+
+    def _probe_business_outbounds(self, config, outbounds):
+        if not outbounds:
+            return []
+        self.log(f'[routing] 独立代理出口探测开始：{len(outbounds)} 个出口，目标={HEALTH_CHECK_URL}，总期限=8秒')
+        deadline = time.monotonic() + 8
+        results, errors = {}, {}
+        def check(name):
+            timeout = self._remaining_timeout(deadline, 4)
+            query = urllib.parse.urlencode({'url': HEALTH_CHECK_URL, 'timeout': int(timeout * 1000)})
+            started = time.monotonic()
+            self._log_best_effort(f'[routing] 独立出口探测后台开始执行：组={name}，超时={timeout:.2f}秒')
+            try:
+                result = self._controller_request(config,
+                    f'/proxies/{urllib.parse.quote(name, safe="")}/delay?{query}', timeout=timeout)
+                self._log_best_effort(f'[routing] 独立出口探测已返回：组={name}，耗时={time.monotonic()-started:.2f}秒')
+                return result
+            except Exception as exc:
+                self._log_best_effort(f'[routing] 独立出口探测失败：组={name}，异常={type(exc).__name__}，耗时={time.monotonic()-started:.2f}秒')
+                raise
+        names = list(outbounds)
+        for offset in range(0, len(names), 8):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            completed, failed = bounded_calls({name: lambda name=name: check(name)
+                for name in names[offset:offset + 8]}, remaining)
+            results.update(completed)
+            errors.update(failed)
+        warnings = []
+        for name, item in outbounds.items():
+            result = results.get(name)
+            delay = result.get('delay') if isinstance(result, dict) else None
+            if not isinstance(delay, (int, float)) or isinstance(delay, bool) or delay <= 0:
+                warnings.append(f'代理出口“{item["name"]}”未通过节点连通性探测，请检查节点；绑定未改变')
+                self._log_best_effort(f'[routing] 独立出口探测未通过：出口={item["id"]}，异常={type(errors.get(name)).__name__ if name in errors else "无有效探测结果"}')
+        self.log(f'[routing] 独立代理出口探测完成：成功={len(outbounds)-len(warnings)}，未通过={len(warnings)}')
+        return warnings
 
     def _probe_connectivity(self, opener, source, proxy_groups):
         if not proxy_groups:
-            advice = ('当前配置所有流量都走直连，本次失败说明物理网络本身当前不可用；'
-                      '请恢复网络后重试，或先在高级分流把默认出口改为代理订阅')
+            advice = ('当前配置未使用代理订阅，请检查物理网络、VPN 或分流设置；'
+                      '如需使用代理，请在高级分流调整默认出口或规则')
         else:
             advice = '请检查当前节点或网络设置'
         deadline = time.monotonic() + 8
@@ -3618,7 +3733,7 @@ if ($service) {{
                         '已自动恢复原设置')
                 self._log_best_effort(
                     '[routing] TUN 接管前 Windows 手动代理关闭与当前用户会话刷新已确认')
-            self._wait_native_ready(config, runtime_mode)
+            runtime_warnings = self._wait_native_ready(config, runtime_mode)
             if (runtime_mode == 'active' and
                     config['capture_mode'] == 'system-proxy'):
                 self._log_best_effort(
@@ -3663,6 +3778,7 @@ if ($service) {{
             self._log_best_effort(
                 f'[routing] {mode_label}配置事务提交成功，总耗时 '
                 f'{time.monotonic() - started_at:.1f} 秒')
+            return runtime_warnings if isinstance(runtime_warnings, list) else []
         except Exception as original:
             self._log_best_effort(
                 f'[routing] 配置事务执行失败，开始回滚：{type(original).__name__}: '
@@ -3741,13 +3857,22 @@ if ($service) {{
         else:
             self._log_best_effort(
                 '[routing] 待机核心配置开始生成：TUN=off，系统代理=off，监听仅限回环')
+            vpns = []
             generated = build_mihomo_config(
-                config, [], system_proxy=windows_system_proxy(), standby=True)
+                config, vpns, system_proxy=windows_system_proxy(), standby=True)
         _write_json(config_path, generated)
         self._test_config(config_path, test_data)
         self._install(
             config_path, config, runtime_mode='standby',
             fast_toggle_ready=fast_toggle_ready)
+        # 待机配置与正式配置一样固化了生成时的 VPN 连接状态；基线必须与
+        # 常驻核心内嵌的假设一致，否则 VPN 状态对称翻转后 RoutingVpnWorker
+        # 的差分逻辑无法发现快切激活的是陈旧出口。
+        self._runtime_vpns = _vpn_connection_signature(vpns)
+        connected = [name for name, up in self._runtime_vpns.items() if up]
+        self._log_best_effort(
+            f'[routing] 待机核心 VPN 状态基线已记录：已连接={len(connected)}，'
+            f'快切将复核目标 VPN 是否仍为该状态')
 
     @staticmethod
     def _can_fast_toggle_system_proxy(config, service_state):
@@ -3784,7 +3909,9 @@ if ($service) {{
         self.log(
             f'[routing] Windows 系统代理快切请求已提交：target={action}，'
             '复用常驻 Mihomo，不重载配置')
+        warnings = []
         if enabled:
+            self._verify_business_outbounds(config)
             for provider_id, target in _selection.manual_runtime_targets(
                     config, _referenced_group_ids(config)):
                 path = f'/proxies/{_selection.runtime_group_name(provider_id)}'
@@ -3793,7 +3920,7 @@ if ($service) {{
                     self.select_proxy_node(config, provider_id, target)
             # 在写入 Windows 系统代理前验证当前常驻核心的真实 mixed-port
             # 链路；配置未变化时不重复扫描 VPN/网卡或执行 Mihomo -t。
-            self._verify_runtime_egress(config)
+            warnings.extend(self._verify_runtime_egress(config) or [])
         try:
             # The native service performs the registry write transactionally and
             # returns its resulting mode.  Do not treat a successful IPC reply
@@ -3855,7 +3982,7 @@ if ($service) {{
             'ok': True,
             'msg': '代理已开启' if enabled else '代理已关闭，节点核心保持待机',
             'config': config,
-            'warnings': [],
+            'warnings': list(dict.fromkeys(warnings)),
             'standby_pending': False,
             'status': self.status(config),
         }
@@ -3865,18 +3992,38 @@ if ($service) {{
         config = normalize_config(value)
         self.log(
             f'[routing] 收到分流应用请求：enabled={config["enabled"]}，'
-            f'mode={config["traffic_mode"]}，规则 {len(config["rules"])} 条')
+            f'mode={config["traffic_mode"]}，capture={config["capture_mode"]}，'
+            f'规则 {len(config["rules"])} 条')
         service_state = self._service_state()
         # VPN 状态基线复核必须重新生成配置；快路径只切系统代理开关。
         can_fast_toggle = bool(
             allow_fast_toggle and expected_vpns is None and
             self._can_fast_toggle_system_proxy(config, service_state) and
             (not config['enabled'] or self.runtime_matches(config, service_state)))
-        if can_fast_toggle and config['enabled'] and not config['physical_interface']:
-            # 自动模式的待机核心可能仍绑定上一张网卡，开启前复核而非直接复用。
-            available = self._environment.snapshot(False, fresh=True)['interfaces']
-            can_fast_toggle = bool(available and available[0]['name'] ==
-                                   service_state.get('applied_physical_interface'))
+        if can_fast_toggle and config['enabled']:
+            needs_interface_check = not config['physical_interface']
+            vpn_targets = (_target_vpns(config)
+                           if self._runtime_vpns is not None else [])
+            environment_now = (
+                None if not needs_interface_check and not vpn_targets
+                else self._environment.snapshot(False, fresh=True))
+            if needs_interface_check:
+                # 自动模式的待机核心可能仍绑定上一张网卡，开启前复核而非直接复用。
+                available = environment_now['interfaces']
+                can_fast_toggle = bool(available and available[0]['name'] ==
+                                       service_state.get('applied_physical_interface'))
+            if can_fast_toggle and vpn_targets:
+                # 常驻核心固化了待机生成时的 VPN 连接状态；开启前复核当前
+                # 状态，不一致时降级为完整应用，避免激活陈旧的 vpn: 出口解析。
+                current = _vpn_connection_signature(
+                    environment_now['vpns'], vpn_targets)
+                baked = {name: bool(self._runtime_vpns.get(name, False))
+                         for name in vpn_targets}
+                if current != baked:
+                    can_fast_toggle = False
+                    self.log(
+                        '[routing] VPN 连接状态与常驻核心生成时不一致，'
+                        '快切降级为完整应用以重新生成 VPN 出口规则')
         if can_fast_toggle:
             return self._fast_toggle_system_proxy(config, config['enabled'])
         if not config['enabled']:
@@ -3989,9 +4136,11 @@ if ($service) {{
         self.log('[routing] Mihomo 候选配置已生成，开始离线语法预检（超时 45 秒）')
         self._test_config(config_path, test_data)
         self.log('[routing] Mihomo 候选配置离线预检通过，开始应用服务事务')
-        self._install(
+        runtime_warnings = self._install(
             config_path, config,
             fast_toggle_ready=config['capture_mode'] == 'system-proxy')
+        if isinstance(runtime_warnings, list):
+            warnings.extend(runtime_warnings)
         # 记录生成本次运行态时的 VPN 连接状态，供 RoutingVpnWorker 对账。
         self._runtime_vpns = _vpn_connection_signature(vpns)
         self.log(f'[routing] 统一分流已启动，规则 {len(config["rules"])} 条')

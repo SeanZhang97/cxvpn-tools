@@ -158,6 +158,54 @@ class ApplyUpdateTests(unittest.TestCase):
         self.assertIn('升级包文件不存在', snapshot['msg'])
         target._poke_ui_state.assert_called()
 
+    def test_apply_success_hides_tray_before_installer_kills_process(self):
+        target = _build_target()
+        target._desktop = mock.Mock()
+        target._app_download.begin('1.2.0')
+        target._app_download.update(
+            phase='downloaded', path=r'D:\pkg.exe', version='1.2.0')
+        with mock.patch.object(
+                app_update, 'launch_installer',
+                return_value={'ok': True, 'result_path': r'D:\r.json'}), \
+                mock.patch('threading.Thread') as thread_cls, \
+                mock.patch('sys.executable', r'C:\app\CXVPNTools.exe'):
+            thread_cls.return_value = mock.Mock()
+            result = target.apply_app_update()
+        self.assertTrue(result['ok'])
+        target._desktop.prepare_update_exit.assert_called_once_with()
+        target._desktop.restore_from_update_exit.assert_not_called()
+
+    def test_apply_failure_keeps_tray_visible(self):
+        target = _build_target()
+        target._desktop = mock.Mock()
+        target._app_download.begin('1.2.0')
+        target._app_download.update(
+            phase='downloaded', path=r'D:\missing.exe', version='1.2.0')
+        with mock.patch.object(
+                app_update, 'launch_installer',
+                return_value={'ok': False, 'msg': '升级包文件不存在'}):
+            target.apply_app_update()
+        target._desktop.prepare_update_exit.assert_not_called()
+
+    def test_apply_survives_tray_cleanup_failure(self):
+        target = _build_target()
+        target._desktop = mock.Mock()
+        target._desktop.prepare_update_exit.side_effect = RuntimeError('ui')
+        target._app_download.begin('1.2.0')
+        target._app_download.update(
+            phase='downloaded', path=r'D:\pkg.exe', version='1.2.0')
+        with mock.patch.object(
+                app_update, 'launch_installer',
+                return_value={'ok': True, 'result_path': r'D:\r.json'}), \
+                mock.patch('threading.Thread') as thread_cls, \
+                mock.patch('sys.executable', r'C:\app\CXVPNTools.exe'):
+            thread_cls.return_value = mock.Mock()
+            result = target.apply_app_update()
+        self.assertTrue(result['ok'])
+        self.assertTrue(any(
+            '托盘预清理失败' in call.args[0]
+            for call in target.log.call_args_list))
+
 
 class InstallMonitorTests(unittest.TestCase):
     def test_monitor_timeout_restores_retryable_state(self):
@@ -171,6 +219,40 @@ class InstallMonitorTests(unittest.TestCase):
         self.assertEqual(snapshot['phase'], 'failed')
         self.assertIn('升级未完成', snapshot['msg'])
         target._poke_ui_state.assert_called()
+
+    def test_monitor_timeout_restores_tray_icon(self):
+        target = _build_target()
+        target._desktop = mock.Mock()
+        target._app_download.begin('1.2.0')
+        target._app_download.update(phase='installing')
+        with mock.patch.object(app_update, 'installed_display_version',
+                               return_value=''):
+            target._monitor_app_update_install('1.2.0', timeout=0)
+        target._desktop.restore_from_update_exit.assert_called_once_with()
+
+    def test_monitor_failed_phase_restores_tray_icon(self):
+        target = _build_target()
+        target._desktop = mock.Mock()
+        target._app_download.begin('1.2.0')
+        target._app_download.update(phase='installing')
+        with mock.patch.object(app_update, 'read_install_result',
+                               return_value={'version': '1.2.0',
+                                             'phase': 'failed', 'exit_code': 1}), \
+                mock.patch('time.sleep'):
+            target._monitor_app_update_install('1.2.0', timeout=10)
+        target._desktop.restore_from_update_exit.assert_called_once_with()
+
+    def test_monitor_completed_keeps_tray_hidden(self):
+        target = _build_target()
+        target._desktop = mock.Mock()
+        target._app_download.begin('1.2.0')
+        target._app_download.update(phase='installing')
+        with mock.patch.object(app_update, 'read_install_result',
+                               return_value={'version': '1.2.0',
+                                             'phase': 'completed'}), \
+                mock.patch('time.sleep'):
+            target._monitor_app_update_install('1.2.0', timeout=10)
+        target._desktop.restore_from_update_exit.assert_not_called()
 
     def test_monitor_success_keeps_installing_state(self):
         target = _build_target()

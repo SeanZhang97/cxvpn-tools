@@ -10,10 +10,14 @@
   通过最小验证（语法检查 / 相关离线回归）后，**自动执行重新打包，无需询问**。
 - 打包命令：`uv run --with pyinstaller python build.py`（项目 .venv 由 uv
   管理；pyinstaller 按需装入 .venv）。产物 `dist/CXVPNTools/`。
-- 打包前若软件正在运行，**直接强制关闭，无需询问**：
-  `taskkill /F /IM "CXVPNTools.exe"`；首次名称迁移时同时关闭旧版
-  `CX VPN TOOLS.exe` 和 `CXVPN管理器.exe`，存在同源 python 进程时一并
-  `Stop-Process -Force`，再开始打包（否则输出文件被占用）。
+- 打包前若软件正在运行，**不要手动 `taskkill /F`**：`build.py`
+  （build_lifecycle）会先向命名事件 `Local\CXVPNTools.Shutdown.v1` 发优雅关闭
+  信号，运行实例自行清理托盘图标后退出（8 秒期限），无响应才强杀兜底；
+  旧版 `CX VPN TOOLS.exe`、`CXVPN管理器.exe` 与同源 python 进程也由 build.py
+  统一收敛。手动强杀会绕过托盘清理，NotifyIcon 以残影留在托盘直到鼠标划过。
+- 打包之外确需手动关闭运行实例时，同样优先发优雅关闭信号：
+  `powershell -NoProfile -Command "[Threading.EventWaitHandle]::OpenExisting('Local\CXVPNTools.Shutdown.v1').Set()"`；
+  仅当实例卡死、信号 8 秒无响应时才 `Stop-Process -Force`。
 - `build.py` 自带用户主库备份和配置摘要核对；打包前后核对真实用户目录中的
   `state.sqlite3` 配置和兼容 `config.json` 未丢失、exe 时间戳为最新。
   `dist/CXVPNTools/` 不应携带用户配置、主库或凭据。

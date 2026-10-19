@@ -1735,7 +1735,7 @@ function configuredVpnPreviewProfiles(config = CFG) {
   const credentialNames = config && config.creds &&
     typeof config.creds === 'object' && !Array.isArray(config.creds)
     ? Object.keys(config.creds) : [];
-  const names = [config?.vpn_name, ...credentialNames];
+  const names = [...(Array.isArray(config?.vpn_order) ? config.vpn_order : []), config?.vpn_name, ...credentialNames];
   const seen = new Set();
   return names.reduce((profiles, value) => {
     const name = String(value || '').trim();
@@ -1867,8 +1867,29 @@ function vpnRowKey(vpn) {
   ]);
 }
 
+function bindVpnOrder(root, refresh) {
+  root._vpnRefresh = refresh;
+  if (!root._vpnOrder) root._vpnOrder = VpnOrder.attach(root, {
+    ready: () => vpnListReady && !VPN_LIST.some(item => item.pending_system_check),
+    save: async order => {
+      const result = await api().save_config({ vpn_order: order });
+      if (result !== true) throw new Error('顺序未保存');
+      CFG.vpn_order = order;
+    },
+    error: error => toast({ ok: false, msg: `排序保存失败，已恢复原顺序：${friendlyError(error)}` }),
+    refresh: () => root._vpnRefresh(),
+  });
+}
+
 function renderVpnList(list) {
+  list = VpnOrder.sort(list, CFG.vpn_order);
   const tbody = $('vpn-tbody');
+  bindVpnOrder(tbody, () => {
+    const overview = $('ov-active-connections');
+    if (overview._vpnRefresh) overview._vpnRefresh();
+    else renderVpnList(VPN_LIST);
+  });
+  if (tbody._vpnOrder.active()) return;
   const connectedCount = list.filter(vpn => vpn.status === 'Connected').length;
   $('vpn-count').textContent = `${list.length} 个 VPN 连接`;
   $('vpn-connected-count').textContent = connectedCount
@@ -1908,14 +1929,15 @@ function renderVpnRow(vpn) {
     ? ' <span class="credential-tag failed">Windows 同步失败</span>' : '';
   row.classList.toggle('is-target', isDefault);
   const address = vpn.ip_address
-    ? `<br><span class="cell-detail">${esc(vpn.ip_address)}${vpn.prefix_length ? `/${esc(vpn.prefix_length)}` : ''}</span>`
+    ? `${vpn.ip_address}${vpn.prefix_length ? `/${vpn.prefix_length}` : ''}`
     : '';
-  const gateway = `<br><span class="cell-detail">${esc(gatewaySummary(vpn))}</span>`;
+  const detail = [address, gatewaySummary(vpn)].filter(Boolean).join(' · ');
   row.innerHTML =
     `<td>${esc(vpn.name)}${isDefault ? ' <span class="target">默认</span>' : ''}${validationTag}</td>` +
-    `<td class="cell-secondary">${esc(vpn.server)}${address}${gateway}</td><td>${esc(vpn.type)}</td>` +
+    `<td class="cell-secondary">${esc(vpn.server)}<br><span class="cell-detail vpn-server-detail">${esc(detail)}</span></td><td>${esc(vpn.type)}</td>` +
     `<td>${connected ? '<span class="pill on">已连接</span>' : '<span class="pill off">未连接</span>'}</td>` +
     '<td class="right"><div class="vpn-actions"></div></td>';
+  row.children[0].prepend(VpnOrder.handle(vpn.name));
   const actions = row.children[4].firstElementChild;
   const connectionButton = connected
     ? btn('断开', 'mini ghost', event => disconnectVpn(vpn.name, event.currentTarget))
@@ -2245,16 +2267,18 @@ function updateOverview(state, vpnStatus) {
 
 function renderVpnConnections(profiles, connections, connectionAction = {}) {
   const root = $('ov-active-connections');
+  bindVpnOrder(root, () => {
+    renderVpnConnections(VPN_LIST, VPN_STATUS.connections || [], connectionAction);
+    if (vpnListReady) renderVpnList(VPN_LIST);
+  });
+  if (root._vpnOrder.active()) return;
   const configured = Array.isArray(profiles) ? profiles : [];
   const connectedByName = new Map(connections.map(item => [item.name, item]));
-  const rows = configured.slice().sort((left, right) => {
-    if (left.name === CFG.vpn_name) return -1;
-    if (right.name === CFG.vpn_name) return 1;
-    return Number(connectedByName.has(right.name)) - Number(connectedByName.has(left.name));
-  });
+  const rows = configured.slice();
   connections.forEach(item => {
     if (!rows.some(row => row.name === item.name)) rows.push(item);
   });
+  rows.splice(0, rows.length, ...VpnOrder.sort(rows, CFG.vpn_order));
   // 状态流每秒重放本函数。按 VPN 名称复用行元素并就地更新变化的文本，
   // 避免整表重建打断按钮悬停与过渡动画（悬停时每秒闪烁）。
   const existing = new Map();
@@ -2345,7 +2369,7 @@ function createConnectionRow(view) {
   const actions = document.createElement('div');
   actions.className = 'connection-row-actions';
   actions.append(...connectionActionButtons(view));
-  row.append(stateDot, nameBox, metaBox, actions);
+  row.append(VpnOrder.handle(view.name), stateDot, nameBox, metaBox, actions);
   return row;
 }
 
@@ -2401,6 +2425,7 @@ function connectionActionButtons(view) {
   moreButton.title = `编辑 ${view.name}`;
   moreButton.setAttribute('aria-label', `编辑 ${view.name}`);
   moreButton.onclick = () => openModal(view.profile);
+  moreButton.disabled = view.profile.pending_system_check === true;
   return [actionButton, moreButton];
 }
 
@@ -2421,6 +2446,9 @@ function updateConnectionRow(row, view) {
   if (metaBox.textContent !== view.meta) metaBox.textContent = view.meta;
   const actionButton = row.querySelector('[data-vpn-action]');
   actionButton.onclick = view.action;
+  const moreButton = row.querySelector('.connection-icon-action.more');
+  moreButton.onclick = () => openModal(view.profile);
+  moreButton.disabled = view.profile.pending_system_check === true;
   const actionSignature = JSON.stringify([view.connected, view.busy, view.actionText]);
   if (actionButton.dataset.state === actionSignature) return;
   actionButton.dataset.state = actionSignature;

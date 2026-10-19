@@ -204,7 +204,7 @@ class RoutingReliabilityTests(unittest.TestCase):
         manager._native_service = mock.Mock()
         manager._native_service.apply.return_value = {
             'transaction_id': 'transaction-1'}
-        manager._wait_native_ready = mock.Mock()
+        manager._wait_native_ready = mock.Mock(return_value=['业务出口探测未通过'])
         manager._refresh_user_proxy_settings = mock.Mock(return_value=True)
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, 'config.json')
@@ -213,13 +213,14 @@ class RoutingReliabilityTests(unittest.TestCase):
             with mock.patch.object(
                     routing, 'windows_manual_proxy_state',
                     return_value={'enabled': False, 'server': ''}):
-                manager._install(path, config)
+                warnings = manager._install(path, config)
 
         manager._native_service.ensure_installed.assert_called_once()
         manager._native_service.apply.assert_called_once()
         manager._wait_native_ready.assert_called_once_with(config, 'active')
         manager._native_service.commit.assert_called_once_with('transaction-1')
         manager._native_service.rollback.assert_not_called()
+        self.assertEqual(warnings, ['业务出口探测未通过'])
 
     def test_native_disable_can_defer_standby_after_capture_is_stopped(self):
         manager = routing.RoutingManager()
@@ -324,7 +325,7 @@ class RoutingReliabilityTests(unittest.TestCase):
             'mixed_port': 17890,
         })
         manager._native_service = mock.Mock()
-        manager._verify_runtime_egress = mock.Mock()
+        manager._verify_runtime_egress = mock.Mock(return_value=['独立出口不可用，绑定未改变'])
         manager.status = mock.Mock(return_value={'running': True})
 
         with mock.patch.object(
@@ -334,6 +335,7 @@ class RoutingReliabilityTests(unittest.TestCase):
 
         self.assertTrue(result['ok'])
         manager._verify_runtime_egress.assert_called_once_with(config)
+        self.assertEqual(result['warnings'], ['独立出口不可用，绑定未改变'])
         manager._native_service.set_system_proxy_enabled.assert_called_once_with(
             True)
 
@@ -492,7 +494,7 @@ class RoutingReliabilityTests(unittest.TestCase):
                 routing.urllib.request, 'build_opener', return_value=opener):
             with self.assertRaisesRegex(
                     routing.RoutingError,
-                    '已恢复 Windows 原始路由.*所有流量都走直连.*物理网络.*默认出口'):
+                    '已恢复 Windows 原始路由.*未使用代理订阅.*物理网络.*默认出口'):
                 manager._verify_runtime_egress(config)
 
     def test_proxy_runtime_connectivity_failure_still_checks_nodes(self):

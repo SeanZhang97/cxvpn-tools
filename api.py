@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -14,7 +15,8 @@ from contextlib import nullcontext
 
 from core import config as cfgmod
 from core import (config_maintenance, ip_info, proxy_guard, ras_cred, routing,
-                  sms_receiver, vpn_connect, vpn_os, windows_desktop)
+                  routing_auto_policy, sms_receiver, vpn_connect, vpn_os,
+                  windows_desktop)
 from core import codex_proxy, codex_runtime
 from core import vpn_service
 from core import app_update
@@ -34,6 +36,19 @@ from core.worker import Worker
 
 LOG_MAX = 500
 LOG_FILE_MAX = 2 * 1024 * 1024  # 运行日志文件上限 2MB, 超限截断保留尾部
+
+# 订阅信息伪节点（剩余流量/套餐到期等）不是可选节点；规则须与
+# ui/routing.js 的 isMetadataNode 保持同步。
+_TRAY_METADATA_NODE_RE = re.compile(
+    r'(?:剩余|可用|已用|总计|套餐|流量|重置|到期|过期|有效期|官网|网站|公告|通知|客服|群组|QQ群|TG群|Telegram|更新时间|订阅信息)[：:\s]'
+    r'|(?:GB|MB|TB)\s*(?:剩余|可用)'
+    r'|(?:距离|下次).*重置'
+    r'|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}', re.IGNORECASE)
+
+
+def _is_tray_metadata_node(name):
+    text = str(name or '').strip()
+    return bool(text) and bool(_TRAY_METADATA_NODE_RE.search(text))
 
 
 def _log_single_line(value):
@@ -331,6 +346,14 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                 current = routing.normalize_config(
                     (self._cfg_get().get('routing') or {}))
                 state = self.routing._service_state()
+                # 打包升级后服务二进制可能与内置运行时不一致：对账结论看似
+                # “一致”，但 VPN 联动 worker 会持续停摆，必须留下可定位线索。
+                if (state.get('installed') and
+                        state.get('backend') == 'native' and
+                        state.get('service_compatible') is False):
+                    self.log(
+                        '[routing] 启动时检测到原生服务与内置运行时不一致：'
+                        'VPN 状态联动暂停，完整应用分流时将自动提权升级服务')
 
                 # 异常重启可能留下仍指向 CXVPN mixed-port 的 Windows 手动代理，
                 # 但持久化配置已经是关闭状态；反过来，配置仍是开启状态且系统
@@ -434,12 +457,37 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
     def _attach_desktop(self, desktop):
         self._desktop = desktop
 
+    def _desktop_prepare_update_exit(self):
+        """提交升级后提前隐藏托盘图标，避免安装器强杀进程时残留图标。"""
+        desktop = getattr(self, '_desktop', None)
+        if desktop is None:
+            return
+        try:
+            desktop.prepare_update_exit()
+        except Exception:
+            self.log('[app-update] 升级前托盘预清理失败，不影响升级流程')
+        else:
+            self.log('[app-update] 升级已提交：托盘图标已提前隐藏，'
+                     '旧版停止后由新版重建，避免强杀残留残影')
+
+    def _desktop_restore_from_update_exit(self):
+        """升级未完成、旧版继续运行时恢复托盘图标与关闭到托盘行为。"""
+        desktop = getattr(self, '_desktop', None)
+        if desktop is None:
+            return
+        try:
+            desktop.restore_from_update_exit()
+        except Exception:
+            self.log('[app-update] 升级未完成：托盘恢复失败，请重启应用恢复托盘')
+        else:
+            self.log('[app-update] 升级未完成：托盘图标与关闭到托盘行为已恢复')
+
     def _os_shutdown_cleanup(self):
         """系统关机/注销前同步清扫本地代理残留；异常不影响退出。"""
+        self._proxy_cleanup_failed = True
         try:
-            cleared = proxy_guard.shutdown_cleanup(log=self.log)
-            if cleared:
-                self.log(f'[proxy] 关机前已关闭本地系统代理 {cleared}')
+            proxy_guard.shutdown_cleanup(log=self.log)
+            self._proxy_cleanup_failed = False
         except Exception as exc:
             self.log(f'[proxy] 关机代理清扫失败: {exc}')
 
@@ -592,10 +640,11 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         self.routing_network.stop()
         self.routing_vpn.stop()
         self.worker.stop()
-        # 正常退出即视为优雅结束，清除脏标记；仅系统关机路径会在此前
-        # 由 _os_shutdown_cleanup 先清扫代理（用户点击退出的场景不碰代理）。
+        # 关机清扫失败时保留恢复依据；不能由通用退出流程覆盖其失败结果。
+        # 用户普通退出仍只清标记，不碰代理。
         try:
-            proxy_guard.mark_clean()
+            if not getattr(self, '_proxy_cleanup_failed', False):
+                proxy_guard.mark_clean()
         except Exception as exc:
             self.log(f'[proxy] 清除代理脏标记失败: {exc}')
         writer = getattr(self, '_log_writer', None)
@@ -730,6 +779,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
             return result
         self._app_install_result = result.get('result_path', '')
         self._app_update_guard = result.pop('_guard', None)
+        self._desktop_prepare_update_exit()
         threading.Thread(
             target=self._monitor_app_update_install, args=(version,),
             name='app-update-install-monitor', daemon=True).start()
@@ -776,6 +826,9 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                 self.log('[app-update] 升级返回终态: phase=%s exit=%s' % (
                     phase, outcome.get('exit_code')))
                 self._poke_ui_state()
+                # 旧版仍在运行时必须恢复托盘，否则图标残影清不掉且
+                # 关闭到托盘已被抑制。
+                self._desktop_restore_from_update_exit()
                 return
         unresolved = bool(guard is not None and guard.poll() is None)
         with self._app_update_lock:
@@ -787,6 +840,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                 self._poke_ui_state()
         self.log('[app-update] 升级监控超时: version=%s timeout=%ss' % (
             version, timeout))
+        self._desktop_restore_from_update_exit()
 
     def save_config(self, cfg):
         if not isinstance(cfg, dict):
@@ -800,16 +854,27 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         unknown = set(cfg).difference(cfgmod.DEFAULT)
         if unknown:
             raise ValueError('配置更新包含未知字段')
+        if 'vpn_order' in cfg:
+            cfgmod.validate_vpn_order(cfg['vpn_order'])
+            self.log('[vpn-order] 排序保存请求已领取，开始写入本地配置')
         with self._lock:
             old_default = self.cfg.get('vpn_name', '')
             old_auto_connect = bool(self.cfg.get('auto_connect', False))
             committed = json.loads(json.dumps(self.cfg))
             committed.update(json.loads(json.dumps(cfg)))
-            cfgmod.save(committed)
+            try:
+                cfgmod.save(committed)
+            except Exception as exc:
+                if 'vpn_order' in cfg:
+                    self.log('[vpn-order] 保存失败: %s: %s' % (type(exc).__name__, exc))
+                    self.log(traceback.format_exc())
+                raise
             self.cfg = committed
             new_default = self.cfg.get('vpn_name', '')
             new_auto_connect = bool(self.cfg.get('auto_connect', False))
         self.log('[config] 已保存')
+        if 'vpn_order' in cfg:
+            self.log('[vpn-order] 排序保存成功: count=%s' % len(cfg['vpn_order']))
         if new_default != old_default:
             self.worker.update_default_target(new_default)
         elif new_auto_connect and not old_auto_connect:
@@ -1497,7 +1562,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         with self._routing_lock:
             return self._apply_routing_locked(value, 'manual')
 
-    def set_routing_enabled(self, enabled, traffic_mode=''):
+    def set_routing_enabled(self, enabled, traffic_mode='', capture_mode=''):
         """首页快开关：只修改启用状态，避免前端旧快照覆盖完整配置。"""
         if not isinstance(enabled, bool):
             return {'ok': False, 'msg': '代理启用状态无效'}
@@ -1505,13 +1570,43 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         mode = str(traffic_mode or '').strip().lower()
         if mode and mode not in routing.TRAFFIC_MODES:
             return {'ok': False, 'msg': '流量模式无效'}
+        capture = str(capture_mode or '').strip().lower()
+        if capture and capture not in routing.CAPTURE_MODES:
+            return {'ok': False, 'msg': '接管方式无效'}
         with self._routing_lock:
             current = routing.normalize_config(
                 self._cfg_get().get('routing') or routing.default_config())
             current['enabled'] = target
             if target and mode:
                 current['traffic_mode'] = mode
+            if target and capture:
+                current['capture_mode'] = capture
             return self._apply_routing_locked(current, 'proxy_toggle')
+
+    def set_routing_default_outbound(self, outbound):
+        """首页快速切换默认出口：只修改默认出口，避免前端旧快照覆盖完整配置。"""
+        value = str(outbound or '').strip()
+        if (value not in ('physical', 'proxy', 'block')
+                and not value.startswith(('proxy:', 'vpn:'))):
+            self.log(f'[routing] 默认出口切换请求被拒绝：无效值 {value!r}')
+            return {'ok': False, 'msg': '默认出口无效'}
+        self.log(f'[routing] 默认出口切换请求已提交：目标={value}，等待路由互斥锁')
+        with self._routing_lock:
+            self.log(f'[routing] 后台已领取默认出口切换请求，开始执行：目标={value}')
+            current = routing.normalize_config(
+                self._cfg_get().get('routing') or routing.default_config())
+            if str(current.get('default_outbound') or 'physical') == value:
+                self.log(f'[routing] 默认出口已是 {value}，无需变更')
+                return {'ok': True, 'msg': '默认出口未变化'}
+            current['default_outbound'] = value
+            result = self._apply_routing_locked(current, 'proxy_outbound')
+            if result.get('ok'):
+                self.log(f'[routing] 默认出口切换成功：{value}')
+            else:
+                self.log(
+                    '[routing] 默认出口切换失败：'
+                    f'{result.get("msg") or "未知原因"}')
+            return result
 
     @staticmethod
     def _routing_matches_except_enabled(previous, requested):
@@ -1694,27 +1789,46 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
             if not provider.get('enabled'):
                 continue
             snapshot = routing.subscription_store.load_node_snapshot(provider)
-            rows = list(snapshot.get('nodes') or [])
             selected = str(provider.get('selected_node') or '')
+            rows = [item for item in snapshot.get('nodes') or []
+                    if not _is_tray_metadata_node(item.get('name'))]
             rows.sort(key=lambda item: (
                 str(item.get('name') or '') != selected,
                 item.get('alive') is False,
                 int(item.get('delay') or 1 << 30),
                 str(item.get('name') or '').casefold()))
             nodes = []
-            for item in rows[:24]:
+            for item in rows[:windows_desktop.TRAY_SNAPSHOT_NODE_LIMIT]:
                 name = str(item.get('name') or '').strip()
                 if name:
                     nodes.append({
                         'name': name,
                         'selected': (provider.get('selection_mode') == 'manual'
                                      and name == selected),
+                        'alive': item.get('alive'),
+                        'delay': item.get('delay'),
                     })
-            if nodes:
-                providers.append({
-                    'id': provider['id'], 'name': provider['name'],
-                    'nodes': nodes,
-                })
+            if not nodes:
+                continue
+            region_nodes = {}
+            for node in nodes:
+                region_nodes.setdefault(
+                    routing_auto_policy.node_region_code(node['name']),
+                    []).append(node)
+            priority = routing_auto_policy.REGION_PRIORITY
+            groups = [{
+                'code': code,
+                'label': routing_auto_policy.region_label(code),
+                'nodes': region_nodes[code],
+            } for code in sorted(
+                region_nodes,
+                key=lambda code: (-len(region_nodes[code]),
+                                  priority.index(code) if code in priority
+                                  else len(priority), code))]
+            providers.append({
+                'id': provider['id'], 'name': provider['name'],
+                'groups': groups,
+            })
         return {
             'enabled': current['enabled'],
             'traffic_mode': current['traffic_mode'],
@@ -1834,6 +1948,10 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         if ok:
             with self._lock:
                 changed = False
+                order = self.cfg.get('vpn_order', [])
+                if name in order:
+                    self.cfg['vpn_order'] = [item for item in order if item != name]
+                    changed = True
                 if self.cfg.get('vpn_name') == name:
                     self.cfg['vpn_name'] = ''
                     changed = True

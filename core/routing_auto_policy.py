@@ -2,9 +2,11 @@
 """节点名称驱动的分层自动优选策略。"""
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 import re
+import unicodedata
 
 from core.app_paths import resource_root
 
@@ -24,6 +26,10 @@ REGION_CATALOG = {
                                         for char in code),) if code != 'OTHER' else ())
     for code, (label, aliases) in _REGION_DATA.items()
 }
+# 与 ui/routing_nodes.js 的 REGION_PRIORITY 保持一致。
+REGION_PRIORITY = (
+    'HK', 'TW', 'JP', 'SG', 'US', 'KR', 'GB', 'DE', 'FR', 'CA', 'AU',
+    'RU', 'IN', 'BR', 'CN', 'OTHER')
 
 def default_policy():
     return {
@@ -326,3 +332,60 @@ def flow_labels(policy):
         labels.append(f'{region}其他节点')
     labels.append('全部节点' if policy.get('fallback') == 'all' else '停止并提示')
     return labels
+
+
+_FLAG_PAIR_RE = re.compile('([%s-%s]{2})' % (chr(0x1F1E6), chr(0x1F1FF)))
+_region_matchers = None
+
+
+def _fold_text(value):
+    decomposed = unicodedata.normalize('NFKD', str(value or ''))
+    return ''.join(char for char in decomposed
+                   if unicodedata.category(char)[0] != 'M')
+
+
+def _build_region_matchers():
+    """预编译地区别名匹配器，规则镜像 ui/routing_nodes.js。"""
+    hints, codes = [], []
+    for code, (_label, aliases) in REGION_CATALOG.items():
+        for alias in aliases:
+            text = _fold_text(alias)
+            if not text:
+                continue
+            escaped = re.sub(r'([\\.^$|?*+(){}\[\]])', r'\\\1', text)
+            escaped = escaped.replace(' ', r'\s*')
+            if all(ord(char) < 128 for char in text):
+                pattern = rf'(?:^|[^A-Za-z0-9]){escaped}(?=$|[^A-Za-z0-9])'
+            else:
+                pattern = escaped
+            flags = 0 if re.fullmatch(r'[A-Z]{2}', text) else re.IGNORECASE
+            entry = (re.compile(pattern, flags), code, len(text))
+            (codes if re.fullmatch(r'[A-Z]{2,3}', text)
+             else hints).append(entry)
+    # 先匹配完整长名称，避免短别名抢先命中。
+    hints.sort(key=lambda entry: -entry[2])
+    return hints, codes
+
+
+@functools.lru_cache(maxsize=4096)
+def node_region_code(name):
+    """按节点名识别地区码（国旗 emoji 优先，其次别名，兜底 OTHER）。"""
+    global _region_matchers
+    if _region_matchers is None:
+        _region_matchers = _build_region_matchers()
+    hints, codes = _region_matchers
+    stripped = re.sub(r'^\[[^\]]+\]\s*', '', str(name or '').strip())
+    flag = _FLAG_PAIR_RE.search(stripped)
+    if flag:
+        code = ''.join(chr(ord(char) - 0x1F1E6 + 65)
+                       for char in flag.group(1))
+        if code in REGION_CATALOG:
+            return code
+    searchable = _fold_text(stripped)
+    for pattern, code, _length in hints:
+        if pattern.search(searchable):
+            return code
+    for pattern, code, _length in codes:
+        if pattern.search(searchable):
+            return code
+    return 'OTHER'

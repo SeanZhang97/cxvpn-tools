@@ -51,6 +51,9 @@ class ProxyGuardTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.base = self._tmp.name
         self.registry = _FakeRegistry()
+        self.real_refresh = proxy_guard._refresh_wininet_proxy_settings
+        self.refresh = self.enterContext(mock.patch.object(
+            proxy_guard, '_refresh_wininet_proxy_settings', return_value=(True, True)))
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -94,8 +97,9 @@ class ProxyGuardTest(unittest.TestCase):
 
         self.assertEqual('127.0.0.1:7897', repaired)
         self.assertEqual(0, self.registry.values['ProxyEnable'])
-        self.assertEqual(1, len(logs))
-        self.assertIn('残留', logs[0])
+        self.assertIn('清扫开始', logs[0])
+        self.assertIn('回读确认', logs[-1])
+        self.refresh.assert_called_once_with()
         snapshot = self._read_snapshot()
         self.assertEqual('startup_repair', snapshot['reason'])
         self.assertEqual('127.0.0.1:7897', snapshot['proxy_server'])
@@ -150,6 +154,164 @@ class ProxyGuardTest(unittest.TestCase):
 
         self.assertIsNone(repaired)
         self.assertEqual(1, self.registry.values['ProxyEnable'])
+
+    def test_startup_preserves_proxy_changed_during_backup(self):
+        proxy_guard.mark_running(self.base)
+        _proxy_set(self.registry)
+
+        def replaced(*_args):
+            self.registry.values['ProxyServer'] = 'proxy.corp.example:8080'
+
+        with mock.patch.object(proxy_guard, '_snapshot', side_effect=replaced):
+            with self.assertRaisesRegex(OSError, '设置已变化'):
+                proxy_guard.startup_check(
+                    log=_silent_log, registry=self.registry, base=self.base,
+                    port_check=_dead_port)
+        self.assertEqual(1, self.registry.values['ProxyEnable'])
+        self.refresh.assert_not_called()
+        self.assertTrue(proxy_guard.is_last_run_dirty(self.base))
+
+    def test_startup_preserves_proxy_that_recovers_during_backup(self):
+        proxy_guard.mark_running(self.base)
+        _proxy_set(self.registry)
+        checker = mock.Mock(side_effect=[False, True])
+
+        repaired = proxy_guard.startup_check(
+            log=_silent_log, registry=self.registry, base=self.base,
+            port_check=checker)
+
+        self.assertIsNone(repaired)
+        self.assertEqual(1, self.registry.values['ProxyEnable'])
+        self.refresh.assert_not_called()
+
+    def test_shutdown_failed_readback_does_not_claim_success(self):
+        proxy_guard.mark_running(self.base)
+        _proxy_set(self.registry)
+        logs = []
+        with mock.patch.object(self.registry, 'SetValueEx'):
+            with self.assertRaisesRegex(OSError, '回读不一致'):
+                proxy_guard.shutdown_cleanup(
+                    log=logs.append, registry=self.registry, base=self.base)
+        self.assertFalse(any('已关闭' in message for message in logs))
+        self.assertTrue(proxy_guard.is_last_run_dirty(self.base))
+
+    def test_cleanup_preserves_all_fields_changed_during_backup(self):
+        for field, value in (
+                ('ProxyServer', '127.0.0.1:1080'),
+                ('ProxyOverride', '内网 e\u0301 \U0001f1e8\U0001f1f3'),
+                ('AutoConfigURL', 'https://example.test/pac?token=private')):
+            with self.subTest(field=field):
+                _proxy_set(self.registry)
+                proxy_guard.mark_running(self.base)
+
+                def replaced(*_args):
+                    self.registry.values[field] = value
+
+                with mock.patch.object(proxy_guard, '_snapshot', side_effect=replaced):
+                    with self.assertRaisesRegex(OSError, '设置已变化'):
+                        proxy_guard.shutdown_cleanup(
+                            log=_silent_log, registry=self.registry, base=self.base)
+                self.assertEqual(1, self.registry.values['ProxyEnable'])
+                self.assertEqual(value, self.registry.values[field])
+                self.assertTrue(proxy_guard.is_last_run_dirty(self.base))
+        self.refresh.assert_not_called()
+
+    def test_startup_rechecks_configuration_after_final_port_probe(self):
+        proxy_guard.mark_running(self.base)
+        _proxy_set(self.registry)
+        calls = []
+
+        def checker(*_args):
+            calls.append(True)
+            if len(calls) == 2:
+                self.registry.values['ProxyServer'] = 'proxy.corp.example:8080'
+            return False
+
+        with self.assertRaisesRegex(OSError, '设置已变化'):
+            proxy_guard.startup_check(
+                log=_silent_log, registry=self.registry, base=self.base,
+                port_check=checker)
+        self.assertEqual(1, self.registry.values['ProxyEnable'])
+        self.refresh.assert_not_called()
+
+    def test_cleanup_requires_backup_before_write(self):
+        _proxy_set(self.registry)
+        proxy_guard.mark_running(self.base)
+        with mock.patch.object(proxy_guard, '_snapshot', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                proxy_guard.shutdown_cleanup(
+                    log=_silent_log, registry=self.registry, base=self.base)
+        self.assertEqual(1, self.registry.values['ProxyEnable'])
+        self.refresh.assert_not_called()
+        self.assertTrue(proxy_guard.is_last_run_dirty(self.base))
+
+    def test_cleanup_read_error_preserves_dirty_marker_and_proxy(self):
+        _proxy_set(self.registry)
+        proxy_guard.mark_running(self.base)
+        with mock.patch.object(self.registry, 'QueryValueEx', side_effect=PermissionError):
+            with self.assertRaises(PermissionError):
+                proxy_guard.shutdown_cleanup(
+                    log=_silent_log, registry=self.registry, base=self.base)
+        self.assertEqual(1, self.registry.values['ProxyEnable'])
+        self.refresh.assert_not_called()
+        self.assertTrue(proxy_guard.is_last_run_dirty(self.base))
+
+    def test_cleanup_refresh_failure_retains_dirty_marker(self):
+        _proxy_set(self.registry)
+        proxy_guard.mark_running(self.base)
+        self.refresh.return_value = (True, False)
+        logs = []
+        with self.assertRaisesRegex(OSError, '刷新失败'):
+            proxy_guard.shutdown_cleanup(
+                log=logs.append, registry=self.registry, base=self.base)
+        self.assertFalse(any('已关闭' in message for message in logs))
+        self.assertTrue(proxy_guard.is_last_run_dirty(self.base))
+
+    def test_cleanup_does_not_overwrite_proxy_replaced_during_refresh(self):
+        _proxy_set(self.registry)
+        proxy_guard.mark_running(self.base)
+
+        def refresh():
+            _proxy_set(self.registry, server='proxy.corp.example:8080')
+            return True, True
+
+        self.refresh.side_effect = refresh
+        with self.assertRaisesRegex(OSError, '回读不一致'):
+            proxy_guard.shutdown_cleanup(
+                log=_silent_log, registry=self.registry, base=self.base)
+        self.assertEqual(1, self.registry.values['ProxyEnable'])
+        self.assertEqual('proxy.corp.example:8080', self.registry.values['ProxyServer'])
+        self.refresh.assert_called_once_with()
+
+    def test_cleanup_preserves_unicode_and_keeps_pac_out_of_logs(self):
+        _proxy_set(self.registry)
+        self.registry.values['ProxyOverride'] = '内网 e\u0301 \U0001f1e8\U0001f1f3'
+        self.registry.values['AutoConfigURL'] = 'https://example.test/pac?token=private'
+        logs = []
+
+        def refresh():
+            # 刷新发生在写入之后，四字段最终回读发生在刷新之后。
+            self.assertEqual(0, self.registry.values['ProxyEnable'])
+            return True, True
+
+        self.refresh.side_effect = refresh
+        proxy_guard.shutdown_cleanup(log=logs.append, registry=self.registry, base=self.base)
+        self.assertEqual(self.registry.values['ProxyOverride'],
+                         self._read_snapshot()['proxy_override'])
+        self.assertEqual(self.registry.values['AutoConfigURL'],
+                         self._read_snapshot()['auto_config_url'])
+        self.assertFalse(any('token=private' in message for message in logs))
+
+    def test_cleanup_logging_failure_does_not_interrupt_marker_cleanup(self):
+        _proxy_set(self.registry)
+        proxy_guard.mark_running(self.base)
+        failed_log = mock.Mock(side_effect=UnicodeEncodeError('ascii', '中文', 0, 1, 'test'))
+        with self.assertLogs('core.proxy_guard', level='WARNING'):
+            cleared = proxy_guard.shutdown_cleanup(
+                log=failed_log, registry=self.registry, base=self.base)
+        self.assertEqual('127.0.0.1:7897', cleared)
+        self.assertEqual(0, self.registry.values['ProxyEnable'])
+        self.assertFalse(proxy_guard.is_last_run_dirty(self.base))
 
     # ---------- 关机清扫 ----------
     def test_shutdown_clears_loopback_proxy_regardless_of_port(self):
@@ -230,6 +392,7 @@ class ProxyGuardTest(unittest.TestCase):
         self.assertEqual('', state['auto_config'])
 
     def test_refresh_user_proxy_settings_notifies_wininet_and_windows(self):
+        self.refresh.side_effect = self.real_refresh
         wininet = mock.Mock()
         wininet.InternetSetOptionW.side_effect = [1, 1]
         user32 = mock.Mock()

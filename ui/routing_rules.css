@@ -160,3 +160,54 @@
   .routing-workspace-heading h2 { font-size: 24px; }
   .routing-node-toolbar { padding: 11px; }
 }
+/* 常用选择在同一行，低频编辑按需展开；沿用全局深色滚动条。 */
+.business-section .routing-rules-head { margin-bottom: 14px; }
+#routing-business-outbounds, #routing-business-sets { display: grid; gap: 10px; }
+.business-editor { min-width: 0; padding: 14px 16px 10px; border: 1px solid var(--line); border-radius: 12px; background: rgba(4,10,24,.24); }
+.business-editor:focus-within { border-color: rgba(129,140,248,.35); }
+.business-outbound-fields { display: grid; grid-template-columns: minmax(130px,.85fr) minmax(140px,1fr) minmax(220px,1.65fr); gap: 12px; }
+.business-rule-fields, .business-domain-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.business-editor .field { width: auto; min-width: 0; margin: 0; }
+.business-editor .field > label { margin: 0 0 7px; font-size: 11px; line-height: 1.4; }
+.business-editor input:not([type=checkbox]) { height: 40px; padding: 8px 11px; border-radius: 10px; font-size: 12px; }
+.business-editor textarea { width: 100%; min-height: 128px; padding: 10px 12px; box-sizing: border-box; resize: vertical; scrollbar-gutter: stable; font: 12px/1.8 Consolas, "Cascadia Mono", monospace; }
+.business-row-footer, .business-rule-meta { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.business-row-footer { justify-content: space-between; margin-top: 9px; min-height: 30px; }
+.business-status { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.business-status-warning { color: #d6b575; }
+.business-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.business-editor .btn { padding: 6px 10px; font-size: 11px; min-height: 30px; border-radius: 8px; }
+.business-editor .business-disclosure { flex: none; border-color: transparent; color: #a5b4cc; background: transparent; }
+.business-editor .business-disclosure:hover { border-color: var(--line); background: rgba(129,140,248,.08); color: var(--txt); }
+.business-outbound-detail, .business-rule-detail { margin-top: 10px; padding-top: 13px; padding-bottom: 4px; border-top: 1px solid var(--line); }
+.business-outbound-detail { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 16px; }
+.business-rule-detail .business-actions { justify-content: flex-end; margin-top: 12px; }
+.business-editor [hidden], .business-section [hidden] { display: none; }
+.business-switch.routing-option-switch { display: flex; flex-direction: row-reverse; gap: 7px; min-height: 0; padding: 0; margin: 0; border: 0; border-radius: 0; background: none; }
+.business-switch.routing-option-switch > span { font-size: 11px; white-space: nowrap; }
+.business-switch.routing-option-switch > i { width: 30px; height: 18px; }
+.business-switch.routing-option-switch > i::after { width: 12px; height: 12px; }
+.business-switch.routing-option-switch > input:checked + i::after { transform: translateX(12px); }
+.business-switch:has(input:disabled) { opacity: .5; cursor: default; }
+.business-domain-count { color: var(--muted); font-size: 11px; }
+.business-template-tools { margin-bottom: 14px; }
+.business-template-tools .btn { font-size: 12px; padding: 8px 12px; }
+.business-empty { margin: 0; padding: 18px 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.business-mode-warning { margin: 0 0 12px; color: #d6b575; font-size: 12px; }
+.business-mode-warning:empty { display: none; }
+.business-help { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.7; }
+.business-help summary { width: fit-content; cursor: pointer; }
+.business-help summary:hover { color: var(--txt); }
+.business-help summary:focus-visible { outline: 2px solid var(--acc2); outline-offset: 3px; }
+.business-help p { margin: 8px 0 0; }
+@media (max-width: 900px) {
+  .business-outbound-fields { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .business-outbound-fields > .field:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 600px) {
+  .business-editor { padding: 12px; }
+  .business-outbound-fields, .business-rule-fields, .business-domain-fields, .business-outbound-detail { grid-template-columns: minmax(0,1fr); }
+  .business-rule-meta { flex-wrap: wrap; gap: 6px 12px; }
+  .business-section .routing-rules-head { align-items: flex-start; gap: 12px; }
+  .business-section .routing-rules-head > .btn { flex: none; }
+}

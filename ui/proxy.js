@@ -1,7 +1,9 @@
 (() => {
   const byId = id => document.getElementById(id);
   const backend = () => window.pywebview?.api;
-  let selectedMode = 'rule';
+  // 未开启时首页暂存的流量模式/接管方式；空串表示跟随已保存配置。
+  let selectedMode = '';
+  let selectedCapture = '';
   let selectedGroupId = 'all';
   let returnTarget = { page: 'proxy', tab: 'home' };
   let busy = false;
@@ -12,11 +14,32 @@
   let telemetryState = { phase: 'idle' };
   let telemetryData = { up: 0, down: 0, upTotal: 0, downTotal: 0 };
   const RATE_WINDOW_MS = 60 * 1000;
-  let rateHistory = { up: [], down: [] };
-  let rateInspection = null;
+  const RATE_CHART_HEIGHT = 172;
+  let rateHistory = [];
+  let rateChart = null;
+  let outboundOpen = false;
+  let outboundKbIndex = -1;
+  let outboundApplying = false;
+
+  const OUTBOUND_ICONS = {
+    physical: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.3 3.9 5.2 3.9 8.5s-1.3 6.2-3.9 8.5c-2.6-2.3-3.9-5.2-3.9-8.5S9.4 5.8 12 3.5z"/></svg>',
+    proxy: '<svg viewBox="0 0 24 24"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3z"/><path d="m4 12.5 8 4.5 8-4.5"/><path d="m4 16.5 8 4.5 8-4.5" opacity=".55"/></svg>',
+    provider: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg>',
+    vpn: '<svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.4 3 8.2 7 10 4-1.8 7-5.6 7-10V6l-7-3z"/><path d="M9.5 12l2 2 3.5-4"/></svg>',
+    block: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/></svg>',
+  };
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value || {}));
+  }
+
+  // pywebview 桥调用在桥消息丢失时没有兜底超时，UI 必须能自行恢复。
+  function withTimeout(promise, ms, message) {
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
   function routingState() {
@@ -28,25 +51,28 @@
   }
 
   function usesProxy(config) {
-    const values = [config?.default_outbound, ...(config?.rules || [])
+    const values = [config?.default_outbound, ...(config?.traffic_mode === 'global' ? [] :
+      [...(config?.rules || []), ...(config?.business_rules || [])])
+      .filter(item => item.enabled !== false).map(item => item.outbound)];
+    return values.some(value => value === 'proxy' || /^(proxy:|outbound:)/.test(String(value || '')));
+  }
+
+  function usesSubscriptionSelection(config) {
+    const values = [config?.default_outbound, ...(config?.traffic_mode === 'global' ? [] : config?.rules || [])
       .filter(item => item.enabled !== false).map(item => item.outbound)];
     return values.some(value => value === 'proxy' || String(value || '').startsWith('proxy:'));
   }
 
-  function runtimeUsesProxy(config) {
-    // 与内核生成条件对齐：全局模式下用户规则不参与分流，只有默认出口生效。
-    const rules = config?.traffic_mode === 'global' ? [] : config?.rules || [];
-    const values = [config?.default_outbound, ...rules
-      .filter(item => item.enabled !== false).map(item => item.outbound)];
-    return values.some(value => value === 'proxy' || String(value || '').startsWith('proxy:'));
-  }
-
-  function outboundName(value) {
+  function outboundName(value, config = null) {
     const raw = String(value || 'physical');
     if (raw === 'physical') return '物理网络';
     if (raw === 'proxy') return '聚合代理池';
     if (raw === 'block') return '阻止访问';
-    if (raw.startsWith('proxy:')) return `代理订阅 ${raw.slice(6)}`;
+    if (raw.startsWith('proxy:')) {
+      const id = raw.slice(6);
+      const provider = (config?.proxy_providers || []).find(item => item.id === id);
+      return `代理订阅 ${provider?.name || id}`;
+    }
     if (raw.startsWith('vpn:')) return `VPN ${raw.slice(4)}`;
     return raw;
   }
@@ -159,45 +185,8 @@
   }
 
   function resetRateHistory() {
-    rateHistory = { up: [], down: [] };
-    rateInspection = null;
-  }
-
-  function ratePath(samples, maxValue, closeArea = false, now = Date.now()) {
-    const width = 360;
-    const baseline = 92;
-    const top = 10;
-    const usableHeight = baseline - top;
-    const scale = Math.max(1, Number(maxValue) || 1);
-    const start = now - RATE_WINDOW_MS;
-    const points = samples.map(sample => {
-      const x = width * Math.max(0, Math.min(1, (sample.time - start) / RATE_WINDOW_MS));
-      const normalized = Math.max(0, Math.min(1, Number(sample.value || 0) / scale));
-      const y = baseline - normalized * usableHeight;
-      return [x, y];
-    });
-    if (!points.length) return `M0 ${baseline}L${width} ${baseline}`;
-    const line = points.map(([x, y], index) => `${index ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
-    if (!closeArea) {
-      if (points.length > 1) return line;
-      return `${line}l.1 0`;
-    }
-    const firstX = points[0][0].toFixed(1);
-    const lastX = points[points.length - 1][0].toFixed(1);
-    return `M${firstX} ${baseline} ${line.replace(/^M/, 'L')} L${lastX} ${baseline} Z`;
-  }
-
-  function rateSamples(history = rateHistory) {
-    const times = new Set([...history.up, ...history.down].map(item => item.time));
-    return [...times].sort((a, b) => a - b).map(time => {
-      const nearest = samples => samples.reduce((best, item) => {
-        if (!best || Math.abs(item.time - time) < Math.abs(best.time - time)) return item;
-        return best;
-      }, null);
-      const up = nearest(history.up);
-      const down = nearest(history.down);
-      return { time, up, down, node: up?.node || down?.node || '' };
-    });
+    rateHistory = [];
+    hideRateTooltip();
   }
 
   function formatRateValue(value) {
@@ -209,129 +198,149 @@
     return `${Math.round(amount)} B/s`;
   }
 
-  function ratePoint(value, maxValue, time, now = Date.now()) {
-    const start = now - RATE_WINDOW_MS;
-    const x = 360 * Math.max(0, Math.min(1, (time - start) / RATE_WINDOW_MS));
-    const normalized = Math.max(0, Math.min(1, (Number(value) || 0) / Math.max(1, Number(maxValue) || 1)));
-    return { x, y: 92 - normalized * 82 };
+  function formatClock(seconds) {
+    return new Date(seconds * 1000).toLocaleTimeString('zh-CN', { hour12: false });
   }
 
   function hideRateTooltip() {
     const tooltip = byId('proxy-rate-tooltip');
     if (!tooltip) return;
-    tooltip.classList.add('hidden');
+    tooltip.classList.remove('show');
     tooltip.setAttribute('aria-hidden', 'true');
-    ['proxy-rate-crosshair', 'proxy-rate-hover-up', 'proxy-rate-hover-down'].forEach(id => {
-      const element = byId(id);
-      if (element) element.style.display = 'none';
-    });
   }
 
-  function showRateTooltip(sample, maxValue, now = Date.now()) {
+  function showRateTooltip(chart, idx) {
     const tooltip = byId('proxy-rate-tooltip');
-    const chart = byId('proxy-rate-chart');
-    const wrap = chart?.parentElement;
-    if (!tooltip || !chart || !wrap || !sample) return;
-    const up = sample.up || { value: 0 };
-    const down = sample.down || { value: 0 };
-    const upPoint = ratePoint(up.value, maxValue, sample.time, now);
-    const downPoint = ratePoint(down.value, maxValue, sample.time, now);
-    tooltip.classList.remove('hidden');
-    tooltip.setAttribute('aria-hidden', 'false');
-    setText('proxy-rate-tooltip-time', new Date(sample.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    const wrap = byId('proxy-rate-chart-wrap');
+    const sample = rateHistory[idx];
+    if (!tooltip || !wrap || !chart || !sample) return hideRateTooltip();
+    setText('proxy-rate-tooltip-time', formatClock(sample.time / 1000));
     setText('proxy-rate-tooltip-node', sample.node || byId('proxy-node-name')?.textContent?.trim() || '当前节点');
-    setText('proxy-rate-tooltip-up-value', `上行 ${formatRateValue(up.value)}`);
-    setText('proxy-rate-tooltip-down-value', `下行 ${formatRateValue(down.value)}`);
+    setText('proxy-rate-tooltip-up-value', `上行 ${formatRateValue(sample.up)}`);
+    setText('proxy-rate-tooltip-down-value', `下行 ${formatRateValue(sample.down)}`);
+    const over = chart.over.getBoundingClientRect();
     const wrapRect = wrap.getBoundingClientRect();
-    const chartRect = chart.getBoundingClientRect();
-    const sampleX = upPoint.x;
-    const pointerRatio = Math.max(0, Math.min(1, sampleX / 360));
-    const tooltipRect = tooltip.getBoundingClientRect();
-    const tooltipWidth = tooltipRect.width || 146;
-    const tooltipHeight = tooltipRect.height || 78;
-    const chartHeight = chartRect.height || 88;
-    const chartOffsetY = chartRect.top - wrapRect.top;
-    const anchorY = chartOffsetY + Math.min(upPoint.y, downPoint.y) / 104 * chartHeight;
-    const minTop = 4;
-    const maxTop = Math.max(minTop, wrapRect.height - tooltipHeight - 4);
-    const aboveTop = anchorY - tooltipHeight - 10;
-    const belowTop = anchorY + 10;
-    const above = aboveTop >= minTop;
-    const desiredTop = above ? aboveTop : belowTop;
-    const top = Math.max(minTop, Math.min(maxTop, desiredTop));
-    const actuallyAbove = top < anchorY;
-    const half = tooltipWidth / 2;
-    const left = Math.max(half + 4, Math.min(wrapRect.width - half - 4, pointerRatio * wrapRect.width));
-    tooltip.style.left = `${left}px`;
-    tooltip.style.top = `${top}px`;
-    tooltip.classList.toggle('is-below', !actuallyAbove);
-    const crosshair = byId('proxy-rate-crosshair');
-    if (crosshair) { crosshair.setAttribute('x1', sampleX.toFixed(1)); crosshair.setAttribute('x2', sampleX.toFixed(1)); crosshair.style.display = 'block'; }
-    const upDot = byId('proxy-rate-hover-up');
-    if (upDot) { upDot.setAttribute('cx', upPoint.x.toFixed(1)); upDot.setAttribute('cy', upPoint.y.toFixed(1)); upDot.style.display = 'block'; }
-    const downDot = byId('proxy-rate-hover-down');
-    if (downDot) { downDot.setAttribute('cx', downPoint.x.toFixed(1)); downDot.setAttribute('cy', downPoint.y.toFixed(1)); downDot.style.display = 'block'; }
+    const overLeft = over.left - wrapRect.left;
+    const overTop = over.top - wrapRect.top;
+    const tooltipWidth = tooltip.offsetWidth || 170;
+    const tooltipHeight = tooltip.offsetHeight || 92;
+    let left = overLeft + chart.cursor.left + 14;
+    if (left + tooltipWidth > wrapRect.width - 6) left = overLeft + chart.cursor.left - tooltipWidth - 14;
+    let top = overTop + chart.cursor.top - tooltipHeight - 12;
+    if (top < 4) top = overTop + chart.cursor.top + 18;
+    tooltip.style.left = `${Math.max(4, left)}px`;
+    tooltip.style.top = `${Math.max(4, top)}px`;
+    tooltip.classList.add('show');
+    tooltip.setAttribute('aria-hidden', 'false');
   }
 
-  function inspectRateAt(ratio) {
-    if (!rateInspection) {
-      const history = { up: rateHistory.up.slice(), down: rateHistory.down.slice() };
-      const samples = rateSamples(history);
-      if (!samples.length) return hideRateTooltip();
-      // 查看历史时固定时间窗和纵轴；实时采样仍继续写入独立的 rateHistory。
-      rateInspection = { history, samples, now: Date.now() };
+  function rateGradient(colorTop) {
+    return (u) => {
+      const gradient = u.ctx.createLinearGradient(0, u.bbox.top, 0, u.bbox.top + u.bbox.height);
+      gradient.addColorStop(0, colorTop);
+      gradient.addColorStop(1, 'rgba(6,10,24,0)');
+      return gradient;
+    };
+  }
+
+  function ensureRateChart() {
+    if (rateChart) return rateChart;
+    const container = byId('proxy-rate-chart');
+    if (!container || typeof window.uPlot !== 'function') return null;
+    const axisStyle = {
+      stroke: '#7787a5',
+      font: '10px "Segoe UI Variable", "Segoe UI", sans-serif',
+      grid: { stroke: 'rgba(148,163,184,.09)', width: 1 },
+      ticks: { stroke: 'rgba(148,163,184,.18)', width: 1, size: 4 },
+    };
+    rateChart = new window.uPlot({
+      width: Math.max(280, container.clientWidth || 560),
+      height: RATE_CHART_HEIGHT,
+      padding: [10, 6, 0, 0],
+      scales: { x: { time: true }, y: { range: (u, min, max) => [0, (max || 1) * 1.18] } },
+      axes: [
+        { ...axisStyle, values: (u, splits) => splits.map(value => formatClock(value)) },
+        { ...axisStyle, size: 52, values: (u, splits) => splits.map(value => formatRateValue(value)) },
+      ],
+      series: [
+        {},
+        {
+          label: '上行', stroke: '#fbbf72', width: 1.8,
+          paths: window.uPlot.paths.spline(), points: { show: false },
+          fill: rateGradient('rgba(251,191,114,.22)'),
+        },
+        {
+          label: '下行', stroke: '#22d3ee', width: 1.8,
+          paths: window.uPlot.paths.spline(), points: { show: false },
+          fill: rateGradient('rgba(34,211,238,.2)'),
+        },
+      ],
+      cursor: {
+        drag: { x: false, y: false },
+        focus: { prox: 20 },
+        points: {
+          size: 9,
+          fill: (u, seriesIdx) => seriesIdx === 1 ? '#fbbf72' : '#22d3ee',
+          stroke: (u, seriesIdx) => seriesIdx === 1 ? '#fbbf72' : '#22d3ee',
+        },
+      },
+      legend: { show: false },
+      hooks: {
+        setCursor: [(u) => {
+          const { idx, left } = u.cursor;
+          if (idx == null || left == null || left < 0) return hideRateTooltip();
+          showRateTooltip(u, idx);
+        }],
+      },
+    }, [[], [], []], container);
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(entries => {
+        const width = Math.floor(entries[0]?.contentRect?.width || 0);
+        if (width > 120) rateChart?.setSize({ width, height: RATE_CHART_HEIGHT });
+      }).observe(container);
     }
-    const time = rateInspection.now - RATE_WINDOW_MS + ratio * RATE_WINDOW_MS;
-    rateInspection.sample = rateInspection.samples.reduce((best, item) =>
-      !best || Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best, null);
-    renderRateChart();
+    return rateChart;
   }
 
-  function endRateInspection() {
-    if (!rateInspection) return;
-    rateInspection = null;
-    renderRateChart();
+  function inspectLatestRateSample() {
+    const chart = ensureRateChart();
+    if (!chart || !rateHistory.length) return;
+    const last = rateHistory[rateHistory.length - 1];
+    chart.setCursor({
+      left: chart.valToPos(last.time / 1000, 'x'),
+      top: chart.valToPos(last.down || 0, 'y'),
+    });
   }
 
   function bindRateChart() {
-    const chart = byId('proxy-rate-chart');
-    const target = byId('proxy-rate-hover-target');
-    if (!chart || !target || target.dataset.bound === 'true') return;
-    target.dataset.bound = 'true';
-    const update = event => {
-      const rect = chart.getBoundingClientRect();
-      const ratio = rect.width ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) : 1;
-      inspectRateAt(ratio);
-    };
-    target.addEventListener('mouseenter', update);
-    target.addEventListener('mousemove', update);
-    target.addEventListener('focus', () => inspectRateAt(1));
-    target.addEventListener('keydown', event => {
-      if (event.key === 'Escape') endRateInspection();
+    const container = byId('proxy-rate-chart');
+    if (!container || container.dataset.bound === 'true') return;
+    container.dataset.bound = 'true';
+    container.addEventListener('focus', inspectLatestRateSample);
+    container.addEventListener('keydown', event => {
+      if (event.key === 'Escape') hideRateTooltip();
     });
-    target.addEventListener('blur', endRateInspection);
-    chart.addEventListener('mouseleave', endRateInspection);
-    window.addEventListener('resize', renderRateChart);
-    window.addEventListener('blur', endRateInspection);
+    container.addEventListener('blur', hideRateTooltip);
+    window.addEventListener('blur', hideRateTooltip);
   }
 
   function renderRateChart() {
-    const upload = byId('proxy-upload-chart');
-    const download = byId('proxy-download-chart');
-    const uploadFill = byId('proxy-upload-chart-fill');
-    const downloadFill = byId('proxy-download-chart-fill');
-    if (!upload || !download || !uploadFill || !downloadFill) return;
-    const now = rateInspection?.now ?? Date.now();
-    const history = rateInspection?.history || rateHistory;
-    const max = Math.max(1, ...history.up.map(item => item.value), ...history.down.map(item => item.value));
-    upload.setAttribute('d', ratePath(history.up, max, false, now));
-    download.setAttribute('d', ratePath(history.down, max, false, now));
-    uploadFill.setAttribute('d', ratePath(history.up, max, true, now));
-    downloadFill.setAttribute('d', ratePath(history.down, max, true, now));
-    if (rateInspection?.sample) showRateTooltip(rateInspection.sample, max, now);
-    else hideRateTooltip();
-    const chart = byId('proxy-rate-chart');
-    if (chart) chart.setAttribute('aria-label', `实时上行 ${window.RoutingTelemetryTools?.formatRate?.(telemetryData.up) || '0 B/s'}，下行 ${window.RoutingTelemetryTools?.formatRate?.(telemetryData.down) || '0 B/s'}，过去 60 秒趋势图`);
+    const chart = ensureRateChart();
+    const empty = byId('proxy-rate-empty');
+    const has = rateHistory.length > 0;
+    if (empty) {
+      empty.classList.toggle('hidden', has);
+      if (!has) {
+        empty.textContent = telemetryState.phase === 'connected'
+          ? '正在等待实时速率数据…' : '代理未开启 · 启动后显示实时速率';
+      }
+    }
+    if (!chart) return;
+    chart.setData([
+      rateHistory.map(item => item.time / 1000),
+      rateHistory.map(item => item.up),
+      rateHistory.map(item => item.down),
+    ]);
   }
 
   function renderOperationNotice() {
@@ -362,8 +371,14 @@
 
   function renderTelemetry() {
     const tools = window.RoutingTelemetryTools;
-    setText('proxy-upload-rate', tools?.formatRate?.(telemetryData.up) || '0 B/s');
-    setText('proxy-download-rate', tools?.formatRate?.(telemetryData.down) || '0 B/s');
+    const upText = tools?.formatRate?.(telemetryData.up) || '0 B/s';
+    const downText = tools?.formatRate?.(telemetryData.down) || '0 B/s';
+    setText('proxy-upload-rate', upText);
+    setText('proxy-download-rate', downText);
+    setText('proxy-live-up', upText);
+    setText('proxy-live-down', downText);
+    byId('proxy-rate-chart')?.setAttribute('aria-label',
+      `实时上行 ${upText}，下行 ${downText}，过去 60 秒趋势图，聚焦后按 Escape 关闭详情`);
     renderRateChart();
     const state = byId('proxy-stream-state');
     if (!state) return;
@@ -382,10 +397,13 @@
     const now = Date.now();
     const cutoff = now - RATE_WINDOW_MS;
     const node = byId('proxy-node-name')?.textContent?.trim() || '当前节点';
-    rateHistory.up.push({ time: now, value: Math.max(0, Number(telemetryData.up) || 0), node });
-    rateHistory.down.push({ time: now, value: Math.max(0, Number(telemetryData.down) || 0), node });
-    rateHistory.up = rateHistory.up.filter(item => item.time >= cutoff);
-    rateHistory.down = rateHistory.down.filter(item => item.time >= cutoff);
+    rateHistory.push({
+      time: now,
+      up: Math.max(0, Number(telemetryData.up) || 0),
+      down: Math.max(0, Number(telemetryData.down) || 0),
+      node,
+    });
+    rateHistory = rateHistory.filter(item => item.time >= cutoff);
     renderTelemetry();
   }
 
@@ -409,7 +427,7 @@
 
   function reconcileTelemetry(running) {
     const active = !!running && proxyHomeVisible();
-    if (!active) endRateInspection();
+    if (!active) hideRateTooltip();
     if (active === telemetryActive) return;
     telemetryActive = active;
     backend()?.set_routing_telemetry_active?.(active)?.catch?.(() => {
@@ -439,20 +457,202 @@
     container.setAttribute('aria-label', `${provider?.name || '当前订阅'}：${spoken}`);
   }
 
-  function setModeUi(mode) {
-    selectedMode = mode === 'global' ? 'global' : 'rule';
-    document.querySelectorAll('[data-proxy-mode]').forEach(button => {
-      const selected = button.dataset.proxyMode === selectedMode;
-      button.classList.toggle('active', selected);
-      button.setAttribute('aria-checked', String(selected));
-      button.tabIndex = selected ? 0 : -1;
+  const QUALITY_SEGMENTS = [
+    { key: 'fast', label: '极速 <100ms', bar: 'q-fast', legend: 'lg-fast' },
+    { key: 'good', label: '良好 100-250ms', bar: 'q-good', legend: 'lg-good' },
+    { key: 'mid', label: '一般 250-500ms', bar: 'q-mid', legend: 'lg-mid' },
+    { key: 'bad', label: '较差 / 不可用', bar: 'q-bad', legend: 'lg-bad' },
+    { key: 'untested', label: '未测速', bar: 'q-untested', legend: 'lg-untested' },
+  ];
+
+  function dashboardNodePool(setup, groups, providers, groupId) {
+    const isMetadata = window.RoutingWorkspace?.isMetadataNode || (() => false);
+    const runtime = (groups.find(item => item.id === groupId)?.nodes || [])
+      .filter(node => !isMetadata(node));
+    if (runtime.length) return runtime;
+    const ids = groupId === 'all' ? providers.map(item => item.id) : [groupId];
+    return ids.flatMap(id => providerNodes(setup, id)).filter(node => !isMetadata(node));
+  }
+
+  function qualityBucketOf(node) {
+    const delay = Number(node.delay) || 0;
+    const tested = node.tested === true || node.alive === true || node.alive === false || delay > 0;
+    if (!tested) return 'untested';
+    if (node.alive === false || delay >= 500) return 'bad';
+    if (delay <= 0) return 'mid';
+    if (delay < 100) return 'fast';
+    if (delay < 250) return 'good';
+    return 'mid';
+  }
+
+  function renderNodeQuality(nodes) {
+    const section = byId('node-quality');
+    if (!section) return;
+    const total = nodes.length;
+    section.classList.toggle('hidden', !total);
+    if (!total) return;
+    const counts = { fast: 0, good: 0, mid: 0, bad: 0, untested: 0 };
+    nodes.forEach(node => { counts[qualityBucketOf(node)] += 1; });
+    const bar = byId('node-quality-bar');
+    const legend = byId('node-quality-legend');
+    bar?.replaceChildren();
+    legend?.replaceChildren();
+    QUALITY_SEGMENTS.forEach(segment => {
+      const count = counts[segment.key];
+      if (bar) {
+        const part = document.createElement('i');
+        part.className = segment.bar;
+        part.style.flexGrow = String(count / total);
+        part.title = `${segment.label}：${count} 个`;
+        bar.append(part);
+      }
+      if (legend) {
+        const item = document.createElement('span');
+        const dot = document.createElement('i');
+        dot.className = segment.legend;
+        const value = document.createElement('strong');
+        value.textContent = String(count);
+        item.append(dot, document.createTextNode(`${segment.label} `), value);
+        legend.append(item);
+      }
     });
-    const label = selectedMode === 'global' ? '全局模式' : '规则模式';
-    setText('proxy-mode-status', label);
-    setText('proxy-current-mode', label);
-    setText('proxy-mode-detail', selectedMode === 'global'
-      ? '所有流量都通过当前代理，临时忽略域名分流规则。'
-      : '按域名分流规则匹配，未命中流量走当前代理。');
+    const usable = counts.fast + counts.good + counts.mid;
+    setText('node-quality-summary', `${usable} / ${total} 可用`);
+    bar?.setAttribute('aria-label', `节点延迟质量分布：${usable}/${total} 可用`);
+  }
+
+  function renderTopNodes(nodes, group, provider) {
+    const section = byId('top-nodes');
+    const list = byId('top-nodes-list');
+    if (!section || !list) return;
+    const ranked = nodes
+      .filter(node => node.alive !== false && Number(node.delay) > 0)
+      .sort((a, b) => (Number(a.delay) || 0) - (Number(b.delay) || 0))
+      .slice(0, 3);
+    section.classList.toggle('hidden', !ranked.length);
+    list.replaceChildren();
+    if (!ranked.length) return;
+    ranked.forEach((node, index) => {
+      const isCurrent = (group && node.name === group.selected)
+        || nodeMatchesPreference(node, provider, provider?.selected_node, true);
+      const row = document.createElement('div');
+      row.className = 'top-node-row';
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+      const rank = document.createElement('span');
+      rank.className = 'top-node-rank';
+      rank.textContent = String(index + 1);
+      const name = document.createElement('span');
+      name.className = 'top-node-name';
+      name.textContent = node.display_name || node.name || '未命名节点';
+      name.title = name.textContent;
+      const delay = document.createElement('span');
+      delay.className = 'top-node-delay';
+      delay.textContent = `${node.delay} ms`;
+      row.append(rank, name);
+      if (isCurrent) {
+        const badge = document.createElement('span');
+        badge.className = 'top-node-current';
+        badge.textContent = '使用中';
+        row.append(badge);
+      }
+      row.append(delay);
+      const open = () => openNodes(selectedGroupId);
+      row.onclick = open;
+      row.onkeydown = event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          open();
+        }
+      };
+      list.append(row);
+    });
+  }
+
+  const MODE_LABELS = {
+    capture: { 'system-proxy': '系统代理', tun: 'TUN 模式' },
+    captureShort: { 'system-proxy': '系统代理', tun: 'TUN' },
+    traffic: { rule: '规则模式', global: '全局模式' },
+  };
+
+  function appliedCaptureMode(config, status, running) {
+    const saved = config?.capture_mode === 'tun' ? 'tun' : 'system-proxy';
+    if (!running) return saved;
+    return (status?.capture_mode || saved) === 'tun' ? 'tun' : 'system-proxy';
+  }
+
+  function shownModes(config, status, running) {
+    const capture = appliedCaptureMode(config, status, running);
+    const traffic = config?.traffic_mode === 'global' ? 'global' : 'rule';
+    return {
+      capture,
+      traffic,
+      shownCapture: running ? capture : (selectedCapture || capture),
+      shownTraffic: running ? traffic : (selectedMode || traffic),
+    };
+  }
+
+  function renderModeConsole(config, status, running) {
+    const { capture, traffic, shownCapture, shownTraffic } = shownModes(config, status, running);
+    const pendingCapture = !running && shownCapture !== capture;
+    const pendingTraffic = !running && shownTraffic !== traffic;
+    const anyPending = pendingCapture || pendingTraffic;
+    const conflicts = routingState().setup?.tun_conflicts || [];
+    document.querySelectorAll('[data-proxy-seg]').forEach(group => {
+      const seg = group.dataset.proxySeg;
+      const shown = seg === 'capture' ? shownCapture : shownTraffic;
+      const applied = seg === 'capture' ? capture : traffic;
+      group.querySelectorAll('.mode-tile').forEach(tile => {
+        const value = tile.dataset.value;
+        tile.classList.toggle('selected', value === shown);
+        tile.classList.toggle('pending', !running && value === shown && shown !== applied);
+        tile.setAttribute('aria-checked', String(value === shown));
+        tile.tabIndex = value === shown ? 0 : -1;
+        if (seg === 'capture' && value === 'tun') {
+          tile.classList.toggle('disabled', !!conflicts.length && shown !== 'tun');
+        }
+      });
+    });
+    const notice = byId('proxy-tun-notice');
+    if (notice) {
+      if (conflicts.length) {
+        const names = [...new Set(conflicts.map(item => item.name).filter(Boolean))].join('、');
+        notice.classList.remove('hidden');
+        notice.classList.add('danger');
+        setText('proxy-tun-notice-text', `检测到其他 TUN（${names || '未知'}）正在承载默认路由，TUN 模式暂不可用；请先关闭对应客户端的 TUN 模式。`);
+      } else if (pendingCapture && shownCapture === 'tun') {
+        // 预告只覆盖决策窗口：未运行且 TUN 待生效；已运行由磁贴选中态与运行徽章表达，常驻会稀释红色冲突提示。
+        notice.classList.remove('hidden');
+        notice.classList.remove('danger');
+        setText('proxy-tun-notice-text', 'TUN 将接管全部系统流量并自动关闭 Windows 系统代理；开启后生效，切换期间网络会短暂中断，失败自动恢复。');
+      } else {
+        notice.classList.add('hidden');
+      }
+    }
+    const badge = byId('proxy-mode-badge');
+    if (badge) {
+      badge.className = `mode-badge${running ? ' running' : anyPending ? ' pending' : ''}`;
+      badge.textContent = running ? '运行中' : anyPending ? '有待生效变更' : '未启用';
+    }
+    const stripDot = byId('proxy-strip-dot');
+    if (stripDot) stripDot.className = `strip-dot${running ? ' on' : anyPending ? ' pending' : ''}`;
+    setText('proxy-strip-text', running
+      ? `当前运行：${MODE_LABELS.captureShort[capture]} · ${MODE_LABELS.traffic[traffic]}`
+      : anyPending
+        ? `已暂存：${MODE_LABELS.captureShort[shownCapture]} · ${MODE_LABELS.traffic[shownTraffic]}，开启代理后生效`
+        : `已保存：${MODE_LABELS.captureShort[capture]} · ${MODE_LABELS.traffic[traffic]}`);
+    const chipCapture = byId('hero-chip-capture');
+    if (chipCapture) {
+      chipCapture.textContent = MODE_LABELS.capture[shownCapture];
+      chipCapture.classList.toggle('pending', pendingCapture);
+    }
+    const chipTraffic = byId('hero-chip-traffic');
+    if (chipTraffic) {
+      chipTraffic.textContent = MODE_LABELS.traffic[shownTraffic];
+      chipTraffic.classList.toggle('pending', pendingTraffic);
+    }
+    setText('hero-chip-outbound', `出口 ${outboundName(config?.default_outbound, config)}`);
+    setText('proxy-current-mode', `${MODE_LABELS.captureShort[shownCapture]} · ${MODE_LABELS.traffic[shownTraffic]}`);
   }
 
   function setView(name) {
@@ -462,6 +662,147 @@
     byId('main-content')?.scrollTo({ top: 0, behavior: 'smooth' });
     const state = routingState();
     if (state.loaded) reconcileTelemetry(!!state.runtimeStatus?.running);
+  }
+
+  function providerModeLabel(provider) {
+    return provider?.selection_mode === 'manual' ? '手动节点' : '自动优选';
+  }
+
+  function outboundChoices(config, setup) {
+    const choices = [
+      { value: 'physical', kind: 'physical', name: '物理网络', desc: '任何代理与 VPN 都不走' },
+    ];
+    const providers = enabledProviders(config);
+    if (providers.length) {
+      choices.push({ value: 'proxy', kind: 'proxy', name: '全部代理订阅',
+        desc: `${providers.length} 个已启用订阅 · 使用全部订阅策略` });
+      providers.forEach(provider => choices.push({
+        value: `proxy:${provider.id}`, kind: 'provider', name: `代理 · ${provider.name}`,
+        desc: providerModeLabel(provider)
+          + (provider.selection_mode === 'manual' && provider.selected_node
+            ? ` · ${provider.selected_node}` : ''),
+      }));
+    }
+    (setup?.vpns || []).forEach(vpn => choices.push({
+      value: `vpn:${vpn.name}`, kind: 'vpn', name: `VPN · ${vpn.name}`,
+      desc: `Windows VPN · ${vpn.status === 'Connected' ? '已连接' : '未连接'}`,
+    }));
+    choices.push({ value: 'block', kind: 'block', name: '阻止连接', desc: '直接拒绝，不回退到其他出口' });
+    return choices;
+  }
+
+  function outboundChoiceOf(config, setup) {
+    const value = String(config?.default_outbound || 'physical');
+    const found = outboundChoices(config, setup).find(item => item.value === value);
+    if (found) return found;
+    const kind = value.startsWith('vpn:') ? 'vpn'
+      : value.startsWith('proxy:') ? 'provider'
+      : value === 'block' ? 'block' : value === 'proxy' ? 'proxy' : 'physical';
+    return { value, kind, name: outboundName(value, config), desc: '当前出口不可用，订阅已停用或 VPN 不存在' };
+  }
+
+  function renderOutboundOptions(config, setup) {
+    const box = byId('outbound-options');
+    if (!box) return;
+    const current = String(config?.default_outbound || 'physical');
+    box.replaceChildren();
+    outboundChoices(config, setup).forEach(choice => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `ob-opt kind-${choice.kind}` + (choice.value === current ? ' is-current' : '');
+      btn.setAttribute('role', 'option');
+      btn.setAttribute('aria-selected', choice.value === current ? 'true' : 'false');
+      btn.dataset.value = choice.value;
+      const icon = document.createElement('span');
+      icon.className = 'ob-ico';
+      icon.innerHTML = OUTBOUND_ICONS[choice.kind] || OUTBOUND_ICONS.physical;
+      const copy = document.createElement('span');
+      copy.className = 'ob-copy';
+      const name = document.createElement('b');
+      name.textContent = choice.name;
+      const desc = document.createElement('small');
+      desc.textContent = choice.desc;
+      copy.append(name, desc);
+      const check = document.createElement('span');
+      check.className = 'ob-check';
+      check.textContent = '✓';
+      btn.append(icon, copy, check);
+      btn.onclick = () => void changeDefaultOutbound(choice.value);
+      box.append(btn);
+    });
+  }
+
+  function placeOutboundPop() {
+    const trigger = byId('proxy-current-node');
+    const pop = byId('outbound-pop');
+    if (!trigger || !pop || pop.classList.contains('hidden')) return;
+    const rect = trigger.getBoundingClientRect();
+    const gap = 8;
+    const viewportPadding = 10;
+    const wantedHeight = Math.min(pop.scrollHeight, 342);
+    const below = window.innerHeight - rect.bottom - viewportPadding;
+    const above = rect.top - viewportPadding;
+    const openUpward = below < Math.min(wantedHeight, 200) && above > below;
+    const available = Math.max(120, (openUpward ? above : below) - gap);
+    const width = Math.min(rect.width, window.innerWidth - viewportPadding * 2);
+    pop.style.left = `${Math.max(viewportPadding,
+      Math.min(rect.left, window.innerWidth - width - viewportPadding))}px`;
+    pop.style.width = `${width}px`;
+    pop.style.maxHeight = `${Math.min(342, available)}px`;
+    pop.style.top = openUpward
+      ? `${Math.max(viewportPadding, rect.top - gap - Math.min(wantedHeight, available))}px`
+      : `${rect.bottom + gap}px`;
+  }
+
+  function markOutboundKb() {
+    const box = byId('outbound-options');
+    if (!box) return;
+    [...box.children].forEach((el, index) => el.classList.toggle('kb-focus', index === outboundKbIndex));
+    box.children[outboundKbIndex]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function setOutboundOpen(open) {
+    const switchBox = byId('outbound-switch');
+    const trigger = byId('proxy-current-node');
+    const pop = byId('outbound-pop');
+    if (!switchBox || !trigger || !pop) return;
+    if (open && (busy || outboundApplying)) return;
+    outboundOpen = open;
+    switchBox.classList.toggle('open', open);
+    trigger.setAttribute('aria-expanded', String(open));
+    pop.classList.toggle('hidden', !open);
+    if (open) {
+      const state = routingState();
+      const config = state.appliedConfig || state.setup?.config;
+      renderOutboundOptions(config, state.setup);
+      outboundKbIndex = Math.max(0, outboundChoices(config, state.setup)
+        .findIndex(item => item.value === String(config?.default_outbound || 'physical')));
+      markOutboundKb();
+      placeOutboundPop();
+    }
+  }
+
+  async function changeDefaultOutbound(value) {
+    if (busy || outboundApplying) return;
+    const state = routingState();
+    const config = state.appliedConfig || state.setup?.config;
+    if (!config || !state.loaded) return;
+    setOutboundOpen(false);
+    if (value === String(config.default_outbound || 'physical')) return;
+    const choice = outboundChoices(config, state.setup).find(item => item.value === value);
+    const label = choice ? choice.name.replace(/^代理 · |^VPN · /, '') : outboundName(value, config);
+    outboundApplying = true;
+    sync();
+    try {
+      await applyConfig(
+        clone(config), `默认出口已切换：${label}`, '正在切换出口…', '默认出口切换未完成',
+        () => withTimeout(
+          backend().set_routing_default_outbound(value), 45000,
+          '默认出口切换请求超时，请检查服务状态后重试'));
+    } finally {
+      outboundApplying = false;
+      sync();
+    }
   }
 
   function syncNodeStats() {
@@ -480,13 +821,14 @@
     return 'off';
   }
 
-  function effectiveConfigSummary(config, mode = config?.traffic_mode) {
-    const capture = config?.capture_mode === 'tun' ? 'TUN（高级）' : 'Windows 系统代理';
+  function effectiveConfigSummary(config, mode = config?.traffic_mode, capture = config?.capture_mode) {
+    const captureLabel = capture === 'tun' ? 'TUN（高级）' : 'Windows 系统代理';
     const traffic = mode === 'global' ? '全局模式' : '规则模式';
-    return `${capture} · ${traffic} · 默认出口 ${outboundName(config?.default_outbound)}`;
+    return `${captureLabel} · ${traffic} · 默认出口 ${outboundName(config?.default_outbound, config)}`;
   }
 
   function sync() {
+    if (outboundOpen && !proxyHomeVisible()) setOutboundOpen(false);
     const state = routingState();
     const { setup, appliedConfig, runtimeStatus, groups = [], loaded, dirty } = state;
     const config = appliedConfig || setup?.config;
@@ -497,6 +839,7 @@
     const phase = servicePhase(config, status);
     const running = phase === 'running';
     const aggregate = config.default_outbound === 'proxy';
+    const defaultUsesProxy = aggregate || String(config.default_outbound || '').startsWith('proxy:');
     const provider = targetProvider(config);
     selectedGroupId = aggregate ? 'all' : provider?.id || 'all';
     const group = aggregate ? groups.find(item => item.id === 'all') : preferredGroup(groups, provider);
@@ -508,26 +851,18 @@
       : null;
     const manualCurrent = running && provider?.selection_mode === 'manual' &&
       runtimeUsesPreference(group, provider);
-    const guard = usesProxy(config) ? selectionGuard(setup, provider, group)
+    const guard = usesSubscriptionSelection(config) ? selectionGuard(setup, provider, group)
       : { valid: true, reason: '' };
     const summary = window.RoutingWorkspace?.nodeSummary?.(selectedGroupId) || {};
     renderOperationNotice();
-    setModeUi(config.traffic_mode || selectedMode);
     const actualCapture = running ? status.capture_mode || config.capture_mode : config.capture_mode;
-    setText('proxy-capture-status', actualCapture === 'tun' ? 'TUN（高级）' : 'Windows 系统代理');
-    const directOutbound = running && !runtimeUsesProxy(config);
-    setText('proxy-default-outbound', directOutbound
-      ? `${outboundName(config.default_outbound)}（未使用代理，流量直连）`
-      : outboundName(config.default_outbound));
-    const outboundCell = byId('proxy-default-outbound');
-    if (outboundCell) {
-      outboundCell.title = directOutbound
-        ? '代理已开启，但默认出口和规则未指向代理订阅，系统流量仍然直连；请在高级分流调整默认出口或规则'
-        : '';
-    }
+    const { shownCapture, shownTraffic } = shownModes(config, status, running);
+    renderModeConsole(config, status, running);
     const builtinCount = status.builtin_rule_pack?.rule_count || 0;
     const cnFallback = config.system_proxy_bypass?.include_cn_direct ? ' / GEOIP CN' : '';
-    setText('proxy-rule-composition', `${(config.rules || []).filter(item => item.enabled !== false).length} user / ${config.traffic_mode === 'global' ? 0 : builtinCount} builtin${cnFallback} / MATCH`);
+    const businessCount = config.traffic_mode === 'global' ? 0 : (config.business_rules || [])
+      .filter(item => item.enabled !== false).reduce((count, item) => count + item.domains.length, 0);
+    setText('proxy-rule-composition', `${(config.rules || []).filter(item => item.enabled !== false).length} user / ${businessCount} business / ${config.traffic_mode === 'global' ? 0 : builtinCount} builtin${cnFallback} / MATCH`);
 
     const serviceDot = byId('proxy-service-dot');
     serviceDot?.classList.toggle('on', running);
@@ -545,7 +880,7 @@
     setText('proxy-state-detail', running
       ? status.configuration_pending
         ? `现有 ${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'} 仍在运行，保存配置与运行状态不一致；请检查配置后重新应用。`
-        : `${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'}接管 · ${selectedMode === 'global' ? '全局' : '规则'}策略 · 默认出口 ${outboundName(config.default_outbound)}。`
+        : `${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'}接管 · ${config.traffic_mode === 'global' ? '全局' : '规则'}策略 · 默认出口 ${outboundName(config.default_outbound, config)}。${usesProxy(config) ? '' : '当前配置未使用代理订阅。'}`
       : phase === 'unknown'
         ? '暂时无法读取 Windows 服务状态。为避免重复启动或误判关闭，请先重新检查。'
         : phase === 'degraded'
@@ -554,8 +889,8 @@
         : phase === 'standby'
           ? 'Windows 保持原始路由；后台节点核心仅监听本机回环，可更新订阅并测试当前已有节点。'
         : dirty
-          ? `当前网络保持 Windows 原始路由。下次开启将使用：${effectiveConfigSummary(config, selectedMode)}；除首页当前流量模式外，高级分流未保存草稿不会自动生效。`
-          : `当前网络保持 Windows 原始路由。下次开启将使用：${effectiveConfigSummary(config, selectedMode)}。`);
+          ? `当前网络保持 Windows 原始路由。下次开启将使用：${effectiveConfigSummary(config, shownTraffic, shownCapture)}；除首页当前流量模式与接管方式外，高级分流未保存草稿不会自动生效。`
+          : `当前网络保持 Windows 原始路由。下次开启将使用：${effectiveConfigSummary(config, shownTraffic, shownCapture)}。`);
 
     const draftNotice = byId('proxy-draft-notice');
     draftNotice?.classList.toggle('hidden', !dirty);
@@ -583,26 +918,46 @@
 
     setText('proxy-provider-name', provider?.name || '尚未配置');
     setText('proxy-provider-meta', providers.length
-      ? `${provider?.selection_mode === 'manual' ? '手动节点' : '自动优选'} · ${providers.length} 个已启用订阅` : '前往添加订阅');
-    setText('proxy-node-name', provider?.selection_mode === 'manual'
-      ? targetNode?.display_name || provider.selected_node || '尚未选择'
-      : provider ? '自动优选' : '等待选择');
-    setText('proxy-node-delay', provider?.selection_mode === 'manual'
-      ? manualCurrent ? '当前使用' : targetNodeTestSummary(targetNode)
-      : running && node ? `${node.display_name || node.name} · 当前使用` : '启动后自动选择');
+      ? `${providerModeLabel(provider)} · ${providers.length} 个已启用订阅` : '前往添加订阅');
+    const outboundChoice = outboundChoiceOf(config, setup);
+    const outboundIcon = byId('proxy-outbound-icon');
+    if (outboundIcon) outboundIcon.innerHTML = OUTBOUND_ICONS[outboundChoice.kind] || OUTBOUND_ICONS.physical;
+    const outboundTrigger = byId('proxy-current-node');
+    outboundTrigger?.classList.toggle('is-block', outboundChoice.kind === 'block');
+    outboundTrigger?.classList.toggle('is-vpn', outboundChoice.kind === 'vpn');
     if (aggregate) {
       const manual = config.aggregate_selection?.mode === 'manual';
       setText('proxy-provider-name', '全部代理订阅');
       setText('proxy-provider-meta', `${manual ? '手动固定' : '订阅间自动选择'} · ${providers.length} 个已启用订阅`);
       setText('proxy-node-name', manual
-        ? `${provider?.name || '订阅不可用'} · ${config.aggregate_selection.node_name}` : '自动选择');
+        ? `全部订阅 · ${config.aggregate_selection.node_name}` : '全部代理订阅');
       setText('proxy-node-delay', manual ? manualCurrent ? '当前使用' : targetNodeTestSummary(targetNode)
         : running && node ? `${node.name} · 当前使用` : '启动后按各订阅策略择优');
+    } else if (defaultUsesProxy && provider) {
+      setText('proxy-node-name', provider.selection_mode === 'manual'
+        ? `${provider.name} · ${targetNode?.display_name || provider.selected_node || '尚未选择'}`
+        : `${provider.name} · 自动优选`);
+      setText('proxy-node-delay', provider.selection_mode === 'manual'
+        ? manualCurrent ? '当前使用' : targetNodeTestSummary(targetNode)
+        : running && node ? `${node.display_name || node.name} · 当前使用` : '启动后自动选择');
+    } else {
+      setText('proxy-node-name', outboundChoice.name);
+      const vpnExit = outboundChoice.kind === 'vpn'
+        ? (setup?.vpns || []).find(item => `vpn:${item.name}` === String(config.default_outbound))
+        : null;
+      setText('proxy-node-delay', outboundChoice.kind === 'physical' ? '不走代理'
+        : outboundChoice.kind === 'block' ? '未命中流量将被拒绝'
+        : vpnExit ? `Windows VPN · ${vpnExit.status === 'Connected' ? '已连接' : '未连接'}`
+        : '出口不可用，请重新选择');
     }
+    byId('btn-outbound-nodes')?.classList.toggle('hidden', !defaultUsesProxy);
     setText('proxy-provider-count', `${providers.length} 个`);
     setText('proxy-node-count', `${summary.visible || cache.total} 个`);
     setText('proxy-cache-state', cache.available ? `已保存 ${cache.total} 条缓存记录` : '尚无可用缓存');
     renderSubscriptionHealth(setup, provider);
+    const nodePool = dashboardNodePool(setup, groups, providers, selectedGroupId);
+    renderNodeQuality(nodePool);
+    renderTopNodes(nodePool, group, provider);
     setText('proxy-session-state', running ? '运行正常' : phase === 'degraded' ? '需要处理'
       : phase === 'standby' ? '节点核心待机' : '未启用');
     setText('proxy-config-state', config.enabled ? '已启用' : '未启用');
@@ -616,7 +971,9 @@
       : aggregate ? '全部代理订阅 · 出口偏好已保存' : provider ? `${provider.name} · 目标偏好已保存` : '等待配置订阅');
     byId('proxy-recent-delay')?.classList.toggle('on', !!node?.delay);
     byId('proxy-current-provider').disabled = busy;
-    byId('proxy-current-node').disabled = busy || !provider;
+    if (outboundApplying) setText('proxy-node-delay', '正在切换出口…');
+    outboundTrigger?.classList.toggle('applying', outboundApplying);
+    byId('proxy-current-node').disabled = busy || outboundApplying;
     syncNodeStats();
     reconcileTelemetry(running);
   }
@@ -633,7 +990,9 @@
       if (result?.ok === false) throw new Error(result.msg || message);
       window.RoutingWorkspace?.acceptApplyResult?.(result);
       void window.RoutingWorkspace?.refreshBackground?.(true);
-      toast({ ok: true, msg: result.msg || message });
+      const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+      toast({ ok: true, tone: warnings.length ? 'warning' : 'success',
+        msg: [result.msg || message, ...warnings].join('；') });
       return true;
     } catch (error) {
       const detail = typeof friendlyError === 'function' ? friendlyError(error) : String(error);
@@ -686,7 +1045,7 @@
       openSubscriptions();
       return;
     }
-    const guard = usesProxy(config) ? selectionGuard(cachedSetup, provider, targetGroup)
+    const guard = usesSubscriptionSelection(config) ? selectionGuard(cachedSetup, provider, targetGroup)
       : { valid: true, reason: '' };
     if (nextEnabled && !guard.valid) {
       toast({ ok: false, tone: 'warning', msg: guard.reason });
@@ -695,6 +1054,16 @@
       return;
     }
     const repairing = phase === 'degraded' && nextEnabled;
+    const targetCapture = nextEnabled ? (selectedCapture || config.capture_mode || 'system-proxy') : config.capture_mode;
+    const targetMode = nextEnabled ? (selectedMode || config.traffic_mode || 'rule') : config.traffic_mode;
+    if (nextEnabled && targetCapture === 'tun') {
+      const conflicts = cachedSetup.tun_conflicts || [];
+      if (conflicts.length) {
+        const names = [...new Set(conflicts.map(item => item.name).filter(Boolean))].join('、');
+        toast({ ok: false, tone: 'warning', msg: `检测到其他 TUN 正在承载默认路由：${names}，请先关闭对应客户端的 TUN 模式` });
+        return;
+      }
+    }
     const nativeServiceReady = cachedStatus.installed
       && cachedStatus.service_backend === 'native'
       && !cachedStatus.service_update_required;
@@ -703,18 +1072,18 @@
     const needsUac = nextEnabled ? !nativeServiceReady
       : cachedStatus.service_backend === 'legacy';
     const draftNotice = nextEnabled && cached.dirty
-      ? '高级分流仍有未保存草稿。除首页当前流量模式外，本次不会带入这些草稿；如需应用草稿，请先取消并到高级分流保存。'
+      ? '高级分流仍有未保存草稿。除首页当前流量模式与接管方式外，本次不会带入这些草稿；如需应用草稿，请先取消并到高级分流保存。'
       : '';
     const needsConfirmation = nextEnabled
-      ? !nativeServiceReady || config.capture_mode === 'tun' || cached.dirty || repairing
+      ? !nativeServiceReady || targetCapture === 'tun' || cached.dirty || repairing
       : needsUac;
-    const directNotice = nextEnabled && !runtimeUsesProxy(config)
-      ? `注意：当前默认出口为「${outboundName(config.default_outbound)}」且规则未使用代理订阅，开启后系统流量仍将直连；如需走代理，请先在高级分流调整默认出口或规则。`
+    const directNotice = nextEnabled && !usesProxy({ ...config, traffic_mode: targetMode })
+      ? `当前默认出口为「${outboundName(config.default_outbound, config)}」，本次配置未使用代理订阅；如需走代理，请先在高级分流调整默认出口或规则。`
       : '';
     const confirmed = !needsConfirmation || await confirmAction({
       title: nextEnabled ? (repairing ? '修复网络代理' : '开启网络代理') : '关闭网络代理',
       message: nextEnabled
-        ? `${repairing ? '将重新检查并修复代理服务' : config.capture_mode === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, selectedMode)}。${draftNotice}${directNotice}确认后会自动检查节点和网络，失败会恢复原设置。${config.capture_mode === 'tun' ? '请先关闭其他代理软件的 TUN 模式和 Windows 系统代理。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
+        ? `${repairing ? '将重新检查并修复代理服务' : targetCapture === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, targetMode, targetCapture)}。${draftNotice}${directNotice}确认后会自动检查节点和网络，失败会恢复原设置。${targetCapture === 'tun' ? '请先关闭其他代理软件的 TUN 模式和 Windows 系统代理。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
         : needsUac
           ? '将停止并迁移旧版 Mihomo TUN 服务，系统恢复使用 Windows 当前路由。该操作需要 UAC。'
           : fastToggleReady
@@ -722,42 +1091,82 @@
             : '将停止 Mihomo 运行时并恢复 Windows 当前路由；路由服务会保留，以便下次免 UAC 启动。',
       confirmText: needsUac ? (nextEnabled ? '授权并开启' : '授权并关闭')
         : nextEnabled ? (repairing ? '确认修复' : '确认开启') : '确认关闭',
-      tone: 'notice',
+      tone: nextEnabled && targetCapture === 'tun' ? 'danger' : 'notice',
       kicker: nextEnabled ? '网络接管确认' : '停止网络接管',
     });
     if (!confirmed) return;
-    await applyConfig(
+    const ok = await applyConfig(
       config,
       nextEnabled ? (repairing ? '代理服务已修复' : '代理已开启') : '代理已关闭',
       nextEnabled ? '正在启动代理…' : '正在关闭代理…',
       nextEnabled ? '代理配置应用失败，请检查当前运行状态' : '代理关闭未完成',
       () => backend().set_routing_enabled(
-        nextEnabled, nextEnabled ? selectedMode : ''));
+        nextEnabled, nextEnabled ? selectedMode : '', nextEnabled ? selectedCapture : ''));
+    if (ok && nextEnabled) {
+      selectedMode = '';
+      selectedCapture = '';
+    }
   }
 
   async function changeMode(mode) {
-    if (busy || mode === selectedMode) return;
-    const previous = selectedMode;
-    setModeUi(mode);
+    if (busy) return;
     const state = routingState();
-    if (!state.runtimeStatus?.running) return;
-    const confirmed = await confirmAction({
-      title: mode === 'global' ? '切换到全局模式' : '切换到规则模式',
-      message: mode === 'global'
-        ? '全局模式会临时忽略域名分流规则，让所有流量走当前代理。切回规则模式后原规则仍保留。'
-        : '规则模式会恢复已保存的域名分流规则，未命中流量继续走当前代理。',
-      confirmText: '确认切换',
-    });
-    if (!confirmed) {
-      setModeUi(previous);
+    const config = state.appliedConfig || state.setup?.config;
+    if (!config || !state.loaded) return;
+    const running = !!state.runtimeStatus?.running;
+    const applied = config.traffic_mode === 'global' ? 'global' : 'rule';
+    if (!running) {
+      const shown = selectedMode || applied;
+      selectedMode = mode === applied || mode === shown ? '' : mode;
+      sync();
       return;
     }
-    const config = clone(state.appliedConfig || state.setup?.config);
-    config.traffic_mode = mode;
-    config.enabled = true;
-    const ok = await applyConfig(config, '代理模式已切换', '正在切换模式…', '代理模式切换未完成',
+    if (mode === applied) return;
+    // 规则/全局只改分流行为，运行中即时切换，无需确认打断。
+    await applyConfig(clone(config), mode === 'global' ? '已切换到全局模式' : '已切换到规则模式',
+      '正在切换模式…', '代理模式切换未完成',
       () => backend().set_routing_enabled(true, mode));
-    if (!ok) setModeUi(previous);
+  }
+
+  async function changeCapture(capture) {
+    if (busy) return;
+    const state = routingState();
+    const { setup, appliedConfig, runtimeStatus } = state;
+    const config = appliedConfig || setup?.config;
+    if (!config || !state.loaded) return;
+    const running = !!runtimeStatus?.running;
+    const status = runtimeStatus || setup?.status || {};
+    const applied = appliedCaptureMode(config, status, running);
+    const conflicts = setup?.tun_conflicts || [];
+    if (capture === 'tun' && conflicts.length && capture !== applied) {
+      const names = [...new Set(conflicts.map(item => item.name).filter(Boolean))].join('、');
+      toast({ ok: false, tone: 'warning', msg: `检测到其他 TUN 正在承载默认路由：${names}，请先关闭对应客户端的 TUN 模式` });
+      return;
+    }
+    if (!running) {
+      const shown = selectedCapture || applied;
+      selectedCapture = capture === applied || capture === shown ? '' : capture;
+      sync();
+      return;
+    }
+    if (capture === applied) return;
+    const confirmed = await confirmAction(capture === 'tun' ? {
+      title: '切换到 TUN 模式',
+      message: '将创建虚拟网卡接管系统全部流量（含不遵循系统代理的应用），并自动关闭 Windows 系统代理。切换过程需要重建网络配置，期间连接会短暂中断，失败会自动恢复原设置。切换前请确认其他代理软件的 TUN 模式已关闭；首次使用可能需要 Windows 管理员授权。',
+      confirmText: '授权并切换',
+      tone: 'danger',
+      kicker: '网络接管确认',
+    } : {
+      title: '切换到系统代理',
+      message: '将移除 TUN 虚拟网卡，恢复 Windows 系统代理接管。期间网络连接会短暂中断，完成后仅接管遵循系统代理的应用。',
+      confirmText: '确认切换',
+      tone: 'notice',
+      kicker: '网络接管确认',
+    });
+    if (!confirmed) return;
+    await applyConfig(clone(config), capture === 'tun' ? '已切换到 TUN 模式' : '已切换到系统代理',
+      '正在切换接管方式…', '接管方式切换未完成',
+      () => backend().set_routing_enabled(true, '', capture));
   }
 
   async function openNodes(groupId = '', origin = null) {
@@ -812,16 +1221,22 @@
     void goToPage('routing');
   }
 
-  function bindModeKeyboard(button) {
-    button.onkeydown = event => {
+  function changeSeg(tile) {
+    const seg = tile.closest('[data-proxy-seg]')?.dataset.proxySeg;
+    if (seg === 'capture') void changeCapture(tile.dataset.value);
+    else if (seg === 'traffic') void changeMode(tile.dataset.value);
+  }
+
+  function bindSegKeyboard(tile) {
+    tile.onkeydown = event => {
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
       event.preventDefault();
-      const buttons = [...document.querySelectorAll('[data-proxy-mode]')];
-      const index = buttons.indexOf(button);
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
-        : (index + (['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1) + buttons.length) % buttons.length;
-      buttons[next].focus();
-      changeMode(buttons[next].dataset.proxyMode);
+      const tiles = [...tile.closest('[data-proxy-seg]').querySelectorAll('.mode-tile')];
+      const index = tiles.indexOf(tile);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tiles.length - 1
+        : (index + (['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1) + tiles.length) % tiles.length;
+      tiles[next].focus();
+      changeSeg(tiles[next]);
     };
   }
 
@@ -836,8 +1251,50 @@
       finally { busy = false; sync(); }
     };
     byId('proxy-current-provider').onclick = openSubscriptions;
-    byId('proxy-current-node').onclick = () => openNodes(selectedGroupId);
+    byId('proxy-current-node').onclick = () => setOutboundOpen(!outboundOpen);
+    byId('btn-outbound-nodes').onclick = () => {
+      setOutboundOpen(false);
+      openNodes(selectedGroupId);
+    };
+    byId('btn-outbound-rules').onclick = () => {
+      setOutboundOpen(false);
+      void goToPage('routing');
+      setTimeout(() => window.RoutingWorkspace?.openTab?.('rules'), 0);
+    };
+    document.addEventListener('click', event => {
+      if (outboundOpen && !byId('outbound-switch')?.contains(event.target)) setOutboundOpen(false);
+    });
+    document.addEventListener('keydown', event => {
+      if (!outboundOpen) return;
+      const box = byId('outbound-options');
+      const count = box?.children.length || 0;
+      if (event.key === 'Escape') {
+        setOutboundOpen(false);
+        byId('proxy-current-node')?.focus();
+      } else if (event.key === 'ArrowDown' && count) {
+        outboundKbIndex = (outboundKbIndex + 1) % count;
+        markOutboundKb();
+      } else if (event.key === 'ArrowUp' && count) {
+        outboundKbIndex = (outboundKbIndex - 1 + count) % count;
+        markOutboundKb();
+      } else if (event.key === 'Home' && count) {
+        outboundKbIndex = 0;
+        markOutboundKb();
+      } else if (event.key === 'End' && count) {
+        outboundKbIndex = count - 1;
+        markOutboundKb();
+      } else if (event.key === 'Enter' && outboundKbIndex >= 0 && count) {
+        const target = box.children[outboundKbIndex];
+        if (target?.dataset.value) void changeDefaultOutbound(target.dataset.value);
+      } else {
+        return;
+      }
+      event.preventDefault();
+    });
+    window.addEventListener('resize', placeOutboundPop);
+    window.addEventListener('scroll', () => placeOutboundPop(), true);
     byId('btn-proxy-manage').onclick = openSubscriptions;
+    byId('btn-top-nodes-all').onclick = () => openNodes(selectedGroupId);
     byId('btn-proxy-subscriptions').onclick = openSubscriptions;
     byId('btn-proxy-nodes').onclick = () => openNodes(selectedGroupId);
     byId('btn-proxy-choose-node').onclick = () => {
@@ -849,9 +1306,9 @@
     byId('btn-proxy-review-draft').onclick = reviewRoutingDraft;
     byId('btn-proxy-operation-dismiss').onclick = () => setOperationNotice();
     byId('btn-proxy-nodes-back').onclick = leaveNodes;
-    document.querySelectorAll('[data-proxy-mode]').forEach(button => {
-      button.onclick = () => changeMode(button.dataset.proxyMode);
-      bindModeKeyboard(button);
+    document.querySelectorAll('.mode-tile').forEach(tile => {
+      tile.onclick = () => changeSeg(tile);
+      bindSegKeyboard(tile);
     });
     byId('routing-node-group')?.addEventListener('change', syncNodeStats);
     document.querySelector('#nav [data-page="proxy"]')?.addEventListener('click', () => {
@@ -872,6 +1329,7 @@
 
   window.ProxyWorkspace = {
     sync, openNodes, openSubscriptions, openHome, updateTelemetry, updateTelemetryState,
+    setOutboundOpen, changeDefaultOutbound, placeOutboundPop,
   };
   window.addEventListener('pywebviewready', bind);
 })();

@@ -6,6 +6,8 @@
 
 | 模块 | 关键词 | 代码路径 | 知识文件 |
 |---|---|---|---|
+| VPN 手工顺序 | 拖拽排序, vpn_order, 总览, 顺序保存 | ui/vpn_order.js, ui/app.js, core/config.py, core/config_maintenance.py, api.py | modules/CXVPNTools.md |
+| 业务域名独立代理出口 | ChatGPT, GitHub, 业务规则集, proxy_outbounds, business_rules, 固定节点, 排除域名, schema10 | core/routing_business.py, core/routing.py, core/config_maintenance.py, ui/routing_business.js, ui/routing.js, ui/proxy.js, ui/routing_activity.js | modules/业务域名独立代理出口.md |
 | 节点国家与地区识别 | 全球国家列表, 地区, 节点筛选, 地区搜索, 快捷筛选, 旗帜, ISO代码, OTHER, 智能优选 | ui/routing_regions.json, ui/routing_regions.js, ui/routing_nodes.js, ui/routing_region_picker.js, ui/routing.js, ui/style.css, core/routing_auto_policy.py, scripts/generate_routing_regions.py | modules/节点国家与地区识别.md |
 | 2FA 账号管理 | 2FA, TOTP, DPAPI, 二维码, cx2fa, 加密备份, Google Authenticator, otpauth-migration, 拖拽排序, 官方图标 | core/two_factor.py, core/two_factor_api.py, core/two_factor_backup.py, core/two_factor_qr.py, core/two_factor_migration.py, ui/two_factor.js, ui/two_factor_order.js, ui/two_factor_brands.js, ui/two_factor.css, ui/icons/brands/ | modules/2FA账号管理.md |
 | VPN 目标路由自动维护 | VPN, DNS, 首次访问, fake-IP, 路由租约, Named Pipe, 路由恢复, 核心定制, 未连接物理直连, TCP超时回退, physical_fallback, 实际出口, VPN服务器解析, 断网重连, 628 | core/routing.py, routing-service/src/vpn_route_os.rs, routing-service/src/vpn_routes.rs, routing-service/src/vpn_route_ipc.rs, routing-service/src/core_job.rs, patches/mihomo/, build_mihomo.py | modules/VPN目标路由自动维护.md |

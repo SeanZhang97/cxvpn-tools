@@ -24,6 +24,7 @@ DEFAULT = {
     },
     'phone': '',
     'vpn_name': '',
+    'vpn_order': [],
     'creds': {},
     'credential_status': {},
     'renew_hours': 7,
@@ -57,7 +58,7 @@ DEFAULT = {
     'vlm': {'base': '', 'key': '', 'model': ''},
     'codex_api': {'base_url': '', 'api_key': ''},
     'routing': {
-        'schema_version': 9,
+        'schema_version': 10,
         'enabled': False,
         'capture_mode': 'system-proxy',
         'traffic_mode': 'rule',
@@ -65,6 +66,8 @@ DEFAULT = {
         'proxy_strategy': 'url-test',
         'aggregate_selection': {'mode': 'auto', 'provider_id': '', 'node_name': ''},
         'proxy_providers': [],
+        'proxy_outbounds': [],
+        'business_rules': [],
         'default_outbound': 'physical',
         'builtin_rule_pack': 'cn-direct-v1',
         'system_proxy_bypass': {
@@ -145,8 +148,19 @@ def load():
     return cfg
 
 
+def validate_vpn_order(order):
+    if not isinstance(order, list) or len(order) > 1000:
+        raise ValueError('VPN 顺序必须是最多 1000 项的名称列表')
+    if any(not isinstance(name, str) or not name.strip() or len(name) > 256
+           for name in order):
+        raise ValueError('VPN 顺序包含无效名称')
+    if len({name.casefold() for name in order}) != len(order):
+        raise ValueError('VPN 顺序包含重复名称')
+
+
 def save(cfg):
     from core import subscription_store
+    validate_vpn_order(cfg.get('vpn_order', []))
     value = copy.deepcopy(cfg)
     root = os.path.dirname(CFG_PATH)
     providers = (value.get('routing') or {}).get('proxy_providers') or []

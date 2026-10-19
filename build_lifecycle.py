@@ -17,13 +17,17 @@ from core import app_paths
 
 APP_PROCESS_NAMES = ('CXVPNTools', 'CX VPN TOOLS', 'CXVPN管理器')
 STATE_BACKUP_LIMIT = 5
+GRACEFUL_SHUTDOWN_EVENT = r'Local\CXVPNTools.Shutdown.v1'
+GRACEFUL_EXIT_WAIT_SECONDS = 8
+PROCESS_EXIT_WAIT_SECONDS = 15
+POWERSHELL_TIMEOUT_SECONDS = 45
 
 
 class BuildLifecycleError(RuntimeError):
     pass
 
 
-def _powershell(script, timeout=20):
+def _powershell(script, timeout=POWERSHELL_TIMEOUT_SECONDS):
     encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
     completed = subprocess.run(
         ['powershell.exe', '-NoProfile', '-NonInteractive',
@@ -52,10 +56,29 @@ $roots = @($targets | ForEach-Object {{
     if ($_.Path) {{ Split-Path -LiteralPath $_.Path -Parent }}
   }} catch {{}}
 }} | Sort-Object -Unique)
-foreach ($target in $targets) {{
-  Stop-Process -Id $target.Id -Force -ErrorAction Stop
+if ($targets.Count -gt 0) {{
+  # 先请求优雅退出：运行实例会自行清理托盘图标再退出，避免强杀留下残影。
+  $shutdown = $null
+  try {{
+    $shutdown = [System.Threading.EventWaitHandle]::OpenExisting('{GRACEFUL_SHUTDOWN_EVENT}')
+  }} catch {{}}
+  if ($shutdown) {{
+    try {{ [void]$shutdown.Set() }} catch {{}}
+    [Console]::Out.WriteLine('CXVPN_GRACEFUL_SIGNAL=1')
+    $graceful = [DateTime]::UtcNow.AddSeconds({GRACEFUL_EXIT_WAIT_SECONDS})
+    do {{
+      $left = @(Get-Process -ErrorAction SilentlyContinue |
+        Where-Object {{ $names -contains $_.ProcessName }})
+      if ($left.Count -eq 0) {{ break }}
+      Start-Sleep -Milliseconds 200
+    }} while ([DateTime]::UtcNow -lt $graceful)
+  }}
 }}
-$deadline = [DateTime]::UtcNow.AddSeconds(15)
+foreach ($remaining in @(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object {{ $names -contains $_.ProcessName }})) {{
+  Stop-Process -Id $remaining.Id -Force -ErrorAction Stop
+}}
+$deadline = [DateTime]::UtcNow.AddSeconds({PROCESS_EXIT_WAIT_SECONDS})
 do {{
   $remaining = @(Get-Process -ErrorAction SilentlyContinue |
     Where-Object {{ $names -contains $_.ProcessName }})
@@ -72,9 +95,13 @@ foreach ($root in $roots) {{
 }}
 exit 0
 """
-    print('[build] 正在关闭 CXVPNTools 新旧运行实例，等待期限 15 秒')
-    output = _powershell(script, timeout=20)
-    print('[build] CXVPNTools 运行实例已全部退出')
+    print('[build] 正在关闭 CXVPNTools 旧版本实例，等待期限 15 秒')
+    output = _powershell(script)
+    graceful = any(line.strip() == 'CXVPN_GRACEFUL_SIGNAL=1'
+                   for line in (output.splitlines()
+                                if isinstance(output, str) else []))
+    print('[build] CXVPNTools 运行实例已全部退出%s' % (
+        '（已响应优雅关闭信号）' if graceful else '（优雅关闭不可用，已强制结束）'))
     prefix = 'CXVPN_RUNNING_ROOT='
     return [
         os.path.abspath(line[len(prefix):].strip())

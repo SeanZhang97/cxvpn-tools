@@ -77,7 +77,7 @@ class RoutingUpdateWorker:
             item = providers[index]
             key = (item['id'], subscription_store.url_fingerprint(item))
             attempt = self._attempts.get(key, {})
-            if (item['enabled'] and item['auto_update'] and now >= attempt.get('next', 0)
+            if (item['enabled'] and item['url'] and item['auto_update'] and now >= attempt.get('next', 0)
                     and now - subscription_store.cache_status(item).get('updated_at', 0) >= item['interval']):
                 provider = item
                 self._cursor = (index + 1) % len(providers)

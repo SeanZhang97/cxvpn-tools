@@ -186,5 +186,127 @@ class RoutingCommitTests(unittest.TestCase):
         self.assertTrue(
             instance.routing.apply.call_args.kwargs['allow_fast_toggle'])
 
+    @patch('api.routing.subscription_store.prune_cache')
+    @patch('api.cfgmod.save')
+    def test_home_toggle_stages_capture_mode_only_when_enabling(
+            self, _save, _prune):
+        instance = self.make_api()
+        instance.cfg['routing'] = {
+            'enabled': False,
+            'default_outbound': 'physical',
+            'schema_version': 7,
+            'capture_mode': 'system-proxy',
+            'traffic_mode': 'global',
+            'controller_port': 19090,
+            'controller_secret': 'stable-controller-secret',
+        }
+        applied = {
+            'enabled': True,
+            'default_outbound': 'physical',
+            'traffic_mode': 'global',
+            'capture_mode': 'tun',
+            'proxy_providers': [],
+        }
+        instance.routing.apply.return_value = {
+            'ok': True, 'config': applied, 'status': {}, 'warnings': [],
+            'standby_pending': False,
+        }
+
+        result = instance.set_routing_enabled(True, '', 'tun')
+
+        self.assertTrue(result['ok'])
+        submitted = instance.routing.apply.call_args.args[0]
+        self.assertEqual(submitted['capture_mode'], 'tun')
+        self.assertEqual(submitted['traffic_mode'], 'global')
+        self.assertFalse(
+            instance.routing.apply.call_args.kwargs['allow_fast_toggle'])
+
+    @patch('api.routing.subscription_store.prune_cache')
+    @patch('api.cfgmod.save')
+    def test_home_toggle_rejects_invalid_capture_mode(self, _save, _prune):
+        instance = self.make_api()
+
+        result = instance.set_routing_enabled(True, 'rule', 'bridge')
+
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['msg'], '接管方式无效')
+        instance.routing.apply.assert_not_called()
+
+    @patch('api.routing.subscription_store.prune_cache')
+    @patch('api.cfgmod.save')
+    def test_home_toggle_disable_ignores_staged_modes(self, _save, _prune):
+        instance = self.make_api()
+        instance.cfg['routing'] = {
+            'enabled': True,
+            'default_outbound': 'physical',
+            'schema_version': 7,
+            'capture_mode': 'system-proxy',
+            'traffic_mode': 'rule',
+            'controller_port': 19090,
+            'controller_secret': 'stable-controller-secret',
+        }
+        applied = {
+            'enabled': False,
+            'default_outbound': 'physical',
+            'proxy_providers': [],
+        }
+        instance.routing.apply.return_value = {
+            'ok': True, 'config': applied, 'status': {}, 'warnings': [],
+            'standby_pending': False,
+        }
+
+        result = instance.set_routing_enabled(False, 'global', 'tun')
+
+        self.assertTrue(result['ok'])
+        submitted = instance.routing.apply.call_args.args[0]
+        self.assertFalse(submitted['enabled'])
+        self.assertEqual(submitted['capture_mode'], 'system-proxy')
+        self.assertEqual(submitted['traffic_mode'], 'rule')
+
+    @patch('api.routing.subscription_store.prune_cache')
+    @patch('api.cfgmod.save')
+    def test_default_outbound_switch_uses_latest_backend_config(self, _save, _prune):
+        instance = self.make_api()
+        instance.cfg['routing'] = {
+            'enabled': True,
+            'default_outbound': 'physical',
+            'schema_version': 7,
+            'capture_mode': 'system-proxy',
+            'traffic_mode': 'rule',
+            'controller_port': 19090,
+            'controller_secret': 'stable-controller-secret',
+            'proxy_providers': [{'id': 'alpha', 'enabled': True}],
+        }
+        applied = {
+            'enabled': True,
+            'default_outbound': 'proxy:alpha',
+            'traffic_mode': 'rule',
+            'proxy_providers': [{'id': 'alpha', 'enabled': True}],
+        }
+        instance.routing.apply.return_value = {
+            'ok': True, 'config': applied, 'status': {}, 'warnings': [],
+            'standby_pending': False,
+        }
+
+        result = instance.set_routing_default_outbound('proxy:alpha')
+
+        self.assertTrue(result['ok'])
+        submitted = instance.routing.apply.call_args.args[0]
+        self.assertEqual(submitted['default_outbound'], 'proxy:alpha')
+        self.assertTrue(submitted['enabled'])
+        self.assertEqual(submitted['traffic_mode'], 'rule')
+        self.assertEqual(submitted['capture_mode'], 'system-proxy')
+
+    @patch('api.routing.subscription_store.prune_cache')
+    @patch('api.cfgmod.save')
+    def test_default_outbound_switch_rejects_invalid_value(self, _save, _prune):
+        instance = self.make_api()
+
+        result = instance.set_routing_default_outbound('outbound: biz')
+
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['msg'], '默认出口无效')
+        instance.routing.apply.assert_not_called()
+
 if __name__ == '__main__':
     unittest.main()

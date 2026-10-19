@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CXVPNTools</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="vendor/uPlot.min.css">
 <link rel="stylesheet" href="routing_activity.css">
 <link rel="stylesheet" href="routing_rules.css">
 <link rel="stylesheet" href="two_factor.css">
@@ -316,6 +317,11 @@
               <span class="proxy-state-kicker">系统流量</span>
               <h3 id="proxy-state-title" aria-live="polite" aria-atomic="true">代理未开启</h3>
               <p id="proxy-state-detail">当前网络保持 Windows 原始路由</p>
+              <div class="hero-mode-chips">
+                <span class="hero-chip" id="hero-chip-capture">系统代理</span>
+                <span class="hero-chip" id="hero-chip-traffic">规则模式</span>
+                <span class="hero-chip" id="hero-chip-outbound">出口 物理网络</span>
+              </div>
               <div class="proxy-connect-actions">
                 <button id="btn-proxy-toggle" class="btn primary proxy-toggle" type="button" disabled>正在读取配置…</button>
                 <button id="btn-proxy-disable" class="btn ghost proxy-disable hidden" type="button">关闭配置</button>
@@ -325,7 +331,7 @@
                 <button id="btn-proxy-operation-dismiss" type="button" aria-label="关闭代理操作提示">关闭</button>
               </div>
               <div id="proxy-draft-notice" class="proxy-draft-notice hidden" role="status">
-                <span><strong>高级分流有未保存草稿</strong><small>首页以已保存配置为基线；当前流量模式会在开启时应用，其他草稿不会自动包含。</small></span>
+                <span><strong>高级分流有未保存草稿</strong><small>首页以已保存配置为基线；当前流量模式与接管方式会在开启时应用，其他草稿不会自动包含。</small></span>
                 <button id="btn-proxy-review-draft" type="button">查看草稿</button>
               </div>
               <div id="proxy-selection-warning" class="proxy-selection-warning hidden" role="alert">
@@ -338,10 +344,85 @@
             <button id="proxy-current-provider" class="proxy-current-row" type="button">
               <span class="proxy-current-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></span><span class="proxy-current-copy"><small>当前订阅</small><strong id="proxy-provider-name">尚未配置</strong></span><em id="proxy-provider-meta">前往添加订阅</em>
             </button>
-            <button id="proxy-current-node" class="proxy-current-row" type="button">
-              <span class="proxy-current-icon proxy-current-icon-node" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span><span class="proxy-current-copy"><small>当前节点</small><strong id="proxy-node-name">等待选择</strong></span><em id="proxy-node-delay">查看节点</em>
-            </button>
+            <div class="outbound-switch" id="outbound-switch">
+              <button id="proxy-current-node" class="proxy-current-row outbound-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="outbound-pop">
+                <span class="proxy-current-icon proxy-current-icon-node" id="proxy-outbound-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span><span class="proxy-current-copy"><small>默认出口</small><strong id="proxy-node-name">等待选择</strong></span><em id="proxy-node-delay">查看节点</em>
+                <span class="ob-chev" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+                <span class="ob-spin" aria-hidden="true"></span>
+              </button>
+              <div class="outbound-pop hidden" id="outbound-pop" role="listbox" aria-label="选择默认出口">
+                <div class="ob-pop-head"><b>快速切换默认出口</b><small>选择后立即应用</small></div>
+                <div class="ob-opts" id="outbound-options"></div>
+                <div class="ob-pop-foot">
+                  <button type="button" id="btn-outbound-nodes">节点选择 →</button>
+                  <button type="button" id="btn-outbound-rules">高级分流 →</button>
+                </div>
+              </div>
+            </div>
           </div>
+        </section>
+
+        <section class="mode-console" aria-labelledby="mode-console-title">
+          <header>
+            <h3 id="mode-console-title" class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5.5" cy="5.5" r="2"/><circle cx="18.5" cy="7.5" r="2"/><circle cx="18.5" cy="17.5" r="2"/><path d="M7.5 5.5h3a5 5 0 0 1 5 5v5a2 2 0 0 0 2 2"/><path d="m13 9 2.5 1.5L13 12"/></svg></span><span>接管与策略</span></h3>
+            <span class="mode-badge" id="proxy-mode-badge" role="status" aria-live="polite">未启用</span>
+          </header>
+          <div class="mode-group">
+            <div class="mode-group-head">
+              <small>接管方式</small>
+              <span class="mode-group-hint">决定系统流量如何进入代理核心</span>
+            </div>
+            <div class="mode-tiles" role="radiogroup" aria-label="接管方式" data-proxy-seg="capture">
+              <button type="button" class="mode-tile" data-value="system-proxy" role="radio" aria-checked="true">
+                <span class="tile-check" aria-hidden="true">✓</span>
+                <span class="tile-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="12" rx="2"/><path d="M8.5 20h7M12 16v4M7 8.5h10M7 12h6"/></svg></span>
+                <span class="tile-text">
+                  <strong>系统代理 <em class="badge recommend">推荐</em></strong>
+                  <small>接管遵循 Windows 系统代理的应用，兼容最佳，支持免授权秒级开关</small>
+                </span>
+              </button>
+              <button type="button" class="mode-tile" data-value="tun" role="radio" aria-checked="false">
+                <span class="tile-check" aria-hidden="true">✓</span>
+                <span class="tile-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1.5v3M15 1.5v3M9 19.5v3M15 19.5v3M1.5 9h3M1.5 15h3M19.5 9h3M19.5 15h3"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/></svg></span>
+                <span class="tile-text">
+                  <strong>TUN 模式 <em class="badge advanced">高级</em></strong>
+                  <small>虚拟网卡接管全部系统流量，覆盖游戏与 UDP 应用，需要管理员授权</small>
+                </span>
+              </button>
+            </div>
+            <div class="mode-risk hidden" id="proxy-tun-notice" role="status">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 9.5v4.5M12 17.5h.01"/></svg>
+              <span id="proxy-tun-notice-text"></span>
+            </div>
+          </div>
+          <div class="mode-group">
+            <div class="mode-group-head">
+              <small>流量策略</small>
+              <span class="mode-group-hint">决定进入代理核心后的分流方式，运行中可即时切换</span>
+            </div>
+            <div class="mode-tiles" role="radiogroup" aria-label="流量策略" data-proxy-seg="traffic">
+              <button type="button" class="mode-tile" data-value="rule" role="radio" aria-checked="true">
+                <span class="tile-check" aria-hidden="true">✓</span>
+                <span class="tile-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="11" cy="18" r="2"/></svg></span>
+                <span class="tile-text">
+                  <strong>规则模式</strong>
+                  <small>按域名分流规则匹配，未命中流量走当前代理，日常推荐</small>
+                </span>
+              </button>
+              <button type="button" class="mode-tile" data-value="global" role="radio" aria-checked="false">
+                <span class="tile-check" aria-hidden="true">✓</span>
+                <span class="tile-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.8 12h16.4M12 3.5c2.2 2.4 3.3 5.2 3.3 8.5s-1.1 6.1-3.3 8.5c-2.2-2.4-3.3-5.2-3.3-8.5S9.8 5.9 12 3.5Z"/></svg></span>
+                <span class="tile-text">
+                  <strong>全局模式</strong>
+                  <small>全部流量走当前代理，临时忽略域名分流规则，可随时切回</small>
+                </span>
+              </button>
+            </div>
+          </div>
+          <footer class="mode-strip">
+            <span class="strip-state"><span class="strip-dot" id="proxy-strip-dot"></span><span id="proxy-strip-text">已保存：系统代理 · 规则模式</span></span>
+            <span id="proxy-rule-composition">0 user / 0 business / 0 builtin / MATCH</span>
+          </footer>
         </section>
 
         <div class="proxy-dashboard-grid">
@@ -352,48 +433,33 @@
               <div><dt><span class="proxy-summary-icon proxy-summary-icon-node" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/></svg></span>可选节点</dt><dd id="proxy-node-count">0 个</dd></div>
               <div><dt><span class="proxy-summary-icon proxy-summary-icon-cache" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg></span>缓存状态</dt><dd id="proxy-cache-state">尚无缓存</dd></div>
             </dl>
-            <div id="proxy-subscription-health" class="proxy-subscription-health hidden" role="status" aria-live="polite"></div>
-          </section>
-          <section class="proxy-mode-card">
-            <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5.5" cy="5.5" r="2"/><circle cx="18.5" cy="7.5" r="2"/><circle cx="18.5" cy="17.5" r="2"/><path d="M7.5 5.5h3a5 5 0 0 1 5 5v5a2 2 0 0 0 2 2"/><path d="m13 9 2.5 1.5L13 12"/></svg></span><span>流量策略</span></h3><span id="proxy-mode-status">规则模式</span></header>
-            <div class="proxy-mode-switch" role="radiogroup" aria-label="代理连接模式">
-              <button type="button" class="active" data-proxy-mode="rule" role="radio" aria-checked="true">规则模式</button>
-              <button type="button" data-proxy-mode="global" role="radio" aria-checked="false">全局模式</button>
+            <div class="node-quality hidden" id="node-quality">
+              <div class="node-quality-head"><small>节点质量</small><span id="node-quality-summary">--</span></div>
+              <div class="quality-bar" role="img" aria-label="节点延迟质量分布" id="node-quality-bar"></div>
+              <div class="quality-legend" id="node-quality-legend"></div>
             </div>
-            <p id="proxy-mode-detail">按域名分流规则匹配，未命中流量走当前代理。</p>
-            <dl class="proxy-summary-list proxy-routing-dimensions">
-              <div><dt><span class="proxy-dimension-icon proxy-dimension-icon-capture" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="13" rx="2"/><path d="M8 20h8M12 17v3M8 8h8M8 12h4"/></svg></span>系统接管</dt><dd id="proxy-capture-status">系统代理</dd></div>
-              <div><dt><span class="proxy-dimension-icon proxy-dimension-icon-outbound" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><path d="M7.5 12H19M14 7l5 5-5 5"/></svg></span>默认出口</dt><dd id="proxy-default-outbound">物理网络</dd></div>
-              <div><dt><span class="proxy-dimension-icon proxy-dimension-icon-rules" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="11" cy="18" r="2"/></svg></span>规则构成</dt><dd id="proxy-rule-composition">0 / 0 / 1</dd></div>
-            </dl>
+            <div class="top-nodes hidden" id="top-nodes">
+              <div class="top-nodes-head"><small>优选节点</small><button type="button" id="btn-top-nodes-all">查看全部</button></div>
+              <div id="top-nodes-list"></div>
+            </div>
+            <div id="proxy-subscription-health" class="proxy-subscription-health hidden" role="status" aria-live="polite"></div>
           </section>
           <section class="proxy-traffic-card">
             <header><h3 class="card-title-with-icon"><span class="card-icon card-icon-activity" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l2.1-6.5L13 18l2.3-6H21"/></svg></span><span>服务状态</span></h3><div class="proxy-status-pair" role="status" aria-live="polite" aria-atomic="true"><span id="proxy-session-state">正在检查</span><span id="proxy-stream-state" class="proxy-stream-state">等待服务</span></div></header>
             <div class="proxy-rate-panel" aria-label="过去 60 秒实时速率趋势">
               <div class="proxy-rate-panel-head">
                 <div class="proxy-rate-heading"><span class="proxy-rate-pulse" aria-hidden="true"></span><div><strong>实时速率</strong><small>过去 60 秒</small></div></div>
-                <div class="proxy-rate-legend" aria-hidden="true"><span class="proxy-rate-legend-up">上行</span><span class="proxy-rate-legend-down">下行</span></div>
+                <div class="proxy-rate-legend" aria-hidden="true"><span class="lg-up"><i></i>上行 <strong id="proxy-live-up">0 B/s</strong></span><span class="lg-down"><i></i>下行 <strong id="proxy-live-down">0 B/s</strong></span></div>
               </div>
-              <div class="proxy-rate-chart-wrap">
-              <svg id="proxy-rate-chart" class="proxy-rate-chart" viewBox="0 0 360 104" preserveAspectRatio="none" role="img" aria-label="实时上行与下行速率趋势图">
-                <path class="proxy-rate-grid" d="M0 13.5H360M0 39.5H360M0 65.5H360M0 91.5H360"/>
-                <path id="proxy-upload-chart-fill" class="proxy-rate-area proxy-rate-area-up" d="M0 92L360 92Z"/>
-                <path id="proxy-download-chart-fill" class="proxy-rate-area proxy-rate-area-down" d="M0 92L360 92Z"/>
-                <path id="proxy-upload-chart" class="proxy-rate-line proxy-rate-line-up" d="M0 92L360 92"/>
-                <path id="proxy-download-chart" class="proxy-rate-line proxy-rate-line-down" d="M0 92L360 92"/>
-                <g id="proxy-rate-hover-layer" class="proxy-rate-hover-layer" aria-hidden="true">
-                  <line id="proxy-rate-crosshair" class="proxy-rate-crosshair" x1="0" y1="8" x2="0" y2="94"/>
-                  <circle id="proxy-rate-hover-up" class="proxy-rate-hover-dot proxy-rate-hover-dot-up" cx="0" cy="92" r="3.5"/>
-                  <circle id="proxy-rate-hover-down" class="proxy-rate-hover-dot proxy-rate-hover-dot-down" cx="0" cy="92" r="3.5"/>
-                  <rect id="proxy-rate-hover-target" class="proxy-rate-hover-target" x="0" y="0" width="360" height="104" tabindex="0" role="application" aria-label="悬停查看当前节点的历史速率"/>
-                </g>
-              </svg>
-              <div id="proxy-rate-tooltip" class="proxy-rate-tooltip hidden" role="tooltip" aria-hidden="true">
-                <time id="proxy-rate-tooltip-time"></time>
-                <strong id="proxy-rate-tooltip-node">当前节点</strong>
-                <span class="proxy-rate-tooltip-up"><i aria-hidden="true"></i><span id="proxy-rate-tooltip-up-value">上行 0 B/s</span></span>
-                <span class="proxy-rate-tooltip-down"><i aria-hidden="true"></i><span id="proxy-rate-tooltip-down-value">下行 0 B/s</span></span>
-              </div>
+              <div class="proxy-rate-chart-wrap" id="proxy-rate-chart-wrap">
+                <div id="proxy-rate-chart" class="proxy-rate-chart" tabindex="0" role="application" aria-label="实时上行与下行速率趋势图，聚焦后按 Escape 关闭详情"></div>
+                <div class="proxy-rate-empty" id="proxy-rate-empty">代理未开启 · 启动后显示实时速率</div>
+                <div id="proxy-rate-tooltip" class="proxy-rate-tooltip" role="tooltip" aria-hidden="true">
+                  <time id="proxy-rate-tooltip-time"></time>
+                  <strong id="proxy-rate-tooltip-node">当前节点</strong>
+                  <span class="tt-row tt-up"><i aria-hidden="true"></i><span id="proxy-rate-tooltip-up-value">上行 0 B/s</span><em>UP</em></span>
+                  <span class="tt-row tt-down"><i aria-hidden="true"></i><span id="proxy-rate-tooltip-down-value">下行 0 B/s</span><em>DOWN</em></span>
+                </div>
               </div>
             </div>
             <div class="proxy-traffic-values">
@@ -639,6 +705,19 @@
       </div>
 
       <div id="routing-panel-rules" class="routing-tab-panel" role="tabpanel" aria-labelledby="routing-tab-rules" aria-hidden="true" data-routing-panel="rules">
+        <section class="card business-section">
+          <div class="routing-rules-head"><div><h3>代理出口</h3><p>为不同业务固定节点，不跟随首页选点；节点失效时拒绝连接。</p></div><button id="btn-business-outbound-add" class="btn ghost" type="button">添加出口</button></div>
+          <div id="routing-business-outbounds"></div>
+          <p id="business-outbounds-empty" class="business-empty">尚无代理出口。启用订阅并获取节点后，点击“添加出口”。</p>
+        </section>
+        <section class="card business-section">
+          <div class="routing-rules-head"><div><h3>业务域名规则集</h3><p>选择业务，再指定代理出口；按从上到下的顺序匹配。</p></div></div>
+          <div id="business-template-tools" class="business-actions business-template-tools"></div>
+          <p id="business-mode-warning" class="business-mode-warning" role="status"></p>
+          <div id="routing-business-sets"></div>
+          <p id="business-sets-empty" class="business-empty">先创建代理出口，再添加 ChatGPT、GitHub 或自定义规则集。</p>
+          <details class="business-help"><summary>规则优先级与模板范围</summary><p>安全绕过、用户逐条规则优先于业务规则集。修改后点击“保存并应用”。模板仅覆盖主要域名，可直接编辑；模板更新不会覆盖已添加的规则集。</p><p>ChatGPT 包含 OpenAI API、关联入口及部分登录、验证、语音、CDN 和支付主机；共享主机也会影响其他网站。不保证完整支付或纯 IP/UDP 语音覆盖，不包含 Azure 动态通配域名。GitHub 不保证覆盖 Copilot 等扩展服务，系统代理无法自动接管 Git SSH。</p></details>
+        </section>
         <section class="card routing-default-card">
           <div class="routing-rules-head"><div><h3 class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 4 4h-1"/></svg></span><span>默认出口与命中测试</span></h3><p>规则从上到下匹配；未命中时使用默认出口。仅支持域名，不支持 URL 路径。</p></div></div>
           <div class="routing-rule-tools">
@@ -1231,13 +1310,16 @@
 </div>
 <div id="otp-menu" class="otp-menu hidden" role="menu" aria-label="账号操作"><button type="button" data-otp-action="edit" role="menuitem">编辑账号</button><button type="button" data-otp-action="delete" role="menuitem">删除账号</button></div>
 <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+<script src="vpn_order.js"></script>
 <script src="app.js"></script>
 <script src="routing_regions.js"></script>
 <script src="routing_nodes.js"></script>
 <script src="routing_region_picker.js"></script>
 <script src="routing_telemetry.js"></script>
 <script src="routing_workspace.js"></script>
+<script src="routing_business.js"></script>
 <script src="routing.js"></script>
+<script src="vendor/uPlot.iife.min.js"></script>
 <script src="proxy.js"></script>
 <script src="routing_activity.js"></script>
   <script src="two_factor_brands.js"></script>
