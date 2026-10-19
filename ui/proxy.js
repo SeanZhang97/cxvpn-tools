@@ -331,8 +331,18 @@
     if (empty) {
       empty.classList.toggle('hidden', has);
       if (!has) {
-        empty.textContent = telemetryState.phase === 'connected'
-          ? '正在等待实时速率数据…' : '代理未开启 · 启动后显示实时速率';
+        const state = routingState();
+        const config = state.appliedConfig || state.setup?.config;
+        const phase = servicePhase(config, state.runtimeStatus || state.setup?.status || {});
+        const messages = {
+          connecting: '正在连接实时流量通道…',
+          reconnecting: '实时流量通道重连中…',
+        };
+        empty.textContent = phase === 'running'
+          ? messages[telemetryState.phase] || '正在等待实时速率数据…'
+          : phase === 'unknown' ? '服务状态未知 · 暂无实时速率'
+          : phase === 'degraded' ? '代理尚未就绪 · 暂无实时速率'
+          : '代理未开启 · 启动后显示实时速率';
       }
     }
     if (!chart) return;
@@ -382,8 +392,12 @@
     renderRateChart();
     const state = byId('proxy-stream-state');
     if (!state) return;
+    const snapshot = routingState();
+    const running = servicePhase(snapshot.appliedConfig || snapshot.setup?.config,
+      snapshot.runtimeStatus || snapshot.setup?.status || {}) === 'running';
     const labels = {
-      connected: '实时流量', connecting: '正在连接', reconnecting: '重连中', idle: '等待服务',
+      connected: '实时流量', connecting: '正在连接', reconnecting: '重连中',
+      idle: running ? '等待流量数据' : '等待服务',
     };
     state.textContent = labels[telemetryState.phase] || '等待服务';
     state.classList.toggle('connected', telemetryState.phase === 'connected');
@@ -976,6 +990,8 @@
     byId('proxy-current-node').disabled = busy || outboundApplying;
     syncNodeStats();
     reconcileTelemetry(running);
+    if (!running) updateTelemetryState({ phase: 'idle' });
+    else renderTelemetry();
   }
 
   async function applyConfig(config, message, progressText = '正在应用…',

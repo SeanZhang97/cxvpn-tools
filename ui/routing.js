@@ -912,16 +912,17 @@
       ['用户规则', String(activeRules.length), `${routingConfig?.rules?.length || 0} 条已添加 · 优先于内置规则`, 'rules'],
       ['可启动订阅', String(readyProviders.length), `${providers.length} 个已启用 · ${routingConfig?.proxy_providers?.length || 0} 个已添加`, 'providers'],
       ['节点摘要', String(summary.visible), nodeDetail, 'nodes'],
-      ['当前代理', allGroup?.nodes?.find(item => item.name === allGroup.selected)?.display_name || '未运行', strategyLabel(routingConfig?.proxy_strategy), 'nodes'],
+      ['聚合出口', allGroup?.nodes?.find(item => item.name === allGroup.selected)?.display_name || '未运行',
+        routingConfig?.aggregate_selection?.mode === 'manual' ? '手动固定' : strategyLabel(routingConfig?.proxy_strategy), 'nodes', 'all'],
     ];
     const root = byId('routing-overview-metrics');
-    root.replaceChildren(...metrics.map(([label, value, detail, target]) => {
+    root.replaceChildren(...metrics.map(([label, value, detail, target, groupId]) => {
       const card = document.createElement('button');
       card.type = 'button';
       card.className = 'routing-metric';
       card.dataset.target = target;
       card.title = `打开${label}`;
-      card.onclick = () => setRoutingTab(target);
+      card.onclick = () => { pendingNodeGroup = groupId || ''; setRoutingTab(target); };
       const small = document.createElement('small'); small.textContent = label;
       const strong = document.createElement('strong'); strong.textContent = value;
       const span = document.createElement('span'); span.textContent = detail;
@@ -1027,7 +1028,7 @@
     const delegated = new Set(cnBypassDelegatedSuffixes().map(item => item.toLocaleLowerCase()));
     const effective = [...merged].filter(item => !delegated.has(item));
     target.textContent = routingConfig?.system_proxy_bypass?.include_cn_direct
-      ? `已知的 ${merged.size} 个域名后缀中 ${effective.size} 个直接绕过系统代理${delegated.size ? `，${delegated.size} 个被有序域名规则接管、进入 Mihomo 按规则出口` : ''}；其余域名解析为中国 IP 时也会直连。`
+      ? `已知的 ${merged.size} 个域名后缀中 ${effective.length} 个直接绕过系统代理${delegated.size ? `，${delegated.size} 个被有序域名规则接管、进入 Mihomo 按规则出口` : ''}；其余域名解析为中国 IP 时也会直连。`
       : `启用后引用 cn-direct-v1 的 ${cnSystemProxyDomains().length} 个域名后缀，并按中国 IP 兜底。`;
   }
 

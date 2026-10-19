@@ -345,6 +345,12 @@ const ruleContext = {
 vm.createContext(ruleContext);
 vm.runInContext(source.replace('  window.RoutingWorkspace = {', `
   window.ruleTest = {
+    renderOverview,
+    renderCnBypassSummary,
+    presentation(config, data) {
+      routingConfig = clone(config); setup = clone(data);
+      renderBuiltinRules = () => {};
+    },
     initialize(rules, blocked = false) {
       routingConfig = { rules: clone(rules), proxy_providers: [] };
       setup = { vpns: [] }; busy = blocked;
@@ -410,3 +416,38 @@ assert.ok(rows()[0].querySelectorAll('select').every(select => select.disabled))
 assert.match(css, /\.routing-filter-check input:focus-visible \+ i/);
 assert.match(css, /\.routing-filter-check input:disabled \+ i/);
 console.log('routing rule rows, outbound switching and shared controls: ok');
+
+const presentationConfig = {
+  rules: [{ domain: 'example.cn', match_type: 'suffix', enabled: true }],
+  proxy_providers: [], system_proxy_bypass: { include_cn_direct: true },
+  aggregate_selection: { mode: 'manual' }, proxy_strategy: 'url-test',
+};
+const presentationSetup = { builtin_rule_packs: { 'cn-direct-v1': {
+  system_proxy_domains: ['example.cn', 'other.cn', '中文.cn'],
+} }, proxy_groups: [{ id: 'all', selected: 'node-1', nodes: [{
+  name: 'node-1', display_name: '中文 e\u0301 \u{1F1E8}\u{1F1F3}', alive: true,
+}] }] };
+ruleElement('routing-bypass-domains').value = 'OTHER.CN\nmanual.cn';
+ruleApi.presentation(presentationConfig, presentationSetup);
+ruleApi.renderCnBypassSummary();
+assert.match(ruleElement('routing-bypass-cn-direct-summary').textContent, /4 个域名后缀中 3 个直接绕过系统代理，1 个/);
+ruleApi.renderOverview();
+const aggregateCard = ruleElement('routing-overview-metrics').children[3];
+assert.equal(aggregateCard.children[0].textContent, '聚合出口');
+assert.equal(aggregateCard.children[1].textContent, '中文 e\u0301 \u{1F1E8}\u{1F1F3}');
+assert.equal(aggregateCard.children[2].textContent, '手动固定');
+ruleContext.document.querySelector = () => ({ id: 'page-routing' });
+let openedGroup;
+ruleContext.window.ProxyWorkspace = { openNodes(groupId) { openedGroup = groupId; } };
+aggregateCard.onclick();
+assert.equal(openedGroup, 'all', '聚合出口摘要必须打开对应的选点出口');
+ruleApi.presentation({ ...presentationConfig, traffic_mode: 'global' }, presentationSetup);
+ruleApi.renderCnBypassSummary();
+assert.match(ruleElement('routing-bypass-cn-direct-summary').textContent, /4 个域名后缀中 4 个直接绕过系统代理/);
+ruleApi.presentation({ ...presentationConfig, system_proxy_bypass: { include_cn_direct: false } }, presentationSetup);
+ruleApi.renderCnBypassSummary();
+assert.match(ruleElement('routing-bypass-cn-direct-summary').textContent, /启用后引用 cn-direct-v1 的 3 个/);
+ruleApi.presentation(presentationConfig, { builtin_rule_packs: { 'cn-direct-v1': { error: '规则文件不可用' } } });
+ruleApi.renderCnBypassSummary();
+assert.match(ruleElement('routing-bypass-cn-direct-summary').textContent, /当前不可用：规则文件不可用/);
+console.log('routing bypass counts and aggregate outlet presentation: ok');

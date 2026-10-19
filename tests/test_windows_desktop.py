@@ -253,6 +253,82 @@ class WindowsDesktopTest(unittest.TestCase):
 
         controller.show_window.assert_called_once_with()
 
+    def test_restore_webview_is_queued_after_minimize_only(self):
+        controller = windows_desktop.DesktopController(
+            window=None, close_to_tray=lambda: True, on_exit=lambda: None,
+            log=mock.Mock())
+        controller._window_state = SimpleNamespace(Minimized='min')
+        controller._action_type = lambda action: action
+        controller._native = SimpleNamespace(
+            IsDisposed=False, WindowState='normal', BeginInvoke=mock.Mock())
+        controller._on_window_resize()
+        controller._native.BeginInvoke.assert_not_called()
+        controller._native.WindowState = 'min'
+        controller._on_window_resize()
+        controller._native.BeginInvoke.assert_not_called()
+        controller._native.WindowState = 'max'
+        controller._on_window_resize()
+        controller._on_window_resize()
+        controller._native.BeginInvoke.assert_called_once_with(
+            controller._restore_webview)
+
+    def test_restore_webview_preserves_document_and_repaints(self):
+        controller = windows_desktop.DesktopController(
+            window=None, close_to_tray=lambda: True, on_exit=lambda: None,
+            log=mock.Mock())
+        controller._window_state = SimpleNamespace(Minimized='min')
+        view = mock.Mock()
+        visibility = mock.PropertyMock()
+        type(view).Visible = visibility
+        controller._native = SimpleNamespace(
+            IsDisposed=False, Visible=True, WindowState='normal',
+            PerformLayout=mock.Mock(), browser=SimpleNamespace(webview=view))
+        controller._restore_webview()
+        self.assertEqual(visibility.call_args_list, [mock.call(False), mock.call(True)])
+        view.Invalidate.assert_called_once_with(True)
+        view.Reload.assert_not_called()
+        controller._native.WindowState = 'min'
+        controller._restore_webview()
+        self.assertEqual(view.Invalidate.call_count, 1)
+
+    def test_restore_webview_failure_is_logged(self):
+        controller = windows_desktop.DesktopController(
+            window=None, close_to_tray=lambda: True, on_exit=lambda: None,
+            log=mock.Mock())
+        controller._window_state = SimpleNamespace(Minimized='min')
+        controller._native = SimpleNamespace(
+            IsDisposed=False, Visible=True, WindowState='normal',
+            PerformLayout=mock.Mock(side_effect=RuntimeError('layout failed')))
+        controller._restore_webview()
+        self.assertIn('RuntimeError', controller.log.call_args.args[0])
+
+    def test_restore_webview_skips_hidden_disposed_and_exiting_windows(self):
+        for condition in ('hidden', 'disposed', 'exiting'):
+            with self.subTest(condition=condition):
+                controller = windows_desktop.DesktopController(
+                    window=None, close_to_tray=lambda: True,
+                    on_exit=lambda: None, log=mock.Mock())
+                controller._window_state = SimpleNamespace(Minimized='min')
+                controller._exiting = condition == 'exiting'
+                controller._native = SimpleNamespace(
+                    IsDisposed=condition == 'disposed', Visible=condition != 'hidden',
+                    WindowState='normal', PerformLayout=mock.Mock())
+                controller._restore_webview()
+                controller._native.PerformLayout.assert_not_called()
+
+    def test_restore_queue_failure_does_not_escape_resize_callback(self):
+        controller = windows_desktop.DesktopController(
+            window=None, close_to_tray=lambda: True, on_exit=lambda: None,
+            log=mock.Mock())
+        controller._window_state = SimpleNamespace(Minimized='min')
+        controller._action_type = lambda action: action
+        controller._was_minimized = True
+        controller._native = SimpleNamespace(
+            IsDisposed=False, WindowState='normal',
+            BeginInvoke=mock.Mock(side_effect=RuntimeError('disposed')))
+        controller._on_window_resize()
+        self.assertIn('RuntimeError', controller.log.call_args.args[0])
+
     def test_dispose_cleans_tray_when_native_already_disposed(self):
         calls = []
         notify = SimpleNamespace(

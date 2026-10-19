@@ -151,7 +151,7 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 }
 .actions { display: flex; gap: 12px; margin-top: 20px; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 14px; }
-.standard-page { max-width: 1180px; margin: 0 auto; }
+.standard-page { width: 100%; max-width: 1920px; margin: 0 auto; }
 
 /* ---------- 网络代理 ---------- */
 .proxy-page { padding-bottom: 22px; }
@@ -301,7 +301,8 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 .proxy-draft-notice button:focus-visible { outline: 2px solid rgba(34,211,238,.65); outline-offset: 3px; }
 .proxy-toggle { min-width: 162px; padding: 12px 24px; font-size: 14px; }
 .proxy-disable { min-width: 104px; }
-.proxy-toggle.danger { color: #fecaca; border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.09); }
+.proxy-toggle.danger,
+.connection-actions #btn-disconnect { color: #fecaca; border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.09); }
 .proxy-current-stack { display: grid; grid-template-rows: 1fr 1fr; padding: 18px 22px; }
 .proxy-current-row {
   width: 100%; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px;
@@ -561,7 +562,7 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 .vpn-summary p { margin-top: 3px; color: var(--muted); font-size: 11.5px; }
 
 /* ---------- 总览 ---------- */
-.overview-page { max-width: 1260px; margin: 0 auto; }
+.overview-page { width: 100%; max-width: 1920px; margin: 0 auto; }
 .overview-heading {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 24px; margin-bottom: 18px;
@@ -641,17 +642,30 @@ h3 { font-size: 14px; margin-bottom: 6px; }
   border: 1.5px solid rgba(165,243,252,.35); border-top-color: #a5f3fc;
   border-radius: 50%; animation: connection-spin .72s linear infinite;
 }
-.connection-actions { display: flex; align-items: center; gap: 10px; margin-top: 17px; }
+.connection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 17px; }
 .connection-actions .btn { height: 52px; font-size: 16px; font-weight: 650; }
+.connection-actions :is(#btn-connect, #btn-disconnect) {
+  width: 210px; max-width: 100%; min-width: 0; padding: 0 14px 0 20px;
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 12px;
+}
 .connection-actions .btn.primary {
-  min-width: 210px; display: flex; align-items: center; justify-content: space-between;
-  padding: 0 14px 0 28px; background: linear-gradient(90deg, #5148f3, #6557ee);
+  background: linear-gradient(90deg, #5148f3, #6557ee);
   box-shadow: 0 9px 24px rgba(84,76,239,.38);
 }
+.connection-actions :is(#btn-connect, #btn-disconnect)::after {
+  content: ""; width: 30px; height: 30px; flex: none; border-radius: 8px;
+  background-position: center; background-repeat: no-repeat; background-size: 16px;
+}
 .connection-actions #btn-connect::after {
-  content: "\E72A"; width: 30px; height: 30px; display: grid; place-items: center; margin-left: 24px;
-  border-radius: 8px; color: #5b5cf0; background: #f8fafc;
-  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets"; font-size: 12px;
+  background-color: #f8fafc;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b5cf0' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14m-6-6 6 6-6 6'/%3E%3C/svg%3E");
+}
+.connection-actions #btn-disconnect::after {
+  background-color: rgba(248,113,113,.13);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fecaca' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M12 3v9m-5.7-6.3a8 8 0 1 0 11.4 0'/%3E%3C/svg%3E");
+}
+.connection-actions #btn-disconnect:hover:not(:disabled) {
+  color: #fee2e2; border-color: rgba(248,113,113,.45); background: rgba(248,113,113,.14);
 }
 .ip-overview {
   width: 100%; min-width: 0; align-self: stretch; overflow: hidden;
@@ -905,6 +919,50 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 .setting-row strong { font-size: 13px; font-weight: 620; }
 .setting-row p { margin-top: 5px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
 .compact-switch { flex: none; margin: 0; }
+/* 宽屏优先把空间交给连接信息，设置区保持可读宽度；低高度仍使用下方紧凑规则。 */
+@media (min-width: 1441px) {
+  .overview-workspace { grid-template-columns: minmax(0, 1fr) clamp(360px, 26vw, 500px); gap: 24px; }
+  .connection-stage { padding-left: 0; }
+  .connection-hero { gap: clamp(20px, 2vw, 40px); }
+  .automation-matrix { padding-left: 24px; }
+}
+@media (min-width: 1600px) and (min-height: 1000px) {
+  .overview-heading { margin-bottom: 20px; }
+  .overview-heading header h2 { font-size: 30px; }
+  .status-ribbon { min-height: 70px; margin-bottom: 20px; }
+  .overview-workspace { margin-bottom: 20px; }
+  .connection-hero { min-height: clamp(286px, 28vh, 400px); }
+  .connection-focus { align-self: center; }
+  .connection-focus h3 { font-size: clamp(44px, 2.4vw, 56px); }
+  .connection-focus .label, .default-connection-summary { font-size: 13px; }
+  .connection-state { font-size: 12px; }
+  .connection-actions { margin-top: 24px; }
+  .ip-overview { display: flex; flex-direction: column; }
+  .ip-overview-head, .ip-local-row { min-height: 62px; }
+  .ip-egress-grid { flex: 1; }
+  .ip-egress-item { padding: clamp(22px, 3vh, 40px) 20px 20px; }
+  .ip-kind, .ip-local-row strong { font-size: 14px; }
+  .ip-address-line strong { font-size: 18px; }
+  .ip-egress-item p, .ip-side-detail, .ip-freshness { font-size: 12px; }
+  .connection-collection { padding-top: 20px; }
+  .collection-heading { margin-bottom: 12px; }
+  .collection-heading h3 { font-size: 17px; }
+  .active-connections { gap: 8px; }
+  .active-connection, .connection-slot-empty { min-height: clamp(44px, 4.2vh, 60px); padding-top: 6px; padding-bottom: 6px; }
+  .active-connection-name strong { font-size: 14px; }
+  .active-connection-meta, .connection-slot-empty, .collection-heading span { font-size: 12px; }
+  .connection-icon-action { width: 32px; height: 32px; }
+  .automation-heading { padding-bottom: 20px; }
+  .automation-heading h3 { font-size: 20px; }
+  .automation-heading p { font-size: 13px; }
+  .automation-matrix .setting-row { padding-top: clamp(20px, 2.4vh, 32px); padding-bottom: clamp(20px, 2.4vh, 32px); }
+  .automation-matrix .setting-row strong, .maintenance-link strong { font-size: 14px; }
+  .automation-matrix .setting-row p, .maintenance-link small { font-size: 12px; }
+  .maintenance-link { padding-top: 20px; padding-bottom: 20px; }
+  .renewal-strip { grid-template-columns: 220px minmax(0, 1fr) 220px; }
+  .renewal-intro p, .renewal-stages li { font-size: 12px; }
+  .renewal-stages li small, .action-hint { font-size: 11px; }
+}
 @media (max-width: 1240px) {
   main { padding: 20px 28px; }
   .overview-workspace { grid-template-columns: minmax(0, 1.22fr) minmax(285px, .78fr); gap: 8px; }
@@ -914,8 +972,8 @@ h3 { font-size: 14px; margin-bottom: 6px; }
   .connection-stage { padding-left: 4px; }
   .connection-hero { grid-template-columns: minmax(0, .76fr) minmax(0, 1.24fr); gap: 14px; }
   .connection-focus h3 { font-size: 30px; }
-  .connection-actions .btn.primary { min-width: 0; width: 100%; padding-left: 18px; }
-  .connection-actions #btn-connect::after { margin-left: 10px; }
+  .connection-actions :is(#btn-connect, #btn-disconnect) { padding: 0 10px; gap: 8px; font-size: 14px; }
+  .connection-actions :is(#btn-connect, #btn-disconnect)::after { width: 26px; height: 26px; }
   .ip-local-row { grid-template-columns: 50px minmax(0,1fr) 22px minmax(58px,auto); gap: 6px; }
   .ip-egress-item { padding-left: 10px; padding-right: 10px; }
   .ip-address-line strong { font-size: 13px; }
@@ -966,6 +1024,7 @@ h3 { font-size: 14px; margin-bottom: 6px; }
 }
 @media (max-height: 700px) {
   main { padding-top: 12px; padding-bottom: 4px; }
+  .connection-focus h3 { font-size: 28px; line-height: 1.15; }
 }
 
 /* ---------- 表单 ---------- */
@@ -1278,7 +1337,7 @@ th:last-child { width: 326px; }
 .routing-provider-identity small { color: #7f8ba4; font-size: 10.5px; }
 .routing-provider-actions { display: flex; align-items: center; gap: 8px; }
 .routing-provider-actions .switch { margin: 0; }
-.routing-provider-actions .btn { margin: 0; }
+.routing-provider-actions .btn { min-height: 34px; margin: 0; }
 .routing-provider-actions .routing-provider-nodes { color: #a5f3fc; border-color: rgba(34,211,238,.18); background: rgba(34,211,238,.045); }
 .routing-provider-status { min-width: 0; color: #9aa8c1; font-size: 10.5px; }
 .routing-provider-status span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1506,12 +1565,12 @@ th:last-child { width: 326px; }
 .routing-test-progress progress::-webkit-progress-value { border-radius: 99px; background: linear-gradient(90deg, #6366f1, #22d3ee, #34d399); transition: width .2s ease; }
 .routing-test-progress-stats { display: flex; flex-wrap: wrap; gap: 18px; color: #8190aa; font-size: 10.5px; }
 .routing-test-progress-stats strong { margin-left: 4px; color: #dce8fb; font-size: 11px; }
-.routing-node-metadata { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; margin: 0 0 10px; }
+.routing-node-metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 7px; margin: 0 0 10px; }
 .routing-node-meta-item { min-width: 0; padding: 9px 11px; border: 1px solid rgba(251,191,36,.16); border-radius: 10px; background: rgba(251,191,36,.045); }
 .routing-node-meta-item strong, .routing-node-meta-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .routing-node-meta-item strong { color: #fde68a; font-size: 10.5px; font-weight: 620; }
 .routing-node-meta-item small { margin-top: 4px; color: #8d826e; font-size: 9.5px; }
-.routing-node-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
+.routing-node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 10px; }
 .routing-node { min-width: 0; padding: 11px; border: 1px solid rgba(255,255,255,.075); border-radius: 11px; color: #dce5f8; background: rgba(0,0,0,.13); font-family: inherit; text-align: left; transition: border-color .16s, background .16s, opacity .16s; }
 .routing-node:hover { border-color: rgba(34,211,238,.35); background: rgba(34,211,238,.045); }
 .routing-node.selected { border-color: rgba(99,102,241,.55); background: linear-gradient(135deg, rgba(99,102,241,.15), rgba(34,211,238,.045)); }
@@ -1523,7 +1582,7 @@ th:last-child { width: 326px; }
 .routing-node > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .routing-node-identity { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .routing-country-badge { min-width: 28px; flex: none; padding: 3px 5px; border: 1px solid rgba(34,211,238,.25); border-radius: 6px; color: #a5f3fc; background: rgba(34,211,238,.07); font-size: 8.5px; font-style: normal; font-weight: 760; letter-spacing: .5px; text-align: center; }
-.routing-node strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 620; }
+.routing-node strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 620; }
 .routing-node-meta { display: flex !important; align-items: center; justify-content: space-between !important; gap: 8px; margin-top: 6px; }
 .routing-node-meta small { display: block; min-width: 0; margin-top: 0; overflow: hidden; color: #75829b; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .routing-node-meta .routing-node-checked-at { flex: none; color: #8294b2; font-size: 9px; }
@@ -1533,7 +1592,7 @@ th:last-child { width: 326px; }
 .routing-node-action { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.055); }
 .routing-node-action span { min-width: 0; color: #73829d; font-size: 9.5px; }
 .routing-node-action span.on { color: #67e8f9; }
-.routing-node-action .btn { flex: none; margin: 0; }
+.routing-node-action .btn { min-height: 32px; flex: none; margin: 0; }
 .routing-node-action-buttons { flex: none; display: flex; align-items: center; gap: 5px; }
 .routing-node-test.active { border-color: rgba(34,211,238,.42); color: #a5f3fc; background: rgba(34,211,238,.08); }
 .routing-provider-update-settings { display: flex; align-items: center; gap: 11px; margin-top: 10px; padding: 10px 11px; border: 1px solid rgba(129,140,248,.14); border-radius: 10px; background: rgba(99,102,241,.035); }
@@ -2341,8 +2400,8 @@ main:not(.browser-mode), #nav, .routing-select-menu, .builtin-rules-list,
   position: absolute;
   z-index: -1;
   top: -110px;
-  right: -180px;
-  width: 560px;
+  right: 0;
+  width: min(560px, 100%);
   height: 360px;
   pointer-events: none;
   background: radial-gradient(ellipse, rgba(34,211,238,.095), transparent 68%);

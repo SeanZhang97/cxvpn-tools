@@ -239,15 +239,46 @@ assert.deepEqual(rows(), [[], [], []]);
 assert.equal(element('proxy-upload-rate').textContent, '0 B/s');
 assert.equal(element('proxy-live-up').textContent, '0 B/s');
 assert.equal(empty.classList.contains('hidden'), false);
-assert.equal(empty.textContent, '代理未开启 · 启动后显示实时速率');
+assert.equal(empty.textContent, '实时流量通道重连中…');
 chart.fireCursor(0, 100, 50);
 assert.equal(visible(), false);
 
 // 恢复连接后继续采样。
+workspace.updateTelemetryState({ phase: 'idle' });
+assert.equal(empty.textContent, '正在等待实时速率数据…');
+workspace.sync();
+assert.equal(element('btn-proxy-toggle').textContent, '关闭代理');
+assert.equal(element('proxy-stream-state').textContent, '等待流量数据');
+workspace.updateTelemetryState({ phase: 'connecting' });
+assert.equal(empty.textContent, '正在连接实时流量通道…');
+state.runtimeStatus = { service_state: 'Unknown' };
+workspace.sync();
+assert.equal(empty.textContent, '服务状态未知 · 暂无实时速率');
+state.runtimeStatus = { running: false };
+workspace.sync();
+assert.equal(empty.textContent, '代理尚未就绪 · 暂无实时速率');
+state.setup.config.enabled = false;
+workspace.sync();
+assert.equal(empty.textContent, '代理未开启 · 启动后显示实时速率');
+state.runtimeStatus = { running: true };
+state.setup.config.enabled = true;
+workspace.sync();
+assert.equal(empty.textContent, '正在等待实时速率数据…');
 workspace.updateTelemetryState({ phase: 'connected' });
 workspace.updateTelemetry({ up: 2048, down: 0 });
 assert.equal(chart.data[0].length, 1);
 assert.equal(element('proxy-live-down').textContent, '0 B/s');
+
+// 停止状态先于遥测快照到达时，也不能继续展示上一会话流量。
+state.setup.config.enabled = false;
+state.runtimeStatus = { running: false, standby: true };
+workspace.sync();
+assert.deepEqual(rows(), [[], [], []]);
+assert.equal(element('proxy-live-up').textContent, '0 B/s');
+assert.equal(empty.textContent, '代理未开启 · 启动后显示实时速率');
+assert.equal(element('proxy-stream-state').textContent, '等待服务');
+state.setup.config.enabled = true;
+state.runtimeStatus = { running: true };
 
 // 离开页面、窗口隐藏都会退订遥测并关闭浮层。
 workspace.sync();

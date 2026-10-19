@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import winreg
 
 
@@ -242,6 +243,7 @@ class DesktopController:
         self._tray_items = {}
         self._suppress_close_to_tray = False
         self._shutdown_event = None
+        self._was_minimized = False
 
     def start(self):
         if self._started or os.name != 'nt' or self.window.native is None:
@@ -305,6 +307,7 @@ class DesktopController:
             menu.Opening += self._on_menu_opening
             notify.MouseClick += self._on_mouse_click
             self._native.FormClosing += self._on_form_closing
+            self._native.Resize += self._on_window_resize
             notify.Visible = True
             self._notify = notify
             self._menu = menu
@@ -470,6 +473,39 @@ class DesktopController:
             self._native.WindowState = self._window_state.Normal
         self._native.Show()
         self._native.Activate()
+
+    def _on_window_resize(self, _sender=None, _args=None):
+        if self._exiting or self._native.IsDisposed:
+            return
+        if self._native.WindowState == self._window_state.Minimized:
+            self._was_minimized = True
+        elif self._was_minimized:
+            self._was_minimized = False
+            # WinForms 在最小化时把 Dock.Fill 控件压到 0x0；恢复事件先于
+            # 布局完成。延后同步 WebView 可见性，让合成画面随控件一起恢复。
+            self.log('[desktop] 窗口恢复请求已提交，等待 UI 布局完成')
+            try:
+                self._native.BeginInvoke(self._action_type(self._restore_webview))
+            except Exception:
+                self.log('[desktop] 窗口恢复请求提交失败: ' + traceback.format_exc())
+
+    def _restore_webview(self):
+        native = self._native
+        if (self._exiting or native.IsDisposed or not native.Visible or
+                native.WindowState == self._window_state.Minimized):
+            self.log('[desktop] 窗口恢复已取消：窗口隐藏、最小化或正在退出')
+            return
+        self.log('[desktop] UI 已领取窗口恢复请求，开始同步 WebView 显示')
+        try:
+            native.PerformLayout()
+            view = native.browser.webview
+            # 不重新导航或清空缓存，保留表单草稿、当前页和后台状态流。
+            view.Visible = False
+            view.Visible = True
+            view.Invalidate(True)
+            self.log('[desktop] WebView 显示同步完成')
+        except Exception:
+            self.log('[desktop] WebView 显示同步失败: ' + traceback.format_exc())
 
     def show_window(self):
         self._invoke(self._show_native)
