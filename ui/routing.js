@@ -357,6 +357,7 @@
   }
 
   function downloadRouteLabel(provider) {
+    if (!String(provider.url || '').trim()) return '本地 YAML';
     return ({
       auto: '智能自动更新',
       physical: '物理网络首次获取',
@@ -804,7 +805,8 @@
   }
 
   function providerReady(provider) {
-    if (!provider?.enabled || !String(provider.url || '').trim()) return false;
+    if (!provider?.enabled) return false;
+    if (!String(provider.url || '').trim()) return !!providerCache(provider)?.available;
     const preview = providerPreview(provider);
     const runtime = proxyGroupState(provider.id);
     return !!cacheRecord(provider.id)?.available || partitionNodes(preview?.nodes).selectable.length > 0
@@ -2287,6 +2289,7 @@
     addButton.title = providers.length >= 16 ? '最多可添加 16 个代理订阅' : '添加代理订阅';
     byId('routing-providers-empty').classList.toggle('hidden', providers.length > 0);
     providers.forEach((provider, index) => {
+      const localProvider = !String(provider.url || '').trim();
       const state = proxyGroupState(provider.id);
       const preview = providerPreview(provider);
       const previewError = providerPreviewError(provider);
@@ -2313,7 +2316,7 @@
       const small = document.createElement('small');
       small.textContent = preview
         ? `已解析 ${partitionNodes(preview.nodes).selectable.length} 个可选节点 · ${cache?.available ? `${cache.node_count} 条缓存记录` : '尚未写入缓存'}`
-        : `${providerSelectionLabel(provider)} · ${strategyLabel(provider.strategy)} · ${downloadRouteLabel(provider)} · ${cache?.available ? `${cache.node_count} 条缓存记录` : '暂无节点缓存'} · ${provider.auto_update ? `每 ${Math.round((provider.interval || 3600) / 60)} 分钟自动更新` : '仅手动更新'}`;
+        : `${providerSelectionLabel(provider)} · ${strategyLabel(provider.strategy)} · ${downloadRouteLabel(provider)} · ${cache?.available ? `${cache.node_count} 条缓存记录` : '暂无节点缓存'} · ${localProvider ? '重新导入 YAML 更新' : provider.auto_update ? `每 ${Math.round((provider.interval || 3600) / 60)} 分钟自动更新` : '仅手动更新'}`;
       title.append(strong, small); identity.append(order, title);
 
       const status = document.createElement('div'); status.className = 'routing-provider-status';
@@ -2323,7 +2326,7 @@
         ? `本次更新失败，已继续使用缓存：${previewError}`
         : `首次获取失败：${previewError}`
         : selectionInvalid ? `原节点“${provider.selected_node}”失效需重选`
-        : unverifiedDraft ? '未验证草稿：填写订阅 URL 后可先预览节点'
+        : unverifiedDraft ? '未验证草稿：填写订阅 URL 或导入本地 YAML 后可预览节点'
           : preview ? persistedNodes.length
             ? provider.selection_mode === 'manual' && targetNode
               ? `目标节点：${targetNode.display_name || targetNode.name} · ${selectionActive ? '当前使用' : '待启用'}`
@@ -2334,7 +2337,7 @@
           : state && !providerIsSaved(provider) ? '运行服务仍使用已应用配置；当前修改尚未应用'
             : state ? `运行中：${selected?.display_name || state.selected || '等待检测'} · ${providerSelectionLabel(provider)}`
             : cache?.available ? '节点缓存可用，启动统一分流后即可连接'
-              : '尚未获取节点，首次获取将使用物理网络';
+              : localProvider ? '尚无本地节点，请先导入 YAML' : '尚未获取节点，首次获取将使用物理网络';
       current.classList.toggle('error', !!previewError && !cache?.available);
       current.classList.toggle('warning', selectionInvalid || !!previewError && !!cache?.available);
       current.title = current.textContent;
@@ -2481,7 +2484,8 @@
       autoUpdateSwitch.append(autoUpdateInput, document.createElement('i'));
       const autoUpdateCopy = document.createElement('div');
       const autoUpdateTitle = document.createElement('strong'); autoUpdateTitle.textContent = '软件运行期间自动更新订阅';
-      const autoUpdateHint = document.createElement('small'); autoUpdateHint.textContent = provider.auto_update
+      const autoUpdateHint = document.createElement('small'); autoUpdateHint.textContent = localProvider
+        ? '本地订阅不执行在线更新，请重新导入 YAML 更新节点。' : provider.auto_update
         ? `每 ${Math.round((provider.interval || 3600) / 60)} 分钟检查一次；仍可随时手动“重新获取订阅”。`
         : '当前关闭，仅在点击“重新获取订阅”时更新节点。';
       autoUpdateCopy.append(autoUpdateTitle, autoUpdateHint); autoUpdateRow.append(autoUpdateSwitch, autoUpdateCopy);

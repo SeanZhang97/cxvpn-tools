@@ -22,3 +22,20 @@ assert.match(source, /!usesProxy\(\{ \.\.\.config, traffic_mode: targetMode \}\)
 assert.match(source, /status\.configuration_pending[\s\S]*?usesProxy\(config\) \? '' : '当前配置未使用代理订阅。'/);
 assert.match(source, /renderModeConsole\(config, status, running\)/);
 console.log('proxy direct-mode compatibility: passed');
+
+const routing = fs.readFileSync(path.join(__dirname, '../ui/routing.js'), 'utf8');
+const readinessContext = vm.createContext({
+  providerCache: provider => provider.cache,
+  cacheRecord: () => null,
+  providerPreview: provider => provider.preview,
+  proxyGroupState: () => null,
+  partitionNodes: nodes => ({ selectable: nodes || [] }),
+});
+vm.runInContext(routing.slice(routing.indexOf('  function providerReady('), routing.indexOf('  function setDirty(')), readinessContext);
+const ready = readinessContext.providerReady;
+assert.equal(ready({ enabled: true, url: '', cache: { available: true } }), true);
+assert.equal(ready({ enabled: false, url: '', cache: { available: true } }), false);
+assert.equal(ready({ enabled: true, url: '', preview: { nodes: [{}] } }), false);
+assert.equal(ready({ enabled: true, url: 'https://example.test/sub', preview: { nodes: [{}] } }), true);
+assert.match(routing, /本地订阅不执行在线更新/);
+console.log('local provider readiness: passed');
