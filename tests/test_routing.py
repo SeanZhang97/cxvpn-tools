@@ -1022,6 +1022,67 @@ class RoutingConfigTests(unittest.TestCase):
             manager.import_proxy_provider(
                 provider, 'x' * (routing.SUBSCRIPTION_SIZE_LIMIT + 1))
 
+    def test_imported_yaml_without_url_is_supported(self):
+        provider = {
+            'id': 'draft', 'name': '自建隧道',
+            'url': '', 'enabled': True,
+        }
+        manager = routing.RoutingManager()
+        expected = {
+            'ok': True, 'provider_name': '自建隧道',
+            'node_count': 1, 'nodes': [],
+        }
+        with mock.patch.object(routing, 'verify_runtime'), \
+                mock.patch.object(manager, '_test_config') as test_config, \
+                mock.patch.object(
+                    manager, 'preview_proxy_provider',
+                    return_value=expected) as preview, \
+                mock.patch.object(
+                    routing.subscription_store, 'persist_bytes_and_nodes',
+                    return_value=({'available': True}, {})) as persist:
+            result = manager.import_proxy_provider(
+                provider, 'proxies:\n  - name: reality\n    type: vless\n'
+                          '    server: 127.0.0.1\n    port: 8443\n',
+                {'physical_interface': '以太网'})
+
+        self.assertTrue(result['ok'])
+        self.assertIn('1 个节点', result['msg'])
+        test_config.assert_called_once()
+        persist.assert_called_once()
+        preview.assert_called_once()
+        self.assertIs(
+            preview.call_args.kwargs.get('_seed_payload'),
+            persist.call_args.args[1])
+
+    def test_local_provider_preview_without_cache_suggests_import(self):
+        manager = routing.RoutingManager()
+        provider = {'id': 'local', 'name': '自建隧道', 'url': '',
+                    'enabled': True}
+        with mock.patch.object(routing, 'verify_runtime'), \
+                mock.patch.object(
+                    routing.subscription_store, 'cache_status',
+                    return_value={'available': False, 'node_count': 0,
+                                  'updated_at': 0, 'source': ''}), \
+                mock.patch.object(routing, 'windows_system_proxy',
+                                  return_value=''):
+            with self.assertRaisesRegex(routing.RoutingError, '导入 YAML'):
+                manager.preview_proxy_provider(provider)
+
+    def test_local_provider_refresh_is_rejected_with_hint(self):
+        manager = routing.RoutingManager()
+        config = routing.normalize_config({
+            'enabled': False,
+            'proxy_providers': [
+                {'id': 'local', 'name': '自建隧道', 'url': '',
+                 'enabled': True, 'strategy': 'url-test'},
+            ],
+            'default_outbound': 'proxy:local',
+        })
+        with mock.patch.object(manager, '_controller_request') as controller:
+            with self.assertRaisesRegex(routing.RoutingError, '导入 YAML'):
+                manager.refresh_proxy_provider(config, 'local')
+        controller.assert_not_called()
+
     def test_bootstrap_uses_only_local_snapshot_and_quick_service_status(self):
         manager = routing.RoutingManager()
         quick_status = {

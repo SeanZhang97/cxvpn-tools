@@ -483,7 +483,7 @@ class RoutingReliabilityTests(unittest.TestCase):
         self.assertEqual(paths, ['/proxies/PROXY-alpha'])
         self.assertFalse(any('healthcheck' in path for path in paths))
 
-    def test_tun_connectivity_failure_is_actionable(self):
+    def test_direct_runtime_connectivity_failure_points_at_physical_network(self):
         manager = routing.RoutingManager()
         config = routing.normalize_config({
             'enabled': True, 'default_outbound': 'physical'})
@@ -493,7 +493,27 @@ class RoutingReliabilityTests(unittest.TestCase):
         with mock.patch.object(
                 routing.urllib.request, 'build_opener', return_value=opener):
             with self.assertRaisesRegex(
-                    routing.RoutingError, '已恢复 Windows 原始路由.*请检查'):
+                    routing.RoutingError,
+                    '已恢复 Windows 原始路由.*未使用代理订阅.*物理网络.*默认出口'):
+                manager._verify_runtime_egress(config)
+
+    def test_proxy_runtime_connectivity_failure_still_checks_nodes(self):
+        manager = routing.RoutingManager()
+        config = routing.normalize_config({
+            'enabled': True, 'default_outbound': 'proxy:alpha',
+            'controller_secret': 'controller-secret',
+            'proxy_providers': [{**provider(), 'selection_mode': 'manual',
+                                 'selected_node': 'JP-01'}]})
+        runtime_node = '[订阅一] JP-01'
+        manager._controller_request = mock.Mock(return_value={
+            'now': runtime_node, 'all': [runtime_node]})
+        opener = mock.Mock()
+        opener.open.side_effect = OSError('unreachable')
+
+        with mock.patch.object(
+                routing.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(
+                    routing.RoutingError, '已恢复 Windows 原始路由.*请检查当前节点或网络设置'):
                 manager._verify_runtime_egress(config)
 
     def test_elevated_child_error_is_returned_instead_of_generic_uac_hint(self):

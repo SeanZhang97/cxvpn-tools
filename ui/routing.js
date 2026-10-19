@@ -2487,7 +2487,7 @@
       autoUpdateCopy.append(autoUpdateTitle, autoUpdateHint); autoUpdateRow.append(autoUpdateSwitch, autoUpdateCopy);
 
       const urlLabel = document.createElement('label'); urlLabel.textContent = '订阅 URL';
-      const url = document.createElement('input'); url.type = 'text'; url.className = 'routing-provider-url'; url.autocomplete = 'off'; url.value = provider.url || ''; url.placeholder = 'https://example.com/subscribe?token=...';
+      const url = document.createElement('input'); url.type = 'text'; url.className = 'routing-provider-url'; url.autocomplete = 'off'; url.value = provider.url || ''; url.placeholder = 'https://example.com/subscribe?token=…（留空则仅使用下方导入的本地 YAML 节点）';
       url.disabled = busy;
       url.oninput = () => { provider.url = url.value; invalidateProviderPreview(provider); syncDirty(); };
 
@@ -2537,7 +2537,7 @@
             ? `仅用于首次迁移或故障恢复。${setup?.system_proxy?.available ? `当前检测到 ${setup.system_proxy.address}。` : '当前未检测到 Windows 手动系统代理。'}`
             : '仅用于首次迁移或故障恢复；只接受 127.0.0.1、::1 或 localhost 上的 HTTP 代理。';
       const importRow = document.createElement('div'); importRow.className = 'routing-provider-import-row';
-      const importCopy = document.createElement('span'); importCopy.textContent = '已有 Clash/Mihomo YAML？可直接导入作为本软件的初始节点缓存（最大 10 MB）。';
+      const importCopy = document.createElement('span'); importCopy.textContent = '已有 Clash/Mihomo YAML 或自建节点配置？可直接导入作为本订阅的节点缓存（最大 10 MB）。订阅 URL 可留空，仅使用本地导入的节点。';
       const importButton = document.createElement('button'); importButton.type = 'button'; importButton.className = 'btn mini ghost'; importButton.textContent = '导入 YAML';
       importButton.disabled = busy;
       importButton.onclick = () => importProviderYaml(provider);

@@ -880,7 +880,7 @@
     setText('proxy-state-detail', running
       ? status.configuration_pending
         ? `现有 ${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'} 仍在运行，保存配置与运行状态不一致；请检查配置后重新应用。`
-        : `${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'}接管 · ${config.traffic_mode === 'global' ? '全局' : '规则'}策略 · 默认出口 ${outboundName(config.default_outbound, config)}。`
+        : `${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'}接管 · ${config.traffic_mode === 'global' ? '全局' : '规则'}策略 · 默认出口 ${outboundName(config.default_outbound, config)}。${usesProxy(config) ? '' : '当前配置未使用代理订阅。'}`
       : phase === 'unknown'
         ? '暂时无法读取 Windows 服务状态。为避免重复启动或误判关闭，请先重新检查。'
         : phase === 'degraded'
@@ -1077,10 +1077,13 @@
     const needsConfirmation = nextEnabled
       ? !nativeServiceReady || targetCapture === 'tun' || cached.dirty || repairing
       : needsUac;
+    const directNotice = nextEnabled && !usesProxy({ ...config, traffic_mode: targetMode })
+      ? `当前默认出口为「${outboundName(config.default_outbound, config)}」，本次配置未使用代理订阅；如需走代理，请先在高级分流调整默认出口或规则。`
+      : '';
     const confirmed = !needsConfirmation || await confirmAction({
       title: nextEnabled ? (repairing ? '修复网络代理' : '开启网络代理') : '关闭网络代理',
       message: nextEnabled
-        ? `${repairing ? '将重新检查并修复代理服务' : targetCapture === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, targetMode, targetCapture)}。${draftNotice}确认后会自动检查节点和网络，失败会恢复原设置。${targetCapture === 'tun' ? '请先关闭其他代理软件的 TUN 模式和 Windows 系统代理。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
+        ? `${repairing ? '将重新检查并修复代理服务' : targetCapture === 'tun' ? '将使用 TUN（高级）接管系统流量' : '将通过 Windows 系统代理接管应用流量'}。本次生效配置：${effectiveConfigSummary(config, targetMode, targetCapture)}。${draftNotice}${directNotice}确认后会自动检查节点和网络，失败会恢复原设置。${targetCapture === 'tun' ? '请先关闭其他代理软件的 TUN 模式和 Windows 系统代理。' : ''}${needsUac ? '首次使用可能需要 Windows 管理员授权。' : ''}`
         : needsUac
           ? '将停止并迁移旧版 Mihomo TUN 服务，系统恢复使用 Windows 当前路由。该操作需要 UAC。'
           : fastToggleReady

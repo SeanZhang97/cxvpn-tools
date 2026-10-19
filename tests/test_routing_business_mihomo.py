@@ -16,19 +16,17 @@ class BusinessMihomoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='cxvpn-business-core-') as root, \
                 patch.dict(os.environ, {'LOCALAPPDATA': root}):
             config = sample()
+            config['proxy_providers'][0]['url'] = ''
             generated = routing.build_mihomo_config(config, [])
             provider_path = Path(root, 'local-provider.json')
             with provider_path.open('w', encoding='utf-8') as stream:
                 json.dump({'proxies': [{'name': node, 'type': 'socks5', 'server': '127.0.0.1', 'port': 1}
                                       for node in [NODE, '节点 B']]}, stream, ensure_ascii=False)
-            generated['proxy-providers']['provider-alpha'] = {
-                'type': 'file', 'path': str(provider_path),
-                'override': {'additional-prefix': '[订阅甲] '},
-                'health-check': {'enable': False},
-            }
-            # 下载辅助组引用的临时 provider 也只能读取本地文件。
-            for key in generated['proxy-providers']:
-                generated['proxy-providers'][key] = dict(generated['proxy-providers']['provider-alpha'])
+            provider = generated['proxy-providers']['provider-alpha']
+            self.assertEqual(provider['type'], 'file')
+            self.assertNotIn('url', provider)
+            provider['path'] = str(provider_path)
+            provider['health-check']['enable'] = False
             generated['proxy-groups'].append({
                 'name': 'EMPTY-TEST', 'type': 'select', 'use': ['provider-alpha'],
                 'filter': '^missing$', 'empty-fallback': 'REJECT'})
