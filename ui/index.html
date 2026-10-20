@@ -715,8 +715,8 @@
           <div id="business-template-tools" class="business-actions business-template-tools"></div>
           <p id="business-mode-warning" class="business-mode-warning" role="status"></p>
           <div id="routing-business-sets"></div>
-          <p id="business-sets-empty" class="business-empty">先创建代理出口，再添加 ChatGPT、GitHub 或自定义规则集。</p>
-          <details class="business-help"><summary>规则优先级与模板范围</summary><p>安全绕过、用户逐条规则优先于业务规则集。修改后点击“保存并应用”。模板仅覆盖主要域名，可直接编辑；模板更新不会覆盖已添加的规则集。</p><p>ChatGPT 包含 OpenAI API、关联入口及部分登录、验证、语音、CDN 和支付主机；共享主机也会影响其他网站。不保证完整支付或纯 IP/UDP 语音覆盖，不包含 Azure 动态通配域名。GitHub 不保证覆盖 Copilot 等扩展服务，系统代理无法自动接管 Git SSH。</p></details>
+          <p id="business-sets-empty" class="business-empty">先创建代理出口，再添加 ChatGPT、GitHub、Claude 或自定义规则集。</p>
+          <details class="business-help"><summary>规则优先级与模板范围</summary><p>安全绕过、用户逐条规则优先于业务规则集。修改后点击“保存并应用”。模板仅覆盖主要域名，可直接编辑；模板更新不会覆盖已添加的规则集。</p><p>ChatGPT 包含 OpenAI API、关联入口及部分登录、验证、语音、CDN 和支付主机；共享主机也会影响其他网站。不保证完整支付或纯 IP/UDP 语音覆盖，不包含 Azure 动态通配域名。GitHub 不保证覆盖 Copilot 等扩展服务，系统代理无法自动接管 Git SSH。</p><p>Claude 覆盖网页、Anthropic API 与专属内容资源，不包含第三方登录、支付、共享 CDN、MCP 或云厂商入口；Claude Code 流量需进入代理或 TUN，可按实际连接补充域名。</p></details>
         </section>
         <section class="card routing-default-card">
           <div class="routing-rules-head"><div><h3 class="card-title-with-icon"><span class="card-icon card-icon-route" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v4a4 4 0 0 0 4 4h-1"/></svg></span><span>默认出口与命中测试</span></h3><p>规则从上到下匹配；未命中时使用默认出口。仅支持域名，不支持 URL 路径。</p></div></div>

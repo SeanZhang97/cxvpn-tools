@@ -12,12 +12,12 @@
   管理；pyinstaller 按需装入 .venv）。产物 `dist/CXVPNTools/`。
 - 打包前若软件正在运行，**不要手动 `taskkill /F`**：`build.py`
   （build_lifecycle）会先向命名事件 `Local\CXVPNTools.Shutdown.v1` 发优雅关闭
-  信号，运行实例自行清理托盘图标后退出（8 秒期限），无响应才强杀兜底；
+  信号，运行实例等待配置事务结束并清理托盘图标后退出（90 秒期限），超时停止打包；
   旧版 `CX VPN TOOLS.exe`、`CXVPN管理器.exe` 与同源 python 进程也由 build.py
   统一收敛。手动强杀会绕过托盘清理，NotifyIcon 以残影留在托盘直到鼠标划过。
 - 打包之外确需手动关闭运行实例时，同样优先发优雅关闭信号：
   `powershell -NoProfile -Command "[Threading.EventWaitHandle]::OpenExisting('Local\CXVPNTools.Shutdown.v1').Set()"`；
-  仅当实例卡死、信号 8 秒无响应时才 `Stop-Process -Force`。
+  等待超时应保留进程并检查在途事务，不自动强制终止。
 - `build.py` 自带用户主库备份和配置摘要核对；打包前后核对真实用户目录中的
   `state.sqlite3` 配置和兼容 `config.json` 未丢失、exe 时间戳为最新。
   `dist/CXVPNTools/` 不应携带用户配置、主库或凭据。
@@ -44,7 +44,7 @@
   `core/*.py`（除包 `__init__`）用 Nuitka 编译为本机 `.pyd`，再交给
   PyInstaller 打包；产物内不含业务源码与字节码（入口 `main.py` 例外）。
 - 依赖：Nuitka（已装入 .venv）与 MSVC Build Tools（本机已安装）。
-- 两种打包方式的其余规则（打包前强制关闭、config.json 备份恢复、产物核对、
+- 两种打包方式的其余规则（打包前安全关闭、config.json 备份恢复、产物核对、
   成功后自动启动新版）完全相同；日常功能迭代仍用 `build.py`（快、不保护），
   `build_protected.py` 在功能稳定、对外交付前使用。
 - `build_protected.py` 生成独立 spec 文件 `CXVPNTools-protected.spec`，

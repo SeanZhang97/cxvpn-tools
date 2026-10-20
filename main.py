@@ -80,13 +80,16 @@ def _run_app():
     api.worker.storage_path = storage
 
     def exit_app():
-        api.shutdown()
+        if not api.shutdown():
+            return False
         if api.worker.is_alive():
             api.worker.join(timeout=5)
+        desktop.complete_exit()
         try:
             win.destroy()
         except Exception:
             pass
+        return True
 
     def open_page(page):
         safe_page = json.dumps(str(page or 'overview'))

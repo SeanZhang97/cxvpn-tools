@@ -878,12 +878,17 @@
       .filter(item => item.enabled !== false).reduce((count, item) => count + item.domains.length, 0);
     setText('proxy-rule-composition', `${(config.rules || []).filter(item => item.enabled !== false).length} user / ${businessCount} business / ${config.traffic_mode === 'global' ? 0 : builtinCount} builtin${cnFallback} / MATCH`);
 
+    const guardSnapshot = status.udp_guard;
+    const guardFresh = guardSnapshot?.checked_at && Date.now() / 1000 - guardSnapshot.checked_at < 30;
+    const udpGuard = guardFresh ? guardSnapshot
+      : { state: 'unknown', message: 'UDP 拒绝兜底尚未确认，请重新检查' };
+    const guardWarning = running && !['verified', 'not_required'].includes(udpGuard.state);
     const serviceDot = byId('proxy-service-dot');
     serviceDot?.classList.toggle('on', running);
-    serviceDot?.classList.toggle('warn', phase === 'degraded' || phase === 'unknown');
+    serviceDot?.classList.toggle('warn', phase === 'degraded' || phase === 'unknown' || guardWarning);
     const proxyOrbit = byId('proxy-orbit');
     proxyOrbit?.classList.toggle('is-active', running);
-    proxyOrbit?.classList.toggle('is-warning', phase === 'degraded' || phase === 'unknown');
+    proxyOrbit?.classList.toggle('is-warning', phase === 'degraded' || phase === 'unknown' || guardWarning);
     setText('proxy-service-label', running ? '内置服务运行中'
       : phase === 'degraded' ? '配置已启用，服务异常'
         : phase === 'unknown' ? '无法确认服务状态'
@@ -894,7 +899,7 @@
     setText('proxy-state-detail', running
       ? status.configuration_pending
         ? `现有 ${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'} 仍在运行，保存配置与运行状态不一致；请检查配置后重新应用。`
-        : `${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'}接管 · ${config.traffic_mode === 'global' ? '全局' : '规则'}策略 · 默认出口 ${outboundName(config.default_outbound, config)}。${usesProxy(config) ? '' : '当前配置未使用代理订阅。'}`
+        : `${actualCapture === 'tun' ? 'TUN' : 'Windows 系统代理'}接管 · ${config.traffic_mode === 'global' ? '全局' : '规则'}策略 · 默认出口 ${outboundName(config.default_outbound, config)}。${udpGuard.message}。`
       : phase === 'unknown'
         ? '暂时无法读取 Windows 服务状态。为避免重复启动或误判关闭，请先重新检查。'
         : phase === 'degraded'
@@ -972,7 +977,7 @@
     const nodePool = dashboardNodePool(setup, groups, providers, selectedGroupId);
     renderNodeQuality(nodePool);
     renderTopNodes(nodePool, group, provider);
-    setText('proxy-session-state', running ? '运行正常' : phase === 'degraded' ? '需要处理'
+    setText('proxy-session-state', running ? (guardWarning ? '运行中，兜底未确认' : '运行中') : phase === 'degraded' ? '需要处理'
       : phase === 'standby' ? '节点核心待机' : '未启用');
     setText('proxy-config-state', config.enabled ? '已启用' : '未启用');
     setText('proxy-runtime-state', running ? '接管中' : status.service_state === 'Unknown' ? '状态未知'

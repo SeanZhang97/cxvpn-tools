@@ -333,17 +333,16 @@ class DesktopController:
     def _watch_shutdown_event(self):
         """外部（打包脚本等）通过命名事件请求优雅退出。"""
         event = self._shutdown_event
-        while not self._exiting:
+        while self._shutdown_event is not None:
             try:
                 signaled = bool(event.WaitOne(1000))
             except Exception:
                 return
             if self._exiting:
-                return
+                continue
             if signaled:
                 self.log('[desktop] 收到外部优雅关闭请求，正在退出并清理托盘')
                 self.request_exit()
-                return
 
     def _on_menu_opening(self, _sender, _args):
         try:
@@ -545,12 +544,24 @@ class DesktopController:
         if self._exiting:
             return
         self._exiting = True
-        self._dispose_native()
-        threading.Thread(target=self.on_exit, daemon=True).start()
+        def finish():
+            try:
+                if self.on_exit() is False:
+                    self._exiting = False
+                    self.log('[desktop] 退出未完成，保留窗口与托盘，请等待当前操作结束后重试')
+                    self.show_window()
+            except Exception as exc:
+                self._exiting = False
+                self.log(f'[desktop] 退出失败，保留应用: {type(exc).__name__}: {exc}')
+        threading.Thread(target=finish, daemon=True, name='desktop-exit').start()
 
     def request_exit(self):
-        """外部优雅关闭入口：先清理托盘图标，再走与托盘退出相同的收尾。"""
+        """外部优雅关闭入口，事务结束后才允许关闭窗口。"""
         self._invoke(self._begin_exit, wait=True)
+
+    def complete_exit(self):
+        self._exit_ready = True
+        self._invoke(self._dispose_native, wait=True)
 
     def _on_form_closing(self, _sender, args):
         # 升级等待安装器期间托盘图标已隐藏；此时点关闭必须真退出，
@@ -564,6 +575,10 @@ class DesktopController:
         if should_hide_to_tray(args.CloseReason, self._exiting, enabled):
             args.Cancel = True
             self.hide_window()
+            return
+        if str(args.CloseReason) == 'UserClosing' and not getattr(self, '_exit_ready', False):
+            args.Cancel = True
+            self._begin_exit()
             return
         # 走到这里表示窗口真的在关闭。系统关机/注销/任务管理器结束前，
         # 先同步清扫本地代理残留（毫秒级注册表操作），再放行退出。
@@ -607,13 +622,7 @@ class DesktopController:
             self._shutdown_event = None
 
     def prepare_update_exit(self):
-        """提交升级后立即隐藏托盘图标。
-
-        升级安装器用 taskkill /F 强杀旧进程，进程死亡时仍可见的
-        NotifyIcon 会以残影形态留在托盘，直到鼠标划过才被 Explorer 清掉；
-        提前把图标置为不可见可让强杀不再产生残影。等待安装期间用户点
-        关闭必须真退出，因此同时抑制关闭到托盘。
-        """
+        """等待安装时隐藏托盘；关闭窗口仍须经过事务协调，失败后可恢复。"""
         self._suppress_close_to_tray = True
 
         def hide():

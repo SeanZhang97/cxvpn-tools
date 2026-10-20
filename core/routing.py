@@ -14,6 +14,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,6 +36,7 @@ from core import routing_selection as _selection
 from core import routing_auto_policy as _auto_policy
 from core import routing_aggregate as _aggregate
 from core import routing_business as _business
+from core import routing_protection as _protection
 from core import routing_rules as _routing_rules
 from core import routing_service as _routing_service
 from core.routing_tasks import commit_scope
@@ -873,6 +875,11 @@ def _effective_rules(config):
         if key not in seen:
             rules.append(raw)
             seen.add(key)
+            condition, _, target = raw.rpartition(',')
+            if target == 'proxy' or target.startswith(('proxy:', 'outbound:')):
+                # Mihomo 会跳过不支持 UDP 的代理；同条件拒绝必须紧邻，
+                # 防止流量继续命中后续直连规则或核心隐式 DIRECT。
+                rules.append(f'{condition},block')
 
     # 授权入口不能依赖正由它续期的 VPN；包括全局模式。
     if _authorization_direct(config):
@@ -1439,6 +1446,8 @@ def build_mihomo_config(config, vpns, excluded_routes=None, system_proxy='',
     rules = [f'DOMAIN,{domain},PHYSICAL' for domain in vpn_domains]
     if standby:
         rules.append('MATCH,PROXY' if enabled_providers else 'MATCH,PHYSICAL')
+        if enabled_providers:
+            rules.append('MATCH,REJECT')
     else:
         for raw in _effective_rules(config):
             parts = raw.split(',')
@@ -1758,6 +1767,7 @@ def _free_loopback_port():
 class RoutingManager:
     def __init__(self, logger=None):
         self.log = logger or (lambda _message: None)
+        self._udp_guard_cache = None
         self._data_dir = os.path.join(cfgmod.BASE, 'routing_data')
         program_data = os.environ.get('ProgramData', r'C:\ProgramData')
         self._service_dir = os.path.join(
@@ -2851,6 +2861,7 @@ if ($service) {{
                 'delay': delay, 'groups': self.proxy_overview(normalized)}
 
     def select_proxy_node(self, config, group_id, node_name):
+        self._udp_guard_cache = None
         normalized = normalize_config(config)
         internal_name, display_name, strategy = self._group_identity(
             normalized, group_id)
@@ -2900,6 +2911,81 @@ if ($service) {{
         self._log_best_effort(f'[routing] 节点切换回读已确认: group={group_id}')
         return {'ok': True, 'msg': f'“{display_name}”已切换节点', 'groups': groups}
 
+    def _read_udp_guards(self, config, runtime_mode='active', timeout=2.5):
+        deadline = time.monotonic() + timeout
+        running = self._controller_request(config, '/configs', timeout=timeout)
+        mode = running.get('mode') if isinstance(running, dict) else None
+        if mode != 'rule':
+            return {'state': 'failed' if mode in ('direct', 'global') else 'unknown',
+                    'message': '核心未确认使用规则模式，UDP 拒绝兜底未确认生效'}
+        if runtime_mode == 'standby' and config['capture_mode'] == 'tun':
+            targets = ['PROXY'] if any(p['enabled'] for p in config['proxy_providers']) else []
+        else:
+            targets = [target for raw in _effective_rules(config)
+                       if (target := _protection.proxy_target(raw.rsplit(',', 1)[-1]))]
+        return _protection.inspect_rules(
+            self._controller_request(config, '/rules', timeout=self._remaining_timeout(deadline)), targets)
+
+    def _require_udp_guards(self, config, runtime_mode='active', timeout=2.5):
+        started = time.monotonic()
+        self._udp_guard_cache = None
+        self._log_best_effort(f'[routing] 开始回读 UDP 拒绝兜底：Controller /configs、/rules，总期限={timeout:.1f}秒')
+        try:
+            result = self._read_udp_guards(config, runtime_mode, timeout)
+            if result['state'] not in ('verified', 'not_required'):
+                raise RoutingError(result['message'])
+        except Exception as exc:
+            self._log_best_effort(f'[routing] UDP 拒绝兜底核验失败：{type(exc).__name__}，耗时={time.monotonic()-started:.2f}秒\n'
+                                 f'{"".join(traceback.format_tb(exc.__traceback__))}')
+            raise
+        self._log_best_effort(f'[routing] UDP 拒绝兜底核验完成：规则={result["guard_count"]}，耗时={time.monotonic()-started:.2f}秒')
+
+    def udp_guard_status(self, config, service, quick=False, refresh=False):
+        unknown = {'state': 'unknown', 'message': 'UDP 拒绝兜底尚未确认，请重新检查'}
+        if not service.get('runtime_running'):
+            return {'state': 'inactive', 'message': '核心未运行，UDP 拒绝兜底未生效'}
+        if service.get('pending_transaction') or service.get('backend') != 'native':
+            return unknown
+        signature = self._config_signature(config)
+        if service.get('applied_config_signature') != signature:
+            return {**unknown, 'message': '保存配置与运行配置尚未确认一致，请重新应用'}
+        key = (signature, service.get('config_sha256'), service.get('mihomo_pid'), service.get('runtime_mode'))
+        cached = getattr(self, '_udp_guard_cache', None)
+        if not refresh and cached and cached[0] == key and time.monotonic() - cached[1] < 30:
+            return dict(cached[2])
+        if quick:
+            return unknown
+        started = time.monotonic()
+        self._log_best_effort('[routing] UDP 拒绝兜底复核开始：Controller /configs、/rules，总期限=2.5秒')
+        try:
+            result = self._read_udp_guards(config, service.get('runtime_mode', 'active'))
+        except (OSError, ValueError, urllib.error.URLError, RoutingError) as exc:
+            result = unknown
+            self._log_best_effort(f'[routing] UDP 拒绝兜底复核失败：{type(exc).__name__}\n'
+                                 f'{"".join(traceback.format_tb(exc.__traceback__))}')
+        result = {**result, 'checked_at': int(time.time())}
+        self._udp_guard_cache = (key, time.monotonic(), result)
+        self._log_best_effort(f'[routing] UDP 拒绝兜底复核结束：{result["state"]}，耗时={time.monotonic()-started:.2f}秒')
+        return dict(result)
+
+    def reconcile_udp_guards(self, config, service):
+        """启动对账只修复已确认缺失的守卫，不抢占其它代理或未知运行态。"""
+        result = self.udp_guard_status(config, service, refresh=True)
+        if result['state'] != 'failed':
+            self._log_best_effort(f'[routing] 启动 UDP 拒绝兜底复核：{result["state"]}')
+            return
+        if service.get('service_compatible') is not True:
+            self._log_best_effort('[routing] UDP 拒绝兜底缺失，服务版本未确认兼容，请手动重新应用')
+            return
+        self._log_best_effort('[routing] 已确认 UDP 拒绝兜底缺失，按原保存配置重新应用，不更改节点或例外')
+        # 待机复用只比较保存签名，缺失守卫时必须重新生成待机配置。
+        if not config['enabled']:
+            self._start_standby_runtime(config)
+        else:
+            applied = self.apply(config)
+            if not applied.get('ok'):
+                raise RoutingError('启动 UDP 拒绝兜底恢复失败，请重新应用配置')
+
     def status(self, config, quick=False):
         normalized = normalize_config(config)
         service = self._service_state(allow_powershell=not quick)
@@ -2931,6 +3017,7 @@ if ($service) {{
             'installed': bool(service.get('installed')),
             'running': running,
             'core_running': core_running,
+            'udp_guard': self.udp_guard_status(normalized, service, quick=quick),
             'standby': standby,
             'runtime_mode': runtime_mode,
             'traffic_mode': normalized['traffic_mode'],
@@ -3454,6 +3541,8 @@ if ($service) {{
         self.log(
             f'[routing] Mihomo Controller 已就绪，耗时 {time.monotonic() - started_at:.1f} 秒')
 
+        self._require_udp_guards(config, runtime_mode, self._remaining_timeout(deadline))
+
         if runtime_mode == 'standby':
             self.log('[routing] 待机核心已就绪，不执行系统接管与出口连通性门控')
             return []
@@ -3911,6 +4000,7 @@ if ($service) {{
             '复用常驻 Mihomo，不重载配置')
         warnings = []
         if enabled:
+            self._require_udp_guards(config)
             self._verify_business_outbounds(config)
             for provider_id, target in _selection.manual_runtime_targets(
                     config, _referenced_group_ids(config)):

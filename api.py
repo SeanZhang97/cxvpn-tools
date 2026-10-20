@@ -27,6 +27,7 @@ from core.routing_speedtest import RoutingTestJobs
 from core.routing_api_tasks import RoutingTaskApi
 from core.routing_aggregate import AggregateSelectionApi
 from core.routing_tasks import operation_scope
+from core.routing_shutdown import RoutingSubmissionLock
 from core.routing_updates import RoutingUpdateWorker
 from core.routing_network import RoutingNetworkWorker
 from core.routing_vpn import RoutingVpnWorker
@@ -157,7 +158,9 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         self._init_two_factor(cfgmod.BASE)
         self._vpn_action_lock = threading.Lock()
         self._repair_lock = threading.Lock()
-        self._routing_lock = threading.Lock()
+        self._routing_lock = RoutingSubmissionLock()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_complete = False
         self._routing_revision = 0
         self._repairing = False
         self._repair_result = None
@@ -388,11 +391,16 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                                 result.get('msg') or '启动时恢复系统代理失败')
                         self.log('[routing] 启动时系统代理恢复成功')
                     else:
+                        self.routing.reconcile_udp_guards(current, state)
                         self.log('[routing] 启动时系统代理已与配置一致')
                     return
 
                 if current['enabled'] and state.get('runtime_running') \
                         and state.get('runtime_mode') == 'active':
+                    if actual_proxy:
+                        self.log('[routing] TUN 启动复核检测到其它系统代理，保留当前设置，不自动重新接管')
+                        return
+                    self.routing.reconcile_udp_guards(current, state)
                     self.log(f'[routing] {source}确认 TUN 核心已运行')
                     return
 
@@ -426,6 +434,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                         state.get('runtime_running') and
                         state.get('service_version') ==
                         routing._routing_service.SERVICE_VERSION):
+                    self.routing.reconcile_udp_guards(current, state)
                     self.log('[routing] 待机核心复核完成：当前版本已在运行')
                     return
                 result = self.routing.apply(current)
@@ -440,7 +449,8 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
             except Exception as exc:
                 self.log(
                     f'[routing] 待机核心复核失败：{type(exc).__name__}；'
-                    '代理保持关闭，订阅操作将使用临时核心')
+                    '未确认运行保护状态，请重新检查或应用配置\n'
+                    f'{"".join(traceback.format_tb(exc.__traceback__))}')
             finally:
                 # 前端按 revision 重读运行态；仅唤醒状态流无法刷新待机结果。
                 # 配置没有变更，不调用 _routing_changed 取消正在运行的测速任务。
@@ -629,7 +639,38 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                 return {'ok': False, 'msg': '关闭连接失败，请确认代理核心正在运行'}
 
     def shutdown(self):
-        """解除可能的人工等待并停止后台线程，供托盘退出和窗口关闭使用。"""
+        """关闭提交入口，等待完整应用/保存/补偿边界后才停止后台资源。"""
+        if not self._shutdown_lock.acquire(blocking=False):
+            return False
+        try:
+            if self._shutdown_complete:
+                return True
+            started = time.monotonic()
+            self.log('[shutdown] 退出请求已领取，停止接收路由提交，等待在途事务；期限60秒')
+            if not self._routing_lock.drain(60):
+                self._routing_lock.reopen()
+                self.log('[shutdown] 等待事务超时，已取消退出；当前操作继续执行，请完成后重试')
+                return False
+            try:
+                state = self.routing._native_service.status()
+                if state is None:
+                    self.log('[shutdown] 原生状态不可达，开始确认服务是否未安装；使用既有有界服务查询')
+                    if self.routing._service_state().get('installed') is not False:
+                        raise RuntimeError('路由服务终态不可确认，保留应用，请恢复服务连接后重试')
+                if state and state.get('pending_transaction'):
+                    raise RuntimeError('原生配置事务尚未结束，请先恢复或重新应用配置')
+            except Exception as exc:
+                self._routing_lock.reopen()
+                self.log(f'[shutdown] 事务终态无法确认，取消退出: {type(exc).__name__}: {exc}\n{traceback.format_exc()}')
+                return False
+            self.log(f'[shutdown] 在途提交已结束，开始释放后台资源；耗时{time.monotonic()-started:.2f}秒')
+            self._shutdown_resources()
+            self._shutdown_complete = True
+            return True
+        finally:
+            self._shutdown_lock.release()
+
+    def _shutdown_resources(self):
         self._manual_event.set()
         self._manual_sms_ev.set()
         self._sms_ui = False

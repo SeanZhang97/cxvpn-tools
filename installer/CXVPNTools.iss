@@ -43,11 +43,16 @@ RestartApplications=no
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+WizardSizePercent=110
 SetupLogging=yes
 UninstallLogging=yes
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
+
+[LangOptions]
+DialogFontName=Microsoft YaHei UI
+DialogFontSize=9
 
 [Files]
 ; Core setup only carries dependency metadata. Optional offline build embeds files.
@@ -81,6 +86,13 @@ var
 
 function GetTickCount64(): Int64;
   external 'GetTickCount64@kernel32.dll stdcall';
+
+function OpenEvent(Access: Cardinal; Inherit: Boolean; Name: String): THandle;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SignalEvent(Handle: THandle): Boolean;
+  external 'SetEvent@kernel32.dll stdcall';
+function CloseEvent(Handle: THandle): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
 
 function ValidVersion(Value: String): Boolean;
 var
@@ -323,30 +335,36 @@ end;
 
 function StopRunningApplication(): Boolean;
 var
-  ResultCode: Integer;
+  Handle: THandle;
   Started: Int64;
 begin
   Result := False;
   Started := GetTickCount64;
-  Log('Running application detected; force-stop requested by user');
-  if not Exec(ExpandConstant('{sys}\\taskkill.exe'),
-    '/F /IM "CXVPNTools.exe"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-    MsgBox('无法启动程序终止操作，请先手动退出 CXVPNTools。', mbError, MB_OK);
+  Log('Graceful exit requested; waiting for routing transactions; timeout=90s');
+  if not IsUninstaller then begin
+    WizardForm.StatusLabel.Caption := '正在等待 CXVPNTools 完成当前操作并退出（最多 90 秒）...';
+    WizardForm.Refresh;
+  end;
+  Handle := OpenEvent($0002, False, 'Local\CXVPNTools.Shutdown.v1');
+  if Handle = 0 then begin
+    if not ((IsUninstaller and UninstallSilent) or ((not IsUninstaller) and WizardSilent)) then
+      MsgBox('当前版本不支持自动退出，请手动退出 CXVPNTools 后重试。', mbInformation, MB_OK);
     Exit;
   end;
-  Log('taskkill exit=' + IntToStr(ResultCode) + '; elapsed_ms=' +
-    IntToStr(GetTickCount64 - Started));
-  if (ResultCode <> 0) and AppIsRunning() then begin
-    MsgBox('CXVPNTools 未能终止，卸载已取消。', mbError, MB_OK);
-    Exit;
+  try
+    if not SignalEvent(Handle) then Exit;
+  finally
+    CloseEvent(Handle);
   end;
-  Started := GetTickCount64;
-  while AppIsRunning() and (GetTickCount64 - Started < 5000) do
+  while AppIsRunning() and (GetTickCount64 - Started < 90000) do
     Sleep(100);
   if AppIsRunning() then begin
-    MsgBox('CXVPNTools 仍在运行，卸载已取消。', mbError, MB_OK);
+    Log('Graceful exit timed out; application preserved, installation cancelled');
+    if not ((IsUninstaller and UninstallSilent) or ((not IsUninstaller) and WizardSilent)) then
+      MsgBox('当前操作尚未结束，已保留应用运行。请等待操作完成后重试；安装器不会强制终止程序。', mbInformation, MB_OK);
     Exit;
   end;
+  Log('Graceful exit confirmed; elapsed_ms=' + IntToStr(GetTickCount64 - Started));
   Result := True;
 end;
 
@@ -357,7 +375,11 @@ var
   ForceButton, CancelButton: TNewButton;
 begin
   Result := True;
-  if not AppIsRunning() or UninstallSilent then Exit;
+  if not AppIsRunning() then Exit;
+  if UninstallSilent then begin
+    Result := StopRunningApplication();
+    Exit;
+  end;
   Form := CreateCustomForm(ScaleX(520), ScaleY(190), False, True);
   try
     Form.Caption := 'CXVPNTools 正在运行';
@@ -366,12 +388,12 @@ begin
     Description.SetBounds(ScaleX(16), ScaleY(16), ScaleX(480), ScaleY(92));
     Description.AutoSize := False;
     Description.WordWrap := True;
-    Description.Caption := '检测到 CXVPNTools 当前仍在运行。继续卸载需要强制终止主程序，' + #13#10 +
-      '未保存的操作可能会丢失。请选择“强制终止并继续”或取消卸载。';
+    Description.Caption := '卸载前需要退出 CXVPNTools。' + #13#10 +
+      '将等待当前配置操作完成后退出；无法安全退出时停止卸载。';
     ForceButton := TNewButton.Create(Form);
     ForceButton.Parent := Form;
     ForceButton.SetBounds(ScaleX(256), ScaleY(134), ScaleX(160), ScaleY(28));
-    ForceButton.Caption := '强制终止并继续';
+    ForceButton.Caption := '退出并继续卸载';
     ForceButton.ModalResult := mrOk;
     CancelButton := TNewButton.Create(Form);
     CancelButton.Parent := Form;
@@ -393,7 +415,7 @@ end;
 function ConfirmStopRunningApplicationForUpgrade(): Boolean;
 var
   Form: TSetupForm;
-  Description: TNewStaticText;
+  Heading, Description: TNewStaticText;
   ForceButton, CancelButton: TNewButton;
 begin
   Result := True;
@@ -402,25 +424,33 @@ begin
     Result := StopRunningApplication();
     Exit;
   end;
-  Form := CreateCustomForm(ScaleX(520), ScaleY(190), False, True);
+  Form := CreateCustomForm(ScaleX(460), ScaleY(174), False, True);
   try
-    Form.Caption := 'CXVPNTools 正在运行';
+    Form.Caption := '升级 CXVPNTools';
+    Form.Color := clWhite;
+    Heading := TNewStaticText.Create(Form);
+    Heading.Parent := Form;
+    Heading.SetBounds(ScaleX(24), ScaleY(20), ScaleX(412), ScaleY(26));
+    Heading.Font.Size := 12;
+    Heading.Font.Style := [fsBold];
+    Heading.Caption := '退出应用后继续升级';
     Description := TNewStaticText.Create(Form);
     Description.Parent := Form;
-    Description.SetBounds(ScaleX(16), ScaleY(16), ScaleX(480), ScaleY(92));
+    Description.SetBounds(ScaleX(24), ScaleY(56), ScaleX(412), ScaleY(50));
     Description.AutoSize := False;
     Description.WordWrap := True;
-    Description.Caption := '检测到已安装的 CXVPNTools 当前仍在运行。继续升级需要强制终止旧版本，' + #13#10 +
-      '未保存的操作可能会丢失。请选择“强制终止并继续升级”或取消升级。';
+    Description.Font.Color := $00555555;
+    Description.Caption := 'CXVPNTools 正在运行。将等待当前配置操作完成后退出。' + #13#10 +
+      '用户配置将保留；无法安全退出时停止升级。';
     ForceButton := TNewButton.Create(Form);
     ForceButton.Parent := Form;
-    ForceButton.SetBounds(ScaleX(232), ScaleY(134), ScaleX(184), ScaleY(28));
-    ForceButton.Caption := '强制终止并继续升级';
+    ForceButton.SetBounds(ScaleX(184), ScaleY(122), ScaleX(144), ScaleY(32));
+    ForceButton.Caption := '退出并继续升级';
     ForceButton.ModalResult := mrOk;
     CancelButton := TNewButton.Create(Form);
     CancelButton.Parent := Form;
-    CancelButton.SetBounds(ScaleX(424), ScaleY(134), ScaleX(80), ScaleY(28));
-    CancelButton.Caption := '取消升级';
+    CancelButton.SetBounds(ScaleX(340), ScaleY(122), ScaleX(96), ScaleY(32));
+    CancelButton.Caption := '暂不升级';
     CancelButton.ModalResult := mrCancel;
     CancelButton.Cancel := True;
     Form.ActiveControl := CancelButton;

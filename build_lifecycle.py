@@ -18,9 +18,9 @@ from core import app_paths
 APP_PROCESS_NAMES = ('CXVPNTools', 'CX VPN TOOLS', 'CXVPN管理器')
 STATE_BACKUP_LIMIT = 5
 GRACEFUL_SHUTDOWN_EVENT = r'Local\CXVPNTools.Shutdown.v1'
-GRACEFUL_EXIT_WAIT_SECONDS = 8
+GRACEFUL_EXIT_WAIT_SECONDS = 90
 PROCESS_EXIT_WAIT_SECONDS = 15
-POWERSHELL_TIMEOUT_SECONDS = 45
+POWERSHELL_TIMEOUT_SECONDS = 110
 
 
 class BuildLifecycleError(RuntimeError):
@@ -74,9 +74,9 @@ if ($targets.Count -gt 0) {{
     }} while ([DateTime]::UtcNow -lt $graceful)
   }}
 }}
-foreach ($remaining in @(Get-Process -ErrorAction SilentlyContinue |
-    Where-Object {{ $names -contains $_.ProcessName }})) {{
-  Stop-Process -Id $remaining.Id -Force -ErrorAction Stop
+if (@(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object {{ $names -contains $_.ProcessName }}).Count -gt 0) {{
+  throw '应用未能安全退出，停止打包；请等待当前事务结束后重试，不自动强制终止。'
 }}
 $deadline = [DateTime]::UtcNow.AddSeconds({PROCESS_EXIT_WAIT_SECONDS})
 do {{
@@ -95,13 +95,13 @@ foreach ($root in $roots) {{
 }}
 exit 0
 """
-    print('[build] 正在关闭 CXVPNTools 旧版本实例，等待期限 15 秒')
+    print('[build] 请求安全关闭 CXVPNTools，等待期限 90 秒；超时停止打包')
     output = _powershell(script)
     graceful = any(line.strip() == 'CXVPN_GRACEFUL_SIGNAL=1'
                    for line in (output.splitlines()
                                 if isinstance(output, str) else []))
     print('[build] CXVPNTools 运行实例已全部退出%s' % (
-        '（已响应优雅关闭信号）' if graceful else '（优雅关闭不可用，已强制结束）'))
+        '（优雅关闭后已确认进程退出）' if graceful else '（没有运行实例）'))
     prefix = 'CXVPN_RUNNING_ROOT='
     return [
         os.path.abspath(line[len(prefix):].strip())
@@ -206,6 +206,10 @@ def verify_user_config_unchanged(before):
 
 def prepare_build():
     running_roots = stop_running_apps()
+    from core.routing_service import RoutingServiceClient
+    state = RoutingServiceClient().status()
+    if state and state.get('pending_transaction'):
+        raise BuildLifecycleError('原生路由服务仍有未结束事务，停止打包；请先恢复该事务，不自动提交或回滚')
     create_user_state_backup()
     snapshot = capture_user_config_snapshot()
     snapshot['running_roots'] = running_roots

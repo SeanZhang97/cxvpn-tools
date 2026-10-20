@@ -179,4 +179,10 @@ def templates():
          'domains': ['github.com', 'githubusercontent.com', 'githubassets.com'],
          'note': '覆盖主要网页、API 和下载域名；不保证覆盖 Copilot、第三方站点及全部扩展服务。Git SSH 需进入代理或 TUN。',
          'source': 'https://docs.github.com/en/get-started/using-github/allowing-access-to-githubs-services-from-a-restricted-network'},
+        {'id': 'claude', 'name': 'Claude',
+         'domains': ['claude.ai', 'claude.com', 'anthropic.com', 'claude.app',
+                     'claudeusercontent.com', 'claudemcpcontent.com'],
+         'note': '覆盖 Claude 网页、Anthropic API 与专属内容资源；不包含第三方登录、支付、共享 CDN、MCP 或云厂商入口。'
+                 'Claude Code 流量需进入代理或 TUN；可按实际连接补充域名。',
+         'source': 'https://code.claude.com/docs/en/desktop#network-access-requirements'},
     ]
