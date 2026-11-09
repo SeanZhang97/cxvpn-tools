@@ -63,6 +63,10 @@ def _run_app():
     apply_no_cache_patch()
     purge_stale_webview_cache(
         os.path.join(DATA_ROOT, 'webview_data'), APP_VERSION, log=_boot_log)
+    # 内置授权页使用独立 profile，不能只清理主 UI 的缓存。
+    purge_stale_webview_cache(
+        os.path.join(DATA_ROOT, 'webview_data', 'embed'), APP_VERSION,
+        log=_boot_log)
     api = Api()
     _boot_log(
         f'config loaded: user_data_root={DATA_ROOT}; '
@@ -74,7 +78,7 @@ def _run_app():
         width=1440, height=900, min_size=(1080, 680),
         hidden=True,
         background_color='#0b1020')
-    # 内嵌浏览器面板宿主 = 主窗口; 共用存储目录 (cookie 持久化/共享)
+    # 内嵌面板在 storage/embed 下独立持久化，不与主 UI 共享 Cookie。
     storage = os.path.join(DATA_ROOT, 'webview_data')
     api.worker.main_window = win
     api.worker.storage_path = storage

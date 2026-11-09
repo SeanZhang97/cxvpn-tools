@@ -30,8 +30,10 @@ import urllib.request
 
 try:
     from . import config as _cfg
+    from . import captcha_slider
 except ImportError:  # 直接运行旧目录时兼容
     import config as _cfg
+    import captcha_slider
 
 
 _VLM_TIMEOUT = 35
@@ -2172,6 +2174,12 @@ def handle_captcha(page, cfg, log=print, manual_timeout=300,
     manual_provider: callable(sprite_bytes, timeout, tip_bytes) -> [(x,y)*3]
     或 None, 由工具 GUI 内人工点击提供坐标 (无头浏览器下的唯一人工通道)。
     """
+    if captcha_slider.is_slider(page):
+        slider_result = captcha_slider.handle_slider(
+            page, cfg, log, sms_sent=_sms_sent, popup_visible=_popup_visible,
+            refresh=_refresh, cancel=cancel, manual_timeout=manual_timeout)
+        if slider_result is not None:
+            return slider_result
     vlm_cfg = cfg.get('vlm') if vlm_configured(cfg) else None
     max_attempts = cfg.get('captcha_max_attempts', 10)
     ai_unavailable = False

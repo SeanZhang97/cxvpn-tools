@@ -11,9 +11,10 @@ import time
 import urllib.parse
 
 try:
-    from . import captcha_handler, sms_receiver
+    from . import captcha_handler, captcha_slider, sms_receiver
 except ImportError:  # 直接运行旧目录时兼容
     import captcha_handler
+    import captcha_slider
     import sms_receiver
 
 URL = 'https://remote.chaoxing.com/vpn'
@@ -329,9 +330,13 @@ def ensure_authorized(page, cfg, log=print, manual=None,
                     '(站点JS可能未就绪), 重试点击')
                 _sleep(1, cancel)
             if popup:
-                log('[web] 检测到图标点选验证码弹窗 '
-                    '(须先通过图标验证码, 站点才会发送短信)')
-                if captcha_handler.vlm_configured(cfg):
+                slider = captcha_slider.is_slider(page)
+                log('[web] 已提交滑块自动验证任务' if slider else
+                    '[web] 检测到图标点选验证码弹窗 '
+                    '(须先通过图形验证码, 站点才会发送短信)')
+                if slider:
+                    report(3, '正在完成滑块验证', '自动验证失败时可在浏览器中拖动滑块')
+                elif captcha_handler.vlm_configured(cfg):
                     report(3, '正在识别图形验证码',
                            'AI 识别失败时将自动转为人工点击')
                 else:

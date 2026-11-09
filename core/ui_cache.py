@@ -107,13 +107,15 @@ def purge_stale_webview_cache(storage_path, version, log=None):
         except OSError as exc:
             result['errors'].append(
                 f'{target}: {type(exc).__name__}: {exc}')
-    try:
-        os.makedirs(storage_path, exist_ok=True)
-        with open(marker, 'w', encoding='utf-8') as stream:
-            stream.write(current)
-    except OSError as exc:
-        result['errors'].append(
-            f'{marker}: {type(exc).__name__}: {exc}')
+    # 清理失败不能推进标记，否则同版本下次启动会永久跳过失败目录。
+    if not result['errors']:
+        try:
+            os.makedirs(storage_path, exist_ok=True)
+            with open(marker, 'w', encoding='utf-8') as stream:
+                stream.write(current)
+        except OSError as exc:
+            result['errors'].append(
+                f'{marker}: {type(exc).__name__}: {exc}')
 
     result['reason'] = 'version-changed' if previous else 'first-run'
     result['purged'] = not result['errors']

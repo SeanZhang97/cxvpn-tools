@@ -19,6 +19,7 @@ evaluate / eval_on_selector / query_selector(_all) / click / goto /
 reload / url / bring_to_front / wait_for_selector。
 """
 import json
+import math
 import os
 import secrets
 import threading
@@ -733,6 +734,12 @@ class PageShim:
     def bring_to_front(self):
         self.b.bring_to_front()
 
+    def drag_slider(self, snapshot, offset, cancel=None):
+        return self.b.drag_slider(snapshot, offset, cancel=cancel)
+
+    def prepare_slider(self):
+        self.b.prepare_slider()
+
 
 class NativeBrowser:
     """主窗口内嵌的 WebView2 浏览器面板"""
@@ -754,6 +761,146 @@ class NativeBrowser:
         self._net = []
         self._overlay_lock = threading.Lock()
         self._overlay_payload = None
+        self._input_lock = threading.Lock()
+
+    def prepare_slider(self):
+        """WebView2 隐藏/最小化时不接收原生输入，拖动前恢复实际画布。"""
+        from System.Windows.Forms import FormWindowState
+        visible, minimized, panel_visible = self._ui(lambda: (
+            bool(self.form.Visible),
+            self.form.WindowState == FormWindowState.Minimized,
+            bool(self.ctrl.Visible)))
+        if visible and not minimized and panel_visible:
+            return
+        self.log('[slider] 已提交浏览器显示请求，准备原生输入，桥接超时=20s')
+        if not visible:
+            self.mw.show()
+        if minimized:
+            self.mw.restore()
+        # 与主 UI 的导航及 worker.browser_visible 同步，不能只让原生控件
+        # 覆盖当前业务页面。无主 UI 的独立验证窗口只恢复原生画布。
+        self.mw.evaluate_js(
+            'void (window.goToPage && window.goToPage("browser"))')
+        self.set_visible(True)
+        self.log('[slider] 浏览器显示请求已执行')
+
+    def call_devtools(self, method, params, timeout=5):
+        """从 worker 有界调用 WebView2 CDP，不在 UI 线程等待异步结果。"""
+        from System import Action, String
+        from System.Threading.Tasks import Task
+        done = threading.Event()
+        result = {}
+        deadline = time.monotonic() + timeout
+
+        def completed(task):
+            try:
+                result['value'] = json.loads(str(task.Result))
+            except Exception as exc:
+                result['error'] = exc
+            finally:
+                done.set()
+
+        def submit():
+            if time.monotonic() >= deadline:
+                done.set()
+                return
+            try:
+                self._core.CallDevToolsProtocolMethodAsync(
+                    method, json.dumps(params)).ContinueWith(
+                        Action[Task[String]](completed))
+            except Exception as exc:
+                result['error'] = exc
+                done.set()
+
+        self.form.BeginInvoke(Action(submit))
+        if not done.wait(max(0, deadline - time.monotonic())):
+            raise TimeoutError(f'WebView2 {method} 超时 ({timeout}s)')
+        if 'error' in result:
+            raise RuntimeError(f'WebView2 {method} 调用失败') from result['error']
+        if 'value' not in result:
+            raise TimeoutError(f'WebView2 {method} 调度超时')
+        return result['value']
+
+    def drag_slider(self, snapshot, offset, cancel=None):
+        """拖动实际控件并按渲染位置校正，释放前确认图像未换题。"""
+        from .captcha_slider import read_slider, same_challenge
+        if not math.isfinite(offset) or offset <= 0:
+            raise ValueError('滑块位移无效')
+        if not self._input_lock.acquire(blocking=False):
+            raise RuntimeError('浏览器输入任务正在执行')
+        started = time.monotonic()
+        deadline = started + 8
+        pressed = False
+        released = False
+        start_x = start_y = 0
+
+        def checkpoint():
+            if cancel and cancel():
+                raise InterruptedError('滑块拖动已取消')
+            if time.monotonic() >= deadline:
+                raise TimeoutError('滑块拖动超时 (8s)')
+
+        def mouse(kind, x, y, buttons=1):
+            self.call_devtools('Input.dispatchMouseEvent', {
+                'type': kind, 'x': x, 'y': y,
+                'button': 'none' if kind == 'mouseMoved' and not buttons else 'left',
+                'buttons': buttons, 'clickCount': 1,
+            }, timeout=max(0.05, min(2, deadline - time.monotonic())))
+
+        try:
+            checkpoint()
+            current = read_slider(self.page)
+            if not same_challenge(snapshot, current) or current['pieceLeft'] > 2:
+                raise RuntimeError('滑块题目或位置已变化，未提交拖动')
+            knob = current['knob']
+            start_x, start_y = knob['x'] + knob['w'] / 2, knob['y'] + knob['h'] / 2
+            if offset >= current['width'] - current['pieceWidth']:
+                raise ValueError('滑块目标超出图像范围')
+            self.log('[slider] 拖动任务已领取，开始 WebView2 输入，超时=8s')
+            mouse('mouseMoved', start_x, start_y, 0)
+            time.sleep(0.1)
+            pressed = True
+            mouse('mousePressed', start_x, start_y)
+            for step in range(1, 25):
+                checkpoint()
+                fraction = step / 24
+                distance = offset * fraction * fraction * (3 - 2 * fraction)
+                # 保留完整的二维指针移动，且始终处于拖动按钮高度之内。
+                mouse('mouseMoved', start_x + distance,
+                      start_y + min(3, knob['h'] / 8) * math.sin(math.pi * fraction))
+                time.sleep(0.025)
+            # SDK 的按钮与拼图宽度不同，不能把按钮位移直接当成拼图位移。
+            current = read_slider(self.page)
+            if not same_challenge(snapshot, current):
+                raise RuntimeError('拖动期间验证码已换题')
+            correction = offset - current['pieceLeft']
+            if abs(correction) > 24:
+                raise RuntimeError('滑块没有按预期移动')
+            for step in range(1, 6):
+                checkpoint()
+                mouse('mouseMoved', start_x + offset + correction * step / 5,
+                      start_y)
+                time.sleep(0.025)
+            current = read_slider(self.page)
+            checkpoint()
+            if (not same_challenge(snapshot, current) or
+                    abs(current['pieceLeft'] - offset) > 2):
+                raise RuntimeError('滑块位置核对失败，未提交校验')
+            mouse('mouseReleased', start_x + offset + correction, start_y, 0)
+            released = True
+            self.log(f'[slider] 拖动已提交，等待站点校验，耗时='
+                     f'{time.monotonic() - started:.2f}s')
+            return True
+        finally:
+            if pressed and not released:
+                # 取消/异常时先回起点再释放，避免把途中位置当成成功答案提交。
+                try:
+                    deadline = time.monotonic() + 2
+                    mouse('mouseMoved', start_x, start_y)
+                    mouse('mouseReleased', start_x, start_y, 0)
+                except Exception as exc:
+                    self.log(f'[slider] 输入清理失败: {type(exc).__name__}')
+            self._input_lock.release()
 
     # ---------- UI 线程调度 ----------
     def _ui(self, fn):
@@ -885,6 +1032,17 @@ class NativeBrowser:
         self._ui(self._create_ctrl)
         if not self._ready.wait(30):
             raise Exception('内嵌浏览器初始化超时')
+        # 授权站点曾在相同脚本 URL 下更新验证码类型。独立 profile 全程
+        # 绕过 HTTP 缓存，避免普通 Reload 再使用旧脚本；不清 Cookie/存储。
+        self.log('[browser] 已提交授权页缓存策略，超时=10s')
+        try:
+            self.call_devtools('Network.enable', {})
+            self.call_devtools('Network.setCacheDisabled', {'cacheDisabled': True})
+        except Exception as exc:
+            self.log(f'[browser] 授权页缓存策略失败: {type(exc).__name__}，停止导航')
+            self.destroy()
+            raise
+        self.log('[browser] 授权页缓存策略已生效，保留 Cookie 和登录态')
         self.alive = True
         self.log('[browser] 内嵌浏览器面板已创建 (主窗口内)')
         self.goto(url)
