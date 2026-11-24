@@ -64,6 +64,17 @@ class SingleInstanceGuard:
         self._handles = []
 
 
+def show_form_in_place(form, minimized_state):
+    """在 UI 线程显示窗口，沿用 Windows 保存的普通或最大化布局。"""
+    form.Show()
+    if form.WindowState == minimized_state:
+        # 强制设为 Normal 会丢失“从最大化最小化”的还原状态。
+        show_window = ctypes.windll.user32.ShowWindow
+        show_window.argtypes = [wintypes.HWND, ctypes.c_int]
+        show_window.restype = wintypes.BOOL
+        show_window(form.Handle.ToInt64(), 9)  # SW_RESTORE
+
+
 def activate_existing_window(title=None, user32=None, attempts=30,
                              delay=0.1):
     """唤醒已运行实例；首次实例仍在创建窗口时会短暂重试。"""
@@ -468,9 +479,7 @@ class DesktopController:
             action()
 
     def _show_native(self):
-        if self._native.WindowState == self._window_state.Minimized:
-            self._native.WindowState = self._window_state.Normal
-        self._native.Show()
+        show_form_in_place(self._native, self._window_state.Minimized)
         self._native.Activate()
 
     def _on_window_resize(self, _sender=None, _args=None):

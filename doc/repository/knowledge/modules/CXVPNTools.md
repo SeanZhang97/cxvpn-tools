@@ -147,7 +147,8 @@ VPN 配置表格服务器列固定使用两行内容：服务器地址，以及�
   独立窗口: `core/browser_win.NativeBrowser` 在主窗口 WinForms 表单内
   `Controls.Add` 第二个 WebView2 控件。主 UI 始终铺满窗口, 原生控件只覆盖
   浏览器页预留画布 (侧栏 216px, 工作区边距 22px, 顶栏 58px), 不再加宽
-  窗口或横向分栏; 导航离开浏览器页时 `browser_set_visible(false)` 隐藏控件。
+  窗口或横向分栏; 导航离开浏览器页时 `browser_set_visible(false)` 把原生控件移出
+  客户区停放 (不设 `Visible=False`, 见 [内嵌浏览器画布停放](内嵌浏览器画布停放.md))。
   同表面第二控件与主窗口共用 UserDataFolder 报 0x8007139F (独立窗口+同目录
   可行), 故面板用独立子目录 webview_data/embed/ (持久化, 首次需登录一次)。
   主窗口与面板的 profile 都落在

@@ -192,9 +192,6 @@ def handle_slider(page, cfg, log, *, sms_sent, popup_visible,
                 log('[slider] 站点已切换为图标点选，移交既有验证流程')
                 return None
             try:
-                prepare = getattr(page, 'prepare_slider', None)
-                if callable(prepare):
-                    prepare()
                 if cancel and cancel():
                     raise InterruptedError('滑块验证已取消')
                 snapshot = read_slider(page)

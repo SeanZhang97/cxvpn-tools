@@ -3,7 +3,8 @@
 
 真·内嵌: 主窗口 (pywebview/WinForms) 内追加第二个 WebView2 控件，覆盖在
 浏览器页预留的工作区画布内。主 UI 始终铺满窗口，切换其它页面时原生控件
-隐藏；浏览器使用独立持久化目录，原生渲染 60fps，用户可直接操作。
+移出客户区停放 (保持可见状态，页面不进入后台限频，原生输入照常送达)；
+浏览器使用独立持久化目录，原生渲染 60fps，用户可直接操作。
 
 - 自动化经 JS 桥接驱动: ExecuteScriptAsync **不等待 JS Promise**
   (async 脚本直接返回 '{}'), 桥接以"两阶段等待"补齐 —— async 表达式
@@ -737,9 +738,6 @@ class PageShim:
     def drag_slider(self, snapshot, offset, cancel=None):
         return self.b.drag_slider(snapshot, offset, cancel=cancel)
 
-    def prepare_slider(self):
-        self.b.prepare_slider()
-
 
 class NativeBrowser:
     """主窗口内嵌的 WebView2 浏览器面板"""
@@ -748,7 +746,8 @@ class NativeBrowser:
         self.mw = main_window
         self.storage_path = storage_path
         self.log = log
-        self.initial_visible = bool(visible)
+        self.parked = not bool(visible)
+        self._client_size = None
         self.form = None
         self.ctrl = None
         self.ui_view = None
@@ -762,27 +761,6 @@ class NativeBrowser:
         self._overlay_lock = threading.Lock()
         self._overlay_payload = None
         self._input_lock = threading.Lock()
-
-    def prepare_slider(self):
-        """WebView2 隐藏/最小化时不接收原生输入，拖动前恢复实际画布。"""
-        from System.Windows.Forms import FormWindowState
-        visible, minimized, panel_visible = self._ui(lambda: (
-            bool(self.form.Visible),
-            self.form.WindowState == FormWindowState.Minimized,
-            bool(self.ctrl.Visible)))
-        if visible and not minimized and panel_visible:
-            return
-        self.log('[slider] 已提交浏览器显示请求，准备原生输入，桥接超时=20s')
-        if not visible:
-            self.mw.show()
-        if minimized:
-            self.mw.restore()
-        # 与主 UI 的导航及 worker.browser_visible 同步，不能只让原生控件
-        # 覆盖当前业务页面。无主 UI 的独立验证窗口只恢复原生画布。
-        self.mw.evaluate_js(
-            'void (window.goToPage && window.goToPage("browser"))')
-        self.set_visible(True)
-        self.log('[slider] 浏览器显示请求已执行')
 
     def call_devtools(self, method, params, timeout=5):
         """从 worker 有界调用 WebView2 CDP，不在 UI 线程等待异步结果。"""
@@ -1069,7 +1047,7 @@ class NativeBrowser:
         ctrl.Dock = dock_none
         form.Controls.Add(ctrl)
         self.ctrl = ctrl
-        ctrl.set_Visible(self.initial_visible)
+        ctrl.TabStop = not self.parked
         self.ui_view.Dock = dock_none
         ctrl.CoreWebView2InitializationCompleted += self._on_ready
         form.Resize += self._on_resize
@@ -1134,18 +1112,39 @@ class NativeBrowser:
         # 主 UI 始终铺满窗口，原生 WebView2 只覆盖浏览器画布，不再横向拼接。
         left, top, right, bottom = 242, 90, 26, 24
         self.ui_view.Bounds = Rectangle(0, 0, w, h)
+        if w > 0 and h > 0:
+            self._client_size = (w, h)
+        else:
+            # 最小化时 WinForms 把客户区压成 0x0；沿用最近尺寸，避免授权页重排。
+            w, h = self._client_size or (
+                self.form.RestoreBounds.Width, self.form.RestoreBounds.Height)
+        width = max(320, w - left - right)
         self.ctrl.Bounds = Rectangle(
-            left, top, max(320, w - left - right),
+            -(width + 40) if self.parked else left, top, width,
             max(240, h - top - bottom))
 
     def set_visible(self, visible):
-        """仅在「浏览器」页显示原生控件，切换其它页面时隐藏。"""
+        """仅在「浏览器」页把原生控件放回画布，切换其它页面时移出客户区停放。"""
+        parked = not bool(visible)
+        if parked == self.parked:
+            return
+        self.parked = parked
         if not self.ctrl:
             return
+        action = '停放' if parked else '恢复'
+        self.log(f'[browser] 已提交浏览器画布{action}请求')
         try:
-            self._ui(lambda: self.ctrl.set_Visible(bool(visible)))
-        except Exception:
-            pass
+            def apply():
+                self.ctrl.TabStop = not parked
+                self._layout()
+                if not parked:
+                    self.ctrl.BringToFront()
+                return None
+            self._ui(apply)
+        except Exception as exc:
+            self.log(f'[browser] 浏览器画布{action}失败: {type(exc).__name__}')
+            return
+        self.log(f'[browser] 浏览器画布已{action}')
 
     def update_overlay(self, progress, rows, net_count=None):
         """把 Python 真实流程状态和已捕获请求推送到页内隔离浮层。"""
@@ -1245,10 +1244,29 @@ class NativeBrowser:
             return ''
 
     def bring_to_front(self):
+        """人工兜底入口：恢复窗口并切到「浏览器」页，停放的画布随之归位。"""
+        self.log('[browser] 已提交人工接管请求，恢复窗口并切到浏览器页')
         try:
+            from System.Windows.Forms import FormWindowState
+            visible, minimized = self._ui(lambda: (
+                bool(self.form.Visible),
+                self.form.WindowState == FormWindowState.Minimized))
+            if not visible or minimized:
+                from .windows_desktop import show_form_in_place
+                self._ui(lambda: show_form_in_place(
+                    self.form, FormWindowState.Minimized))
+            # 显示状态交由主 UI 决定并同步 worker.browser_visible；弹窗打开时
+            # 原生画布不能盖住主界面。无主 UI 的独立验证窗口直接恢复画布。
+            navigated = self.mw.evaluate_js(
+                '(async () => { if (!window.goToPage) return false; '
+                'await window.goToPage("browser"); return true })()')
+            if not navigated:
+                self.set_visible(True)
             self._ui(lambda: (self.form.Activate(), None)[1])
-        except Exception:
-            pass
+        except Exception as exc:
+            self.log(f'[browser] 人工接管显示失败: {type(exc).__name__}')
+            return
+        self.log('[browser] 人工接管显示请求已执行')
 
     def destroy(self):
         """恢复主窗口单栏布局并移除面板"""
