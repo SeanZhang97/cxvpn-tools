@@ -2,8 +2,10 @@
 """超星拼图滑块：本地图像匹配、原生拖动及有界结果等待。"""
 import io
 import math
+import re
 import time
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -115,31 +117,90 @@ def solve_offset(background_bytes, piece_bytes):
             'margin': best - alternate}
 
 
-def download_image(url, log, timeout=10):
+def _error_detail(exc):
+    """保留网络错误原因，但挑战 URL 和查询参数不进入日志。"""
+    reason = getattr(exc, 'reason', None)
+    text = str(exc)
+    if reason is not None and str(reason) not in text:
+        text = f'{text}; reason={reason}'
+    text = re.sub(r"https?://[^\s<>\"']+", '<URL已省略>', text)
+    return text[:300] or '无异常详情'
+
+
+def _check_image_data(data):
+    if not data:
+        raise ValueError('滑块图像为空')
+    if len(data) > 1024 * 1024:
+        raise ValueError('滑块图像超过大小限制')
+    return data
+
+
+def download_image(url, log, timeout=10, page=None):
     parsed = urllib.parse.urlsplit(url)
     if (parsed.scheme != 'https' or parsed.username or parsed.password or
             parsed.hostname not in ('captcha-b.cxdmp.com', 'captcha-b.chaoxing.com') or
             not parsed.path.startswith(('/slide/big/', '/slide/small/'))):
         raise ValueError('滑块图像来源不受支持')
     started = time.monotonic()
+    deadline = started + timeout
     label = '背景' if '/big/' in parsed.path else '拼图'
-    log(f'[slider] 开始下载{label}，来源={parsed.hostname}，超时={timeout}s')
+    log(f'[slider] 开始下载{label}，来源={parsed.hostname}，总期限={timeout}s')
+
+    reader = getattr(page, 'read_image_bytes', None) if page is not None else None
+    if callable(reader):
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('浏览器资源读取期限已耗尽')
+            log(f'[slider] 开始读取 WebView2 已加载{label}，'
+                f'超时={min(2, remaining):.2f}s')
+            data = _check_image_data(reader(url, timeout=min(2, remaining)))
+            log(f'[slider] {label}读取完成，来源=WebView2，'
+                f'耗时={time.monotonic() - started:.2f}s')
+            return data
+        except Exception as exc:
+            log(f'[slider] {label}浏览器资源读取失败: {type(exc).__name__} '
+                f'({_error_detail(exc)})，回退 Python 下载')
+
     request = urllib.request.Request(url, headers={
         'Referer': 'https://remote.chaoxing.com/',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     })
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = response.read(1024 * 1024 + 1)
-        if len(data) > 1024 * 1024:
-            raise ValueError('滑块图像超过大小限制')
-        log(f'[slider] {label}下载完成，耗时={time.monotonic() - started:.2f}s')
-        return data
-    except Exception as exc:
-        # URL 中可能有挑战标识，不把网络异常的原始 URL 写入日志。
-        log(f'[slider] {label}下载失败: {type(exc).__name__}，'
-            f'耗时={time.monotonic() - started:.2f}s')
-        raise RuntimeError(f'{label}下载失败 ({type(exc).__name__})') from None
+    last_error = None
+    for direct in (False, True):
+        source = 'Python直连' if direct else 'Python'
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('滑块图像下载期限已耗尽')
+            if direct:
+                # 系统代理失效时，沿用点选验证码的真实路由直连兜底。
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({}))
+                response_context = opener.open(request, timeout=remaining)
+            else:
+                response_context = urllib.request.urlopen(
+                    request, timeout=remaining)
+            with response_context as response:
+                data = _check_image_data(response.read(1024 * 1024 + 1))
+            log(f'[slider] {label}下载完成，来源={source}，'
+                f'耗时={time.monotonic() - started:.2f}s')
+            return data
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            action = '，下载失败' if direct else '，尝试直连'
+            log(f'[slider] {label}{source}请求失败: {type(exc).__name__} '
+                f'({_error_detail(exc)})，耗时={time.monotonic() - started:.2f}s'
+                f'{action}')
+        except Exception as exc:
+            log(f'[slider] {label}{source}响应无效: {type(exc).__name__} '
+                f'({_error_detail(exc)})')
+            raise RuntimeError(
+                f'{label}下载失败 ({type(exc).__name__}: {_error_detail(exc)})'
+            ) from None
+    raise RuntimeError(
+        f'{label}下载失败 ({type(last_error).__name__}: '
+        f'{_error_detail(last_error)})') from None
 
 
 def _pause(seconds, cancel):
@@ -202,10 +263,10 @@ def handle_slider(page, cfg, log, *, sms_sent, popup_visible,
                     snapshot = read_slider(page)
                 if not snapshot or not snapshot.get('ready'):
                     raise ValueError('滑块图片尚未加载完成')
-                background = download_image(snapshot['background'], log)
+                background = download_image(snapshot['background'], log, page=page)
                 if cancel and cancel():
                     raise InterruptedError('滑块验证已取消')
-                piece = download_image(snapshot['piece'], log)
+                piece = download_image(snapshot['piece'], log, page=page)
                 if cancel and cancel():
                     raise InterruptedError('滑块验证已取消')
                 solution = solve_offset(background, piece)

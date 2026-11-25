@@ -19,6 +19,7 @@ PageShim 提供 web_flow/captcha_handler 所需的 Playwright 兼容子集:
 evaluate / eval_on_selector / query_selector(_all) / click / goto /
 reload / url / bring_to_front / wait_for_selector。
 """
+import base64
 import json
 import math
 import os
@@ -738,6 +739,9 @@ class PageShim:
     def drag_slider(self, snapshot, offset, cancel=None):
         return self.b.drag_slider(snapshot, offset, cancel=cancel)
 
+    def read_image_bytes(self, url, timeout=5):
+        return self.b.read_image_bytes(url, timeout=timeout)
+
 
 class NativeBrowser:
     """主窗口内嵌的 WebView2 浏览器面板"""
@@ -798,6 +802,31 @@ class NativeBrowser:
         if 'value' not in result:
             raise TimeoutError(f'WebView2 {method} 调度超时')
         return result['value']
+
+    def read_image_bytes(self, url, timeout=5):
+        """读取当前页面已加载的图片，避免 Python 与 Chromium 网络栈差异。"""
+        deadline = time.monotonic() + timeout
+        tree = self.call_devtools('Page.getFrameTree', {}, timeout=timeout)
+        frame_id = tree.get('frameTree', {}).get('frame', {}).get('id')
+        if not frame_id:
+            raise RuntimeError('WebView2 主框架不可用')
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('WebView2 图片资源读取超时')
+        resource = self.call_devtools('Page.getResourceContent', {
+            'frameId': frame_id,
+            'url': url,
+        }, timeout=remaining)
+        content = resource.get('content')
+        if not resource.get('base64Encoded') or not isinstance(content, str):
+            raise RuntimeError('WebView2 未返回 Base64 图片资源')
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError('WebView2 图片资源 Base64 解码失败') from exc
+        if not data:
+            raise RuntimeError('WebView2 图片资源为空')
+        return data
 
     def drag_slider(self, snapshot, offset, cancel=None):
         """拖动实际控件并按渲染位置校正，释放前确认图像未换题。"""
