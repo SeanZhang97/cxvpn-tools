@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import msvcrt
+import os
+import sys
 import time
 
 
@@ -11,6 +14,19 @@ class Overlapped(ctypes.Structure):
     _fields_ = [('Internal', ctypes.c_size_t), ('InternalHigh', ctypes.c_size_t),
                 ('Offset', wintypes.DWORD), ('OffsetHigh', wintypes.DWORD),
                 ('hEvent', wintypes.HANDLE)]
+
+
+def pipe_stream(kind):
+    """返回标准流的二进制对象；无控制台进程的 sys.std* 为空，改用继承的句柄。"""
+    stream = getattr(sys, kind)
+    if stream is not None:
+        return stream.buffer
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetStdHandle.argtypes = [ctypes.c_ulong]
+    kernel.GetStdHandle.restype = ctypes.c_void_p
+    handle = kernel.GetStdHandle(-10 if kind == 'stdin' else -11)
+    mode = os.O_BINARY | (os.O_RDONLY if kind == 'stdin' else os.O_WRONLY)
+    return os.fdopen(msvcrt.open_osfhandle(handle, mode), 'rb' if kind == 'stdin' else 'wb')
 
 
 def transfer(handle, buffer, size, writing, deadline):

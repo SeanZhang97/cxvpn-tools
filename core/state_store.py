@@ -15,7 +15,7 @@ import traceback
 from core import app_paths
 
 DB_FILENAME = 'state.sqlite3'
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 _local = threading.local()
 _log = logging.getLogger(__name__)
 _reporter = None
@@ -81,6 +81,23 @@ def _schema(conn):
         conn.execute('CREATE TABLE IF NOT EXISTS otp_account_order ('
                      'account_id TEXT PRIMARY KEY REFERENCES otp_accounts(id) ON DELETE CASCADE, '
                      'position INTEGER NOT NULL CHECK(position>=0))')
+        # 网页快开：同一上级内文件夹与条目共用 position 序列；登录字段可空。
+        conn.execute('CREATE TABLE IF NOT EXISTS web_quick_folders ('
+                     'id TEXT PRIMARY KEY, name TEXT NOT NULL, '
+                     'parent_id TEXT REFERENCES web_quick_folders(id) ON DELETE CASCADE, '
+                     'position INTEGER NOT NULL CHECK(position>=0), '
+                     'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
+        conn.execute('CREATE TABLE IF NOT EXISTS web_quick_items ('
+                     'id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, '
+                     'folder_id TEXT REFERENCES web_quick_folders(id) ON DELETE CASCADE, '
+                     'position INTEGER NOT NULL CHECK(position>=0), '
+                     'platform TEXT, username TEXT, password BLOB, '
+                     'otp_account_id TEXT REFERENCES otp_accounts(id) ON DELETE SET NULL, '
+                     'has_favicon INTEGER NOT NULL DEFAULT 0, '
+                     'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)')
+        columns = {row[1] for row in conn.execute('PRAGMA table_info(web_quick_items)')}
+        if 'has_favicon' not in columns:
+            conn.execute('ALTER TABLE web_quick_items ADD COLUMN has_favicon INTEGER NOT NULL DEFAULT 0')
         conn.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         conn.commit()
     except BaseException:

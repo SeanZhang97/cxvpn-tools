@@ -40,6 +40,7 @@ from build_lifecycle import complete_build, prepare_build
 from build_nuitka_cache import compile_cached, environment_identity
 from core.app_paths import migrate_legacy_user_data
 from core.version import APP_VERSION, APP_VERSION_TUPLE
+from core.version import APP_DISPLAY_NAME
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = 'CXVPNTools'
@@ -49,6 +50,7 @@ DIST_ROOT = os.path.join(DIST_DIR, APP_NAME)
 LEGACY_DIST_ROOTS = [
     os.path.join(DIST_DIR, name) for name in LEGACY_APP_NAMES]
 SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
+SOURCE_EXTENSION_DIR = os.path.join(BASE, 'extension')
 WORK = os.path.join(BASE, 'build_tmp')
 NUITKA_OUT = os.path.join(WORK, 'nuitka_cache')
 PYD_STAGE = os.path.join(WORK, 'pyd_stage')
@@ -107,7 +109,7 @@ hiddenimports += collect_submodules('webview')
 tmp = collect_all('clr_loader')
 datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
 datas += [(@@UI_SRC@@, 'ui'), (@@RULES_SRC@@, 'rule-packs'),
-          (@@RT_SRC@@, 'runtime/routing')]
+          (@@RT_SRC@@, 'runtime/routing'), (@@EXT_SRC@@, 'extension')]
 
 PROTECT = frozenset(STAGED)
 
@@ -150,11 +152,11 @@ def write_spec(staged):
                           prodvers=APP_VERSION_TUPLE, fileType=1),
         kids=[StringFileInfo([StringTable('040904B0', [
             StringStruct('CompanyName', APP_NAME),
-            StringStruct('FileDescription', APP_NAME),
+            StringStruct('FileDescription', APP_DISPLAY_NAME),
             StringStruct('FileVersion', '.'.join(map(str, APP_VERSION_TUPLE))),
             StringStruct('InternalName', APP_NAME + '.exe'),
             StringStruct('OriginalFilename', APP_NAME + '.exe'),
-            StringStruct('ProductName', APP_NAME),
+            StringStruct('ProductName', APP_DISPLAY_NAME),
             StringStruct('ProductVersion', APP_VERSION),
         ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])])
     os.makedirs(WORK, exist_ok=True)
@@ -169,6 +171,7 @@ def write_spec(staged):
             .replace('@@RULES_SRC@@', repr(SOURCE_RULE_PACK_DIR))
             .replace('@@RT_SRC@@', repr(os.path.join(BASE, 'runtime',
                                                      'routing')))
+            .replace('@@EXT_SRC@@', repr(SOURCE_EXTENSION_DIR))
             .replace('@@ICON@@', repr(os.path.join(BASE, 'icon.ico')))
             .replace('@@VERSION_FILE@@', repr(version_file)))
     with open(SPEC_PATH, 'w', encoding='utf-8') as f:

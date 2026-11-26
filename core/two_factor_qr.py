@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 
+from core.pipe_io import pipe_stream
 from core.two_factor import TwoFactorError
 
 MAX_BYTES = 6 * 1024 * 1024
@@ -58,18 +59,7 @@ def _automatic_result(values):
 
 
 def _pipe_stream(kind):
-    stream = getattr(sys, kind)
-    if stream is not None:
-        return stream.buffer
-    # PyInstaller --noconsole 将 sys.std* 置空，但 subprocess 的继承管道仍有效。
-    import ctypes
-    import msvcrt
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel.GetStdHandle.argtypes = [ctypes.c_ulong]
-    kernel.GetStdHandle.restype = ctypes.c_void_p
-    handle = kernel.GetStdHandle(-10 if kind == 'stdin' else -11)
-    mode = os.O_BINARY | (os.O_RDONLY if kind == 'stdin' else os.O_WRONLY)
-    return os.fdopen(msvcrt.open_osfhandle(handle, mode), 'rb' if kind == 'stdin' else 'wb')
+    return pipe_stream(kind)
 
 
 def run_child():

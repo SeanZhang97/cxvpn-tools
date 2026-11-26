@@ -33,6 +33,7 @@ from core.routing_network import RoutingNetworkWorker
 from core.routing_vpn import RoutingVpnWorker
 from core.ui_state_stream import UiStateStream
 from core.two_factor_api import TwoFactorApi
+from core.web_quick_api import WebQuickApi
 from core.worker import Worker
 
 LOG_MAX = 500
@@ -151,11 +152,12 @@ def _safe_console_write(line):
         pass
 
 
-class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
+class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi, WebQuickApi):
     def __init__(self):
         self.cfg = cfgmod.load()
         self._lock = threading.Lock()
         self._init_two_factor(cfgmod.BASE)
+        self._init_web_quick(cfgmod.BASE)
         self._vpn_action_lock = threading.Lock()
         self._repair_lock = threading.Lock()
         self._routing_lock = RoutingSubmissionLock()
@@ -252,6 +254,16 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                 json.dumps(authorization))
             cfgmod.save(self.cfg)
 
+    def _save_window_placement(self, placement):
+        """桌面窗口状态只在退出边界保存，不参与前端配置快照提交。"""
+        if not isinstance(placement, dict):
+            return
+        with self._lock:
+            committed = json.loads(json.dumps(self.cfg))
+            committed['window_placement'] = json.loads(json.dumps(placement))
+            cfgmod.save(committed)
+            self.cfg = committed
+
     def log(self, msg):
         line = _log_single_line(
             f'{datetime.datetime.now():%H:%M:%S} {msg}')
@@ -331,6 +343,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         activity = getattr(self, 'routing_activity', None)
         if activity is not None:
             activity.start()
+        self._start_web_quick()
         if hasattr(self, '_routing_lock'):
             self._start_routing_standby_reconcile()
 
@@ -580,6 +593,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         manual = json.loads(json.dumps(self._manual)) if self._manual else None
         sms = {'id': self._sms_ui_id} if self._sms_ui else None
         app_download = getattr(self, '_app_download', None)
+        web_quick_version = getattr(self, '_web_quick_version', None)
         return {
             'state': self.get_state(),
             'vpn_status': self.vpn_status(),
@@ -592,6 +606,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                           else {'phase': 'idle'},
             'routing_telemetry': self.routing_telemetry.snapshot(),
             'routing_revision': getattr(self, '_routing_revision', 0),
+            'web_quick_revision': web_quick_version() if web_quick_version else 0,
         }
 
     def get_ui_state_snapshot(self):
@@ -681,6 +696,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
         self.routing_network.stop()
         self.routing_vpn.stop()
         self.worker.stop()
+        self._stop_web_quick()
         # 关机清扫失败时保留恢复依据；不能由通用退出流程覆盖其失败结果。
         # 用户普通退出仍只清标记，不碰代理。
         try:
@@ -1161,7 +1177,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                     f'{type(exc).__name__}')
                 result.update(
                     ok=False, key_stored=False,
-                    warning='Codex 配置已写入，但 API Key 保存到 CXVPNTools 失败，请重试保存')
+                    warning='Codex 配置已写入，但 API Key 保存到 CX Toolkit 失败，请重试保存')
         if result.get('changed'):
             result['restart_required_after_change'] = True
         self.log(
@@ -1196,7 +1212,7 @@ class Api(RoutingTaskApi, AggregateSelectionApi, TwoFactorApi):
                         f'[codex-api-key] API Key 本机迁移失败：'
                         f'{type(exc).__name__}')
                     result['key_stored'] = False
-                    result['warning'] = 'API Key 已读取，但保存到 CXVPNTools 失败'
+                    result['warning'] = 'API Key 已读取，但保存到 CX Toolkit 失败'
         self.log(
             f'[codex-api-key] UI 回显请求执行'
             f'{"完成" if result.get("ok") else "失败"}，'

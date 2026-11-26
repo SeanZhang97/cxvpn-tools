@@ -31,7 +31,7 @@ def decrypt(content, password):
     if not isinstance(content, bytes) or not len(MAGIC) + 44 <= len(content) <= MAX_BYTES:
         raise TwoFactorError('备份文件大小或格式无效')
     if not content.startswith(MAGIC):
-        raise TwoFactorError('不支持此备份格式或版本，请选择 CXVPNTools 的 .cx2fa 文件')
+        raise TwoFactorError('不支持此备份格式或版本，请选择 CX Toolkit 的 .cx2fa 文件')
     offset = len(MAGIC)
     salt, nonce = content[offset:offset + 16], content[offset + 16:offset + 28]
     try:

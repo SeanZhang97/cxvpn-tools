@@ -2,8 +2,10 @@
 """应用版本信息的唯一来源。"""
 
 APP_NAME = 'CXVPNTools'
-APP_VERSION = '1.3.9'
-APP_VERSION_TUPLE = (1, 3, 9, 0)
+# 仅界面与安装包显示；数据目录、互斥量、管道等内部标识仍使用 APP_NAME。
+APP_DISPLAY_NAME = 'CX Toolkit'
+APP_VERSION = '1.3.10'
+APP_VERSION_TUPLE = (1, 3, 10, 0)
 GITHUB_REPOSITORY = 'SeanZhang97/cxvpn-tools'
 
 

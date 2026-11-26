@@ -16,7 +16,7 @@ import PyInstaller.__main__
 from build_runtime import build_routing_service
 from build_lifecycle import complete_build, prepare_build
 from core.app_paths import migrate_legacy_user_data
-from core.version import APP_VERSION, APP_VERSION_TUPLE
+from core.version import APP_DISPLAY_NAME, APP_VERSION, APP_VERSION_TUPLE
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = 'CXVPNTools'
@@ -26,13 +26,15 @@ DIST_ROOT = os.path.join(DIST_DIR, APP_NAME)
 LEGACY_DIST_ROOTS = [
     os.path.join(DIST_DIR, name) for name in LEGACY_APP_NAMES]
 SOURCE_RULE_PACK_DIR = os.path.join(BASE, 'rule-packs')
+SOURCE_EXTENSION_DIR = os.path.join(BASE, 'extension')
 
 USER_CONFIG_SNAPSHOT = prepare_build()
 
 
 def _write_version_file():
     major, minor, patch, build = APP_VERSION_TUPLE
-    content = f'''VSVersionInfo(\n  ffi=FixedFileInfo(filevers=({major}, {minor}, {patch}, {build}), prodvers=({major}, {minor}, {patch}, {build}),\n                    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1,\n                    subtype=0x0, date=(0, 0)),\n  kids=[StringFileInfo([StringTable('040904B0', [\n    StringStruct('CompanyName', 'CXVPNTools'),\n    StringStruct('FileDescription', 'CXVPNTools'),\n    StringStruct('FileVersion', '{major}.{minor}.{patch}.{build}'),\n    StringStruct('InternalName', 'CXVPNTools.exe'),\n    StringStruct('OriginalFilename', 'CXVPNTools.exe'),\n    StringStruct('ProductName', 'CXVPNTools'),\n    StringStruct('ProductVersion', '{APP_VERSION}'),\n  ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]\n)\n'''
+    display_name = APP_DISPLAY_NAME
+    content = f'''VSVersionInfo(\n  ffi=FixedFileInfo(filevers=({major}, {minor}, {patch}, {build}), prodvers=({major}, {minor}, {patch}, {build}),\n                    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1,\n                    subtype=0x0, date=(0, 0)),\n  kids=[StringFileInfo([StringTable('040904B0', [\n    StringStruct('CompanyName', 'CXVPNTools'),\n    StringStruct('FileDescription', '{display_name}'),\n    StringStruct('FileVersion', '{major}.{minor}.{patch}.{build}'),\n    StringStruct('InternalName', 'CXVPNTools.exe'),\n    StringStruct('OriginalFilename', 'CXVPNTools.exe'),\n    StringStruct('ProductName', '{display_name}'),\n    StringStruct('ProductVersion', '{APP_VERSION}'),\n  ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]\n)\n'''
     with open(os.path.join(BASE, 'build_version.txt'), 'w', encoding='utf-8') as stream:
         stream.write(content)
 
@@ -76,6 +78,7 @@ args = [
     '--add-data', SOURCE_RULE_PACK_DIR + os.pathsep + 'rule-packs',
     '--add-data', os.path.join(BASE, 'runtime', 'routing') + os.pathsep +
     os.path.join('runtime', 'routing'),
+    '--add-data', SOURCE_EXTENSION_DIR + os.pathsep + 'extension',
     '--collect-all', 'clr_loader',
     '--collect-submodules', 'webview',
     '--hidden-import', 'webview.platforms.edgechromium',

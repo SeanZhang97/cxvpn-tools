@@ -3,19 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CXVPNTools</title>
+  <title>CX Toolkit</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="vendor/uPlot.min.css">
 <link rel="stylesheet" href="routing_activity.css">
 <link rel="stylesheet" href="routing_rules.css">
 <link rel="stylesheet" href="two_factor.css">
+<link rel="stylesheet" href="web_quick.css">
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
     <div class="logo">
       <div class="logo-mark"><img src="logo.png" alt=""></div>
-      <div class="logo-text"><h1>CXVPN<span>Tools</span></h1></div>
+      <div class="logo-text"><h1>CX<span>Toolkit</span></h1></div>
     </div>
     <nav id="nav">
       <button type="button" data-page="overview" class="active" aria-current="page"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg><span>总览</span></button>
@@ -28,9 +29,10 @@
       <button type="button" data-page="connections"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 12h8M12 8v8"/><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/></svg><span>连接</span></button>
       <button type="button" data-page="cx"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>超星账号</span></button>
       <button type="button" data-page="two-factor"><span class="nav-icon otp-icon otp-icon-lock" aria-hidden="true"></span><span>2FA 管理</span></button>
+      <button type="button" data-page="web-quick"><span class="nav-icon wq-icon wq-icon-quick" aria-hidden="true"></span><span>网页快开</span></button>
       <button type="button" data-page="vlm"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m4 20 11-11"/><path d="m12.5 6.5 5 5"/><path d="M18 2v4M16 4h4"/><path d="M6 5v3M4.5 6.5h3"/><path d="M19 15v4M17 17h4"/></svg><span>自动化配置</span></button>
       <button type="button" data-page="browser"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg><span>浏览器</span></button>
-      <button type="button" data-page="codex"><svg class="nav-icon codex-nav-icon" aria-hidden="true" viewBox="0 0 100 100"><path d="M38.355 36.52v-9.415c0-.793.297-1.388.99-1.784l18.93-10.902c2.578-1.486 5.65-2.18 8.82-2.18 11.894 0 19.426 9.218 19.426 19.029 0 .694 0 1.486-.1 2.28L66.799 22.05c-1.189-.694-2.379-.694-3.568 0L38.355 36.52Zm44.202 36.67V50.694c0-1.388-.596-2.38-1.785-3.073L55.897 33.15l8.126-4.658c.694-.396 1.289-.396 1.982 0l18.93 10.902c5.452 3.172 9.118 9.91 9.118 16.452 0 7.531-4.46 14.47-11.496 17.344Zm-50.05-19.82-8.127-4.757c-.693-.396-.99-.99-.99-1.784V25.025c0-10.605 8.126-18.633 19.127-18.633 4.163 0 8.028 1.388 11.3 3.865l-19.525 11.3c-1.189.693-1.784 1.684-1.784 3.072v28.74ZM50 63.478l-11.645-6.541V43.062L50 36.522l11.645 6.54v13.875L50 63.477Zm7.483 30.129c-4.163 0-8.028-1.388-11.3-3.865l19.525-11.3c1.189-.693 1.784-1.684 1.784-3.071V46.629l8.226 4.757c.694.396.991.991.991 1.784v21.803c0 10.605-8.226 18.633-19.226 18.633v.001Zm-23.49-22.101-18.93-10.902c-5.45-3.172-9.117-9.91-9.117-16.451 0-7.632 4.559-14.47 11.595-17.344v22.596c0 1.388.595 2.379 1.784 3.072l24.777 14.37-8.126 4.659c-.694.396-1.289.396-1.982 0ZM32.905 87.76c-11.2 0-19.425-8.425-19.425-18.83 0-.794.1-1.587.198-2.38L33.2 77.85c1.189.693 2.379.693 3.568 0l24.876-14.37v9.415c0 .793-.298 1.388-.992 1.784L41.724 85.58c-2.576 1.486-5.649 2.18-8.82 2.18h.001Zm24.579 11.793c11.992 0 22.001-8.523 24.281-19.822C92.864 76.857 100 66.451 100 55.846c0-6.937-2.973-13.676-8.325-18.533.496-2.081.793-4.163.793-6.243 0-14.172-11.496-24.777-24.777-24.777-2.676 0-5.253.396-7.83 1.288C55.401 3.221 49.257.445 42.517.445c-11.992 0-22.001 8.523-24.281 19.822C7.136 23.14 0 33.547 0 44.152c0 6.938 2.973 13.676 8.325 18.533-.496 2.081-.793 4.163-.793 6.243 0 14.172 11.497 24.778 24.777 24.778 2.676 0 5.253-.397 7.83-1.289 4.459 4.36 10.604 7.136 17.344 7.136Z"/></svg><span>Codex</span></button>
+      <button type="button" data-page="codex" class="hidden"><svg class="nav-icon codex-nav-icon" aria-hidden="true" viewBox="0 0 100 100"><path d="M38.355 36.52v-9.415c0-.793.297-1.388.99-1.784l18.93-10.902c2.578-1.486 5.65-2.18 8.82-2.18 11.894 0 19.426 9.218 19.426 19.029 0 .694 0 1.486-.1 2.28L66.799 22.05c-1.189-.694-2.379-.694-3.568 0L38.355 36.52Zm44.202 36.67V50.694c0-1.388-.596-2.38-1.785-3.073L55.897 33.15l8.126-4.658c.694-.396 1.289-.396 1.982 0l18.93 10.902c5.452 3.172 9.118 9.91 9.118 16.452 0 7.531-4.46 14.47-11.496 17.344Zm-50.05-19.82-8.127-4.757c-.693-.396-.99-.99-.99-1.784V25.025c0-10.605 8.126-18.633 19.127-18.633 4.163 0 8.028 1.388 11.3 3.865l-19.525 11.3c-1.189.693-1.784 1.684-1.784 3.072v28.74ZM50 63.478l-11.645-6.541V43.062L50 36.522l11.645 6.54v13.875L50 63.477Zm7.483 30.129c-4.163 0-8.028-1.388-11.3-3.865l19.525-11.3c1.189-.693 1.784-1.684 1.784-3.071V46.629l8.226 4.757c.694.396.991.991.991 1.784v21.803c0 10.605-8.226 18.633-19.226 18.633v.001Zm-23.49-22.101-18.93-10.902c-5.45-3.172-9.117-9.91-9.117-16.451 0-7.632 4.559-14.47 11.595-17.344v22.596c0 1.388.595 2.379 1.784 3.072l24.777 14.37-8.126 4.659c-.694.396-1.289.396-1.982 0ZM32.905 87.76c-11.2 0-19.425-8.425-19.425-18.83 0-.794.1-1.587.198-2.38L33.2 77.85c1.189.693 2.379.693 3.568 0l24.876-14.37v9.415c0 .793-.298 1.388-.992 1.784L41.724 85.58c-2.576 1.486-5.649 2.18-8.82 2.18h.001Zm24.579 11.793c11.992 0 22.001-8.523 24.281-19.822C92.864 76.857 100 66.451 100 55.846c0-6.937-2.973-13.676-8.325-18.533.496-2.081.793-4.163.793-6.243 0-14.172-11.496-24.777-24.777-24.777-2.676 0-5.253.396-7.83 1.288C55.401 3.221 49.257.445 42.517.445c-11.992 0-22.001 8.523-24.281 19.822C7.136 23.14 0 33.547 0 44.152c0 6.938 2.973 13.676 8.325 18.533-.496 2.081-.793 4.163-.793 6.243 0 14.172 11.497 24.778 24.777 24.778 2.676 0 5.253-.397 7.83-1.289 4.459 4.36 10.604 7.136 17.344 7.136Z"/></svg><span>Codex</span></button>
       <button type="button" data-page="help"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.5 2.5 0 1 1 3.7 2.2c-1 .6-1.5 1.1-1.5 2.3"/><path d="M12 17h.01"/></svg><span>帮助说明</span></button>
       <button type="button" data-page="logs"><svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg><span>日志</span></button>
     </nav>
@@ -779,6 +781,37 @@
       <p id="otp-count" class="otp-count" aria-live="polite"></p>
       <span id="otp-order-status" class="otp-order-status" role="status" aria-live="polite"></span>
     </section>
+    <section id="page-web-quick" class="page wq-page">
+      <header class="wq-heading">
+        <div class="wq-heading-main"><span class="module-icon wq-heading-icon"><span class="wq-icon wq-icon-quick" aria-hidden="true"></span></span><div><h2>网页快开</h2><p>像收藏夹一样整理常用网址，部分站点可以自动登录</p></div></div>
+      </header>
+      <div class="wq-toolbar">
+        <label class="wq-search"><span class="wq-icon wq-icon-search" aria-hidden="true"></span><input id="wq-search" type="search" placeholder="搜索所有文件夹中的名称或网址" aria-label="搜索名称或网址" autocomplete="off"></label>
+        <div class="wq-toolbar-actions">
+          <button type="button" id="wq-new-folder" class="btn"><span class="wq-icon wq-icon-folder-plus" aria-hidden="true"></span>新建文件夹</button>
+          <button type="button" id="wq-add" class="btn primary"><span class="wq-icon wq-icon-plus" aria-hidden="true"></span>添加网址</button>
+        </div>
+      </div>
+      <nav id="wq-path" class="wq-path" aria-label="当前位置"></nav>
+      <div id="wq-feedback" class="form-feedback" role="status"></div>
+      <div id="wq-grid" class="wq-grid" role="list" aria-label="文件夹与网址"></div>
+      <div id="wq-empty" class="wq-empty"><p id="wq-empty-text">正在读取…</p><button type="button" id="wq-retry" class="btn hidden">重新加载</button><button type="button" id="wq-empty-add" class="btn primary hidden">添加网址</button></div>
+      <p id="wq-count" class="wq-count" aria-live="polite"></p>
+      <span id="wq-order-status" class="wq-order-status" role="status" aria-live="polite"></span>
+      <details id="wq-extension" class="wq-extension hidden">
+        <summary>自动登录需要 Edge 扩展</summary>
+        <div class="wq-extension-body">
+          <p id="wq-extension-status" class="wq-extension-status" role="status"></p>
+          <div class="wq-extension-path"><code id="wq-extension-path"></code><button type="button" id="wq-extension-copy" class="btn ghost mini">复制路径</button></div>
+          <ol>
+            <li>打开 <button type="button" id="wq-extension-open" class="wq-extension-link" title="在 Edge 中打开扩展管理页"><code>edge://extensions</code><span class="wq-icon wq-icon-open" aria-hidden="true"></span></button>，开启“开发人员模式”。</li>
+            <li>点击“加载解压缩的扩展”，选择上面的文件夹。</li>
+            <li>已安装过扩展时，点击扩展卡片上的“重新加载”以应用更新；连接状态会自动更新。</li>
+            <li>点击条目上的“打开”，Edge 会自动填写登录信息；出现滑块验证时手动完成即可。</li>
+          </ol>
+        </div>
+      </details>
+    </section>
     <section id="page-cx" class="page settings-page">
       <header><h2>超星账号</h2><p>登录 remote.chaoxing.com 并接收短信验证码</p></header>
       <div class="card settings-card">
@@ -1309,6 +1342,36 @@
   </form>
 </div>
 <div id="otp-menu" class="otp-menu hidden" role="menu" aria-label="账号操作"><button type="button" data-otp-action="edit" role="menuitem">编辑账号</button><button type="button" data-otp-action="delete" role="menuitem">删除账号</button></div>
+<div id="wq-editor" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wq-editor-title">
+  <form id="wq-form" class="modal-card wq-editor-card" autocomplete="off">
+    <div class="modal-heading"><h3 id="wq-editor-title">添加网址</h3></div>
+    <div class="field"><label for="wq-name">名称</label><input id="wq-name" required maxlength="128" placeholder="例如 运维平台"></div>
+    <div class="field"><label for="wq-url">网址</label><div class="wq-url-editor"><button type="button" id="wq-favicon-preview" class="wq-favicon-preview" aria-label="重新抓取网站图标" title="重新抓取网站图标"><span class="wq-icon wq-icon-globe"></span></button><input id="wq-url" type="url" required maxlength="2048" spellcheck="false" placeholder="https://"></div></div>
+    <div class="field"><label for="wq-in-folder">所在文件夹</label><select id="wq-in-folder"></select></div>
+    <div class="wq-modes" role="group" aria-label="打开方式">
+      <button type="button" id="wq-mode-open" class="mode-option selected" aria-pressed="true"><strong>仅打开网页</strong><span>用系统默认浏览器打开网址</span></button>
+      <button type="button" id="wq-mode-login" class="mode-option" aria-pressed="false"><strong>打开并自动登录</strong><span>用 Edge 打开并自动填写登录信息</span></button>
+    </div>
+    <p id="wq-mode-hint" class="muted"></p>
+    <div id="wq-login-fields" class="hidden">
+      <div class="field"><label for="wq-username">账号</label><input id="wq-username" maxlength="256" spellcheck="false" autocomplete="off"></div>
+      <div class="field"><label for="wq-password">密码</label><div class="input-wrap"><input id="wq-password" type="password" maxlength="1024" autocomplete="new-password"><button type="button" id="wq-password-eye" class="eye" data-secret-label="密码" aria-label="显示密码"></button></div></div>
+      <div class="field"><label for="wq-otp">动态口令</label><select id="wq-otp"></select></div>
+    </div>
+    <p id="wq-editor-feedback" class="form-feedback" role="alert"></p>
+    <div class="modal-actions"><button type="button" id="wq-editor-cancel" class="btn ghost">取消</button><button type="submit" id="wq-save" class="btn primary">保存网址</button></div>
+  </form>
+</div>
+<div id="wq-folder-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wq-folder-title">
+  <form id="wq-folder-form" class="modal-card wq-folder-card" autocomplete="off">
+    <div class="modal-heading"><h3 id="wq-folder-title">新建文件夹</h3></div>
+    <div class="field"><label for="wq-folder-name">文件夹名称</label><input id="wq-folder-name" required maxlength="64"></div>
+    <div class="field"><label for="wq-parent">上级文件夹</label><select id="wq-parent"></select></div>
+    <p id="wq-folder-feedback" class="form-feedback" role="alert"></p>
+    <div class="modal-actions"><button type="button" id="wq-folder-cancel" class="btn ghost">取消</button><button type="submit" id="wq-folder-save" class="btn primary">保存文件夹</button></div>
+  </form>
+</div>
+<div id="wq-menu" class="wq-menu hidden" role="menu" aria-label="操作"><button type="button" data-wq-action="edit" role="menuitem">编辑网址</button><button type="button" data-wq-action="delete" role="menuitem">删除网址</button></div>
 <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 <script src="vpn_order.js"></script>
 <script src="app.js"></script>
@@ -1325,5 +1388,6 @@
   <script src="two_factor_brands.js"></script>
   <script src="two_factor_order.js"></script>
   <script src="two_factor.js"></script>
+  <script src="web_quick.js"></script>
 </body>
 </html>

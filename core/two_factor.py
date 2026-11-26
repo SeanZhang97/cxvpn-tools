@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import base64
-import ctypes
-from ctypes import wintypes
 import hashlib
 import json
 import re
@@ -14,7 +12,7 @@ import uuid
 
 import pyotp
 
-from core import state_store
+from core import dpapi, state_store
 
 MAX_ACCOUNTS = 1000
 ALGORITHMS = {'SHA1': hashlib.sha1, 'SHA256': hashlib.sha256, 'SHA512': hashlib.sha512}
@@ -110,36 +108,14 @@ def current_code(value, now=None):
     return {'code': otp.at(now), 'expires_at': (int(now) // value['period'] + 1) * value['period']}
 
 
-class _Blob(ctypes.Structure):
-    _fields_ = [('size', wintypes.DWORD), ('data', ctypes.POINTER(ctypes.c_ubyte))]
-
-
 def _dpapi(data, account_id, decrypt=False):
     """当前 Windows 用户范围；条目 ID 作为额外熵，防止密文在记录间互换。"""
-    raw = ctypes.create_string_buffer(data)
-    entropy_raw = ctypes.create_string_buffer(('CXVPNTools.TOTP.v1:' + account_id).encode('utf-8'))
-    source = _Blob(len(data), ctypes.cast(raw, ctypes.POINTER(ctypes.c_ubyte)))
-    entropy = _Blob(len(entropy_raw) - 1, ctypes.cast(entropy_raw, ctypes.POINTER(ctypes.c_ubyte)))
-    target = _Blob()
-    crypt = ctypes.WinDLL('crypt32', use_last_error=True)
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel.LocalFree.restype = ctypes.c_void_p
-    function = crypt.CryptUnprotectData if decrypt else crypt.CryptProtectData
-    function.argtypes = [ctypes.POINTER(_Blob), ctypes.c_void_p, ctypes.POINTER(_Blob),
-                         ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(_Blob)]
-    function.restype = wintypes.BOOL
     try:
-        if not function(ctypes.byref(source), None, ctypes.byref(entropy), None,
-                        None, 1, ctypes.byref(target)):
-            raise TwoFactorError('密钥无法解密，请使用原 Windows 用户或从加密备份恢复' if decrypt
-                                 else 'Windows 密钥加密失败，账号未保存')
-        return ctypes.string_at(target.data, target.size)
-    finally:
-        ctypes.memset(raw, 0, len(raw))
-        if target.data:
-            ctypes.memset(target.data, 0, target.size)
-            kernel.LocalFree(ctypes.cast(target.data, ctypes.c_void_p))
+        return dpapi.unprotect(data, 'CXVPNTools.TOTP.v1:' + account_id) if decrypt \
+            else dpapi.protect(data, 'CXVPNTools.TOTP.v1:' + account_id)
+    except dpapi.DpapiError as exc:
+        raise TwoFactorError('密钥无法解密，请使用原 Windows 用户或从加密备份恢复' if decrypt
+                             else 'Windows 密钥加密失败，账号未保存') from exc
 
 
 def _seal(value, account_id):

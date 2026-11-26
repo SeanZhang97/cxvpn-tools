@@ -5,10 +5,13 @@
 
 代码路径：`core/codex_proxy.py`、`core/codex_runtime.py`、`core/codex_session_provider.py`、`api.py`、`ui/index.html`、`ui/app.js`
 
-最后验证：2026-09-17 | 分支：main
+最后验证：2026-11-25 | 分支：fix/auto-renew-slider-captcha
 
 ## 当前事实
 
+- 2026-11-25 起侧栏 Codex 按钮以既有 `.hidden` 隐藏；`page-codex`、`bindCodexPage()`、所有公开 JS API、
+  `core/codex_*` 与路由关闭后的清理联动原样保留。导航隐藏不停止后台能力，直接 `goToPage('codex')`
+  仍能激活保留页面；不要通过删除页面或 API 来实现入口收敛。
 - Codex 配置路径优先取环境变量 `CODEX_HOME/config.toml`，否则为 `%USERPROFILE%\\.codex\\config.toml`。插件缓存目录不参与读写。
 - Codex 代理仅通过 Codex 页面按钮调用 `Api.sync_codex_proxy()` 手动开启，也可调用 `Api.restore_codex_proxy()` 手动关闭。`RoutingManager` 不依赖 Codex 配置模块；软件启动、已有代理运行状态校正、系统代理启用、TUN / 服务启动事务提交和端口变更均不写入 Codex 字段。
 - 软件代理关闭保留联动：页面应用、首页和托盘等入口进入 `Api._apply_routing_locked()`；路由事务与应用配置保存成功，且状态由启用变为关闭后，调用 `_close_codex_after_proxy_disabled()` 清理 Codex 字段。配置保存失败回滚、代理关闭失败或原本已关闭时不触发清理。清理失败或用户字段冲突通过既有 warnings 返回，不撤销软件代理关闭；有字段变化时提示重启 Codex。
@@ -56,5 +59,7 @@
 `test_proxycore` 在模拟 Windows 与原生服务的条件下断言底层路由操作不直接调用 Codex sync/restore，覆盖快切启停、启动残留修复、已有系统代理/TUN、完整事务及端口变更、完整停止。关闭联动由上层 API 提交成功后执行，原有 Windows 启用位补写、状态回读及用户会话刷新断言继续保留。
 
 传输测试覆盖默认 WSS 状态、首次关闭、重复关闭幂等、恢复原根值或缺失状态、根选择已恢复后的残留清理、其他 Provider 下的可信恢复、保留其他 Provider、同名冲突、复杂 TOML、`CODEX_HOME` 变化、损坏或未完成事务、用户修改保护、写入失败、严格布尔参数、UTF-8 内容，以及代理与传输设置互不干扰。自定义 API 测试覆盖单一 `codex_local_access` 的地址、密钥和 WSS 修改，内置 `openai` 全流程不改写，原 `codex_local_access` 精确恢复，早期单 Provider 与过渡期双 Provider 两种版本 1 快照迁移，SQLite 密钥落盘与 Codex Provider 一次性迁移，兼容 JSON 和通用 UI 响应排除密钥，还原仅影响 Codex 配置，恢复快照不保存当前密钥明文，留空沿用密钥、地址规范化、旧传输事务自动移交、修改冲突拒绝和写入失败回滚。前端测试覆盖三态显示、本机保存状态、旧版迁移提示、可恢复开关、自定义 API 自动移交提示、处理中禁用、明确目标提交、密钥输入清空与失败后回读。
+2026-11-25 入口收敛回归：`test_ui_codex_transport.js` 同时断言导航按钮隐藏和页面控件保留；
+`test_api_codex_proxy` 与 `test_proxycore` 共 29 项通过，覆盖后台 API、启动不写 Codex 和关闭软件代理后的清理。
 
 `test_codex_session_provider` 覆盖可见根任务筛选、归档与子 Agent 排除、Windows 扩展路径、双向切换、幂等、mtime 保留、活动 profile 拒绝、非法 UTF-8、任务 ID 不匹配、缺失配置默认 `openai`，以及 SQLite 写入失败后的自动回滚。`test_codex_runtime` 使用模拟 PowerShell 结果覆盖 MSIX 包与主进程筛选、AppsFolder 启动、非零退出、35 秒超时，以及迁移失败或异常时仍重新启动；API 与前端测试覆盖生命周期日志、确认弹窗、处理中禁用及成功反馈。离线测试不会实际结束 Codex，也不会改写真实历史任务。

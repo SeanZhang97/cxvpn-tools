@@ -11,13 +11,15 @@ import traceback
 import winreg
 
 
+from core.version import APP_DISPLAY_NAME
+
 APP_NAME = 'CXVPNTools'
 LEGACY_APP_NAMES = ('CX VPN TOOLS', 'CXVPN管理器')
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 INSTANCE_MUTEX = r'Local\CXVPNTools.Singleton.v1'
 LEGACY_INSTANCE_MUTEXES = (r'Local\CXVPNManager.Singleton.v1',)
-WINDOW_TITLE = 'CXVPNTools'
-LEGACY_WINDOW_TITLES = ('CX VPN TOOLS', 'CXVPN管理器')
+WINDOW_TITLE = APP_DISPLAY_NAME
+LEGACY_WINDOW_TITLES = ('CXVPNTools', 'CX VPN TOOLS', 'CXVPN管理器')
 ERROR_ALREADY_EXISTS = 183
 TRAY_SNAPSHOT_NODE_LIMIT = 200
 TRAY_MAX_DROPDOWN_ITEMS = 12
@@ -73,6 +75,80 @@ def show_form_in_place(form, minimized_state):
         show_window.argtypes = [wintypes.HWND, ctypes.c_int]
         show_window.restype = wintypes.BOOL
         show_window(form.Handle.ToInt64(), 9)  # SW_RESTORE
+
+
+def fit_window_placement(placement, screens):
+    """保留仍可见的原位置；显示器缺失时在最近工作区居中并限制尺寸。"""
+    try:
+        if not isinstance(placement, dict) or not isinstance(placement.get('maximized'), bool):
+            return None
+        x, y = placement['x'], placement['y']
+        width, height = placement['width'], placement['height']
+        if any(isinstance(value, bool) or not isinstance(value, int)
+               for value in (x, y, width, height)):
+            return None
+        if not 320 <= width <= 10000 or not 240 <= height <= 10000:
+            return None
+        areas = []
+        for screen in screens:
+            areas.append({key: screen[key] for key in ('x', 'y', 'width', 'height')})
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not areas:
+        return None
+
+    def intersection(screen):
+        left, top = max(x, screen['x']), max(y, screen['y'])
+        right = min(x + width, screen['x'] + screen['width'])
+        bottom = min(y + height, screen['y'] + screen['height'])
+        return max(0, right - left), max(0, bottom - top)
+
+    for screen in areas:
+        visible_width, visible_height = intersection(screen)
+        if (visible_width >= 160 and visible_height >= 48 and
+                screen['y'] <= y < screen['y'] + screen['height'] - 32):
+            return {'x': x, 'y': y, 'width': width, 'height': height,
+                    'maximized': placement['maximized']}
+
+    center_x, center_y = x + width // 2, y + height // 2
+
+    def distance(screen):
+        nearest_x = min(max(center_x, screen['x']), screen['x'] + screen['width'])
+        nearest_y = min(max(center_y, screen['y']), screen['y'] + screen['height'])
+        return (center_x - nearest_x) ** 2 + (center_y - nearest_y) ** 2
+
+    screen = min(areas, key=distance)
+    width = min(max(width, 1080), screen['width'])
+    height = min(max(height, 680), screen['height'])
+    return {
+        'x': screen['x'] + max(0, (screen['width'] - width) // 2),
+        'y': screen['y'] + max(0, (screen['height'] - height) // 2),
+        'width': width, 'height': height, 'maximized': placement['maximized']}
+
+
+def restore_window_placement(form, placement):
+    from System.Drawing import Rectangle
+    from System.Windows.Forms import Screen, FormStartPosition, FormWindowState
+    screens = [{'x': screen.WorkingArea.X, 'y': screen.WorkingArea.Y,
+                'width': screen.WorkingArea.Width, 'height': screen.WorkingArea.Height}
+               for screen in Screen.AllScreens]
+    fitted = fit_window_placement(placement, screens)
+    if fitted is None:
+        return None
+    form.StartPosition = FormStartPosition.Manual
+    form.Bounds = Rectangle(fitted['x'], fitted['y'], fitted['width'], fitted['height'])
+    form.WindowState = FormWindowState.Maximized if fitted['maximized'] else FormWindowState.Normal
+    return fitted
+
+
+def capture_window_placement(form, maximized=None):
+    from System.Windows.Forms import FormWindowState
+    minimized = form.WindowState == FormWindowState.Minimized
+    maximized = (form.WindowState == FormWindowState.Maximized
+                 if maximized is None else bool(maximized))
+    bounds = form.RestoreBounds if minimized or maximized else form.Bounds
+    return {'x': bounds.X, 'y': bounds.Y, 'width': bounds.Width, 'height': bounds.Height,
+            'maximized': maximized}
 
 
 def activate_existing_window(title=None, user32=None, attempts=30,
@@ -229,7 +305,8 @@ class DesktopController:
 
     def __init__(self, window, close_to_tray, on_exit, on_os_shutdown=None,
                  quick_snapshot=None, quick_actions=None,
-                 on_open_page=None, on_action_complete=None, log=print):
+                 on_open_page=None, on_action_complete=None, log=print,
+                 load_placement=None, save_placement=None):
         self.window = window
         self.close_to_tray = close_to_tray
         self.on_exit = on_exit
@@ -238,6 +315,10 @@ class DesktopController:
         self._quick_actions = quick_actions or {}
         self._on_open_page = on_open_page or (lambda _page: None)
         self._on_action_complete = on_action_complete or (lambda: None)
+        self._load_placement = load_placement or (lambda: None)
+        self._save_placement = save_placement or (lambda _placement: None)
+        self._last_saved_placement = None
+        self._last_maximized = False
         self.log = log
         self._native = None
         self._notify = None
@@ -255,6 +336,31 @@ class DesktopController:
         self._suppress_close_to_tray = False
         self._shutdown_event = None
         self._was_minimized = False
+
+    def _restore_window_placement(self):
+        try:
+            restored = restore_window_placement(self._native, self._load_placement())
+        except Exception as exc:
+            self.log(f'[desktop] 主窗口位置恢复失败: {type(exc).__name__}')
+            return
+        if restored:
+            self._last_maximized = restored['maximized']
+            self._last_saved_placement = restored
+            self.log('[desktop] 已恢复主窗口尺寸、位置和显示状态')
+
+    def _save_window_placement(self):
+        if self._native is None or self._native.IsDisposed:
+            return
+        try:
+            maximized = (self._last_maximized
+                         if self._native.WindowState == self._window_state.Minimized else None)
+            placement = capture_window_placement(self._native, maximized=maximized)
+            if placement == self._last_saved_placement:
+                return
+            self._save_placement(placement)
+            self._last_saved_placement = placement
+        except Exception as exc:
+            self.log(f'[desktop] 主窗口位置保存失败: {type(exc).__name__}')
 
     def start(self):
         if self._started or os.name != 'nt' or self.window.native is None:
@@ -280,6 +386,7 @@ class DesktopController:
         def setup():
             if self._started:
                 return
+            self._restore_window_placement()
             notify = NotifyIcon()
             self._icon = self._native.Icon.Clone()
             notify.Icon = self._icon
@@ -487,15 +594,17 @@ class DesktopController:
             return
         if self._native.WindowState == self._window_state.Minimized:
             self._was_minimized = True
-        elif self._was_minimized:
-            self._was_minimized = False
-            # WinForms 在最小化时把 Dock.Fill 控件压到 0x0；恢复事件先于
-            # 布局完成。延后同步 WebView 可见性，让合成画面随控件一起恢复。
-            self.log('[desktop] 窗口恢复请求已提交，等待 UI 布局完成')
-            try:
-                self._native.BeginInvoke(self._action_type(self._restore_webview))
-            except Exception:
-                self.log('[desktop] 窗口恢复请求提交失败: ' + traceback.format_exc())
+        else:
+            self._last_maximized = self._native.WindowState == self._window_state.Maximized
+            if self._was_minimized:
+                self._was_minimized = False
+                # WinForms 在最小化时把 Dock.Fill 控件压到 0x0；恢复事件先于
+                # 布局完成。延后同步 WebView 可见性，让合成画面随控件一起恢复。
+                self.log('[desktop] 窗口恢复请求已提交，等待 UI 布局完成')
+                try:
+                    self._native.BeginInvoke(self._action_type(self._restore_webview))
+                except Exception:
+                    self.log('[desktop] 窗口恢复请求提交失败: ' + traceback.format_exc())
 
     def _restore_webview(self):
         native = self._native
@@ -552,6 +661,7 @@ class DesktopController:
     def _begin_exit(self):
         if self._exiting:
             return
+        self._save_window_placement()
         self._exiting = True
         def finish():
             try:
@@ -569,6 +679,7 @@ class DesktopController:
         self._invoke(self._begin_exit, wait=True)
 
     def complete_exit(self):
+        self._save_window_placement()
         self._exit_ready = True
         self._invoke(self._dispose_native, wait=True)
 
@@ -592,6 +703,7 @@ class DesktopController:
         # 走到这里表示窗口真的在关闭。系统关机/注销/任务管理器结束前，
         # 先同步清扫本地代理残留（毫秒级注册表操作），再放行退出。
         if str(args.CloseReason) in ('WindowsShutDown', 'TaskManagerClosing'):
+            self._save_window_placement()
             try:
                 if self._on_os_shutdown:
                     self._on_os_shutdown()

@@ -226,7 +226,7 @@ function renderCodexCustomApi(state) {
   }
   if (detail) {
     const keyState = state.custom_api_key_stored
-      ? '已保存到 CXVPNTools'
+      ? '已保存到 CX Toolkit'
       : state.custom_api_key_configured
       ? '已配置'
       : '未配置';
@@ -2940,6 +2940,9 @@ async function closeModal(modal) {
   if (!modal) return;
   if (modal.id === 'otp-editor' || modal.id === 'otp-transfer') {
     return window.TwoFactorWorkspace?.closeModal(modal);
+  }
+  if (modal.id === 'wq-editor' || modal.id === 'wq-folder-dialog') {
+    return window.WebQuickWorkspace?.closeModal(modal);
   }
   if (modal.id === 'confirmmodal') {
     finishConfirm(false);

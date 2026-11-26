@@ -1,5 +1,6 @@
 ; Build with installer/build_installer.ps1 after verifying the signed prerequisites.
 #define AppName "CXVPNTools"
+#define AppDisplayName "CX Toolkit"
 #define AppExeName "CXVPNTools.exe"
 #define AppBinary SourcePath + "..\dist\CXVPNTools\" + AppExeName
 #define AppVersion GetStringFileInfo(AppBinary, "ProductVersion")
@@ -16,13 +17,13 @@
 
 [Setup]
 AppId={{8D3D2C8E-6F03-4C2A-9B11-5B4F9E7A2B5E}
-AppName={#AppName}
+AppName={#AppDisplayName}
 AppVersion={#AppVersion}
 VersionInfoVersion={#AppFileVersion}
 AppPublisher=CXVPNTools
 AppPublisherURL=https://github.com/SeanZhang97/cxvpn-tools
 DefaultDirName={autopf}\{#AppName}
-DefaultGroupName={#AppName}
+DefaultGroupName={#AppDisplayName}
 DisableDirPage=no
 UsePreviousAppDir=yes
 DisableProgramGroupPage=yes
@@ -66,14 +67,28 @@ Source: "prereqs.lock.json"; Flags: dontcopy
 Source: "..\dist\CXVPNTools\CXVPNTools.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\CXVPNTools\_internal\*"; DestDir: "{app}\_internal"; Flags: recursesubdirs ignoreversion; Excludes: "config.json,config.json.bak,*.log,*.jsonl,*.db,*.sqlite*,webview_data\*,browser_data*\*,captcha_cache\*"
 
+[Registry]
+; 网页快开自动登录宿主由程序按运行用户登记；卸载时只移除注册项。
+Root: HKCU; Subkey: "SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.cxvpntools.web_quick"; Flags: dontcreatekey uninsdeletekey
+
+[UninstallDelete]
+; 卸载后宿主可执行文件已不存在，清单随之失效；其余用户数据按卸载选项处理。
+Type: files; Name: "{userappdata}\CXVPNTools\com.cxvpntools.web_quick.json"
+
+[InstallDelete]
+; 显示名由 CXVPNTools 改为 CX Toolkit，升级时移除旧名称的快捷方式。
+Type: files; Name: "{autodesktop}\CXVPNTools.lnk"
+Type: files; Name: "{group}\CXVPNTools.lnk"
+Type: files; Name: "{group}\卸载 CXVPNTools.lnk"
+
 [Icons]
-Name: "{autodesktop}\CXVPNTools"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
-Name: "{group}\CXVPNTools"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
-Name: "{group}\卸载 CXVPNTools"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#AppDisplayName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
+Name: "{group}\{#AppDisplayName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
+Name: "{group}\卸载 {#AppDisplayName}"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Flags: nowait skipifdoesntexist runasoriginaluser; Check: ShouldAutoRestartApplication
-Filename: "{app}\{#AppExeName}"; Description: "启动 CXVPNTools"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: CanStartApplication
+Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppDisplayName}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: CanStartApplication
 
 [Code]
 var
@@ -342,13 +357,13 @@ begin
   Started := GetTickCount64;
   Log('Graceful exit requested; waiting for routing transactions; timeout=90s');
   if not IsUninstaller then begin
-    WizardForm.StatusLabel.Caption := '正在等待 CXVPNTools 完成当前操作并退出（最多 90 秒）...';
+    WizardForm.StatusLabel.Caption := '正在等待 CX Toolkit 完成当前操作并退出（最多 90 秒）...';
     WizardForm.Refresh;
   end;
   Handle := OpenEvent($0002, False, 'Local\CXVPNTools.Shutdown.v1');
   if Handle = 0 then begin
     if not ((IsUninstaller and UninstallSilent) or ((not IsUninstaller) and WizardSilent)) then
-      MsgBox('当前版本不支持自动退出，请手动退出 CXVPNTools 后重试。', mbInformation, MB_OK);
+      MsgBox('当前版本不支持自动退出，请手动退出 CX Toolkit 后重试。', mbInformation, MB_OK);
     Exit;
   end;
   try
@@ -382,13 +397,13 @@ begin
   end;
   Form := CreateCustomForm(ScaleX(520), ScaleY(190), False, True);
   try
-    Form.Caption := 'CXVPNTools 正在运行';
+    Form.Caption := 'CX Toolkit 正在运行';
     Description := TNewStaticText.Create(Form);
     Description.Parent := Form;
     Description.SetBounds(ScaleX(16), ScaleY(16), ScaleX(480), ScaleY(92));
     Description.AutoSize := False;
     Description.WordWrap := True;
-    Description.Caption := '卸载前需要退出 CXVPNTools。' + #13#10 +
+    Description.Caption := '卸载前需要退出 CX Toolkit。' + #13#10 +
       '将等待当前配置操作完成后退出；无法安全退出时停止卸载。';
     ForceButton := TNewButton.Create(Form);
     ForceButton.Parent := Form;
@@ -426,7 +441,7 @@ begin
   end;
   Form := CreateCustomForm(ScaleX(460), ScaleY(174), False, True);
   try
-    Form.Caption := '升级 CXVPNTools';
+    Form.Caption := '升级 CX Toolkit';
     Form.Color := clWhite;
     Heading := TNewStaticText.Create(Form);
     Heading.Parent := Form;
@@ -440,7 +455,7 @@ begin
     Description.AutoSize := False;
     Description.WordWrap := True;
     Description.Font.Color := $00555555;
-    Description.Caption := 'CXVPNTools 正在运行。将等待当前配置操作完成后退出。' + #13#10 +
+    Description.Caption := 'CX Toolkit 正在运行。将等待当前配置操作完成后退出。' + #13#10 +
       '用户配置将保留；无法安全退出时停止升级。';
     ForceButton := TNewButton.Create(Form);
     ForceButton.Parent := Form;
@@ -480,7 +495,7 @@ begin
   if UninstallSilent then Exit;
   Form := CreateCustomForm(ScaleX(520), ScaleY(200), False, True);
   try
-    Form.Caption := '卸载 CXVPNTools';
+    Form.Caption := '卸载 CX Toolkit';
     Choice := TNewCheckBox.Create(Form);
     Choice.Parent := Form;
     Choice.SetBounds(ScaleX(16), ScaleY(16), ScaleX(480), ScaleY(24));

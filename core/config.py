@@ -37,6 +37,7 @@ DEFAULT = {
     'auto_renew': False,
     'auto_connect': False,
     'close_to_tray': False,
+    'window_placement': {},
     'captcha_max_attempts': 10,
     'captcha_gate_max_refresh': 4,
     'sms_timeout': 120,

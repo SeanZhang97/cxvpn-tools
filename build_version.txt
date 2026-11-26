@@ -4,11 +4,11 @@ VSVersionInfo(
                     subtype=0x0, date=(0, 0)),
   kids=[StringFileInfo([StringTable('040904B0', [
     StringStruct('CompanyName', 'CXVPNTools'),
-    StringStruct('FileDescription', 'CXVPNTools'),
-    StringStruct('FileVersion', '1.3.9.0'),
+    StringStruct('FileDescription', 'CX Toolkit'),
+    StringStruct('FileVersion', '1.3.10.0'),
     StringStruct('InternalName', 'CXVPNTools.exe'),
     StringStruct('OriginalFilename', 'CXVPNTools.exe'),
-    StringStruct('ProductName', 'CXVPNTools'),
-    StringStruct('ProductVersion', '1.3.9'),
+    StringStruct('ProductName', 'CX Toolkit'),
+    StringStruct('ProductVersion', '1.3.10'),
   ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]
 )

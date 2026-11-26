@@ -3,7 +3,7 @@
 模块: 业务工具 | 入口: `main.py`（pywebview 窗口）| 后端桥接: `api.py`
 后台线程: `core/worker.py` | 连接编排: `core/vpn_service.py` | 构建: `build.py` | 界面: `ui/`
 内置浏览器: `core/browser_win.py`（WebView2 原生窗口 + JS 桥接）
-最后验证: 2026-10-15（总览响应式布局、默认 VPN 操作按钮、最小化恢复） | 分支: main（工作区）
+最后验证: 2026-11-26（主窗口尺寸、位置与最大化状态恢复） | 分支: fix/auto-renew-slider-captcha（工作区）
 
 侧栏品牌区使用单行 `CXVPN` + `Tools` 组合，与 44px 图标垂直居中；
 产品名、窗口标题、可执行文件与打包目录统一为 `CXVPNTools`。
@@ -99,6 +99,12 @@ VPN 配置表格服务器列固定使用两行内容：服务器地址，以及�
   主窗口由最小化恢复为正常/最大化时，`DesktopController` 在 UI 布局完成后同步
   主 WebView 可见性并重绘，避免控件由 0×0 恢复后画面持续空白（2026-10-15 本机复核）。
   不重新导航，保留当前页面和未保存输入；隐藏、退出、销毁或再次最小化时取消恢复。
+  主窗口的普通尺寸/坐标和最大化状态另存于主配置 `window_placement`，由 `DesktopController.start`
+  在显示前恢复；最大化同时保存普通 `RestoreBounds`，最小化退出沿用最后非最小化状态。优雅退出、打包重启、
+  关机/任务管理器关闭前经 `Api._save_window_placement` 写库并做等值去重，拖动过程不写配置；隐藏到托盘不视为退出。
+  `fit_window_placement` 保留仍至少露出 160×48 且标题栏可见的原位置，显示器缺失或越界时在最近工作区
+  居中，并按 1080×680 与工作区较小者约束尺寸；读写失败只记录日志，不阻断启动或退出。Edge 窗口/标签页
+  仍由 Edge 自己恢复，续期内嵌浏览器的位置保持是另一条既有路径。
   关闭到托盘不发送驻留气泡，人工验证码等需要介入的功能提醒仍会发送。「切换节点」
   下拉在 `_on_menu_opening` 每次打开时按快照重建：`Api.desktop_quick_snapshot`
   先剔除订阅信息伪节点（`_TRAY_METADATA_NODE_RE`，与 `ui/routing.js`

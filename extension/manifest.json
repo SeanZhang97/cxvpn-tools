@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "CX Toolkit 网页快开",
+  "version": "1.1.1",
+  "description": "在 CX Toolkit 中打开自动登录条目时，由本扩展在 Edge 中完成登录；没有待领取任务时不做任何操作。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAseZqAq4GAL5TV6MVnZA9h1PByWDRw4rzB4Zypf4yWsadA4N/lHfgHYAUcjkYZ6QMda4RUpr7f5uCgekTepvI2VJqhuSYuInU+BiHJGn4pwY6AgqYwsGKS7ifDgwLJuszCLmkQt0IeaKv9docnvses6/AneS29hk7WFZqmD++Tp+IB37mqj26m+M+805v9xzsEe2pYGcV8sVtkM8yCpU2oq6tfdMh95NKrlm35OGUxE9l/Th7XAwet8uyC2+goLFS4kdc9286otf3hMNddNFrawo3vm4xvWGGlFt0kpe3qLrS//6kuBD+Qaq2hfHzcGSFDGOeQ9HIwuBEYdDwgA+nJwIDAQAB",
+  "permissions": ["nativeMessaging", "alarms"],
+  "host_permissions": ["https://10.0.34.53/*", "http://192.168.1.51/*", "https://10.0.26.27/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "CX Toolkit 网页快开",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://10.0.34.53/*", "http://192.168.1.51/*", "https://10.0.26.27/*"],
+      "js": ["platforms/ifort.js", "platforms/jumpserver.js", "platforms/gitlab.js", "content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

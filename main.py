@@ -13,6 +13,11 @@ if __name__ == '__main__' and '--otp-decode' in sys.argv:
     run_child()
     raise SystemExit(0)
 
+if __name__ == '__main__' and any(arg.startswith('chrome-extension://') for arg in sys.argv[1:]):
+    from core.web_quick_host import run_child
+    run_child()
+    raise SystemExit(0)
+
 if __name__ == '__main__' and '--storage-recovery-probe' in sys.argv:
     from core.storage_probe import run as run_storage_probe
     position = sys.argv.index('--storage-recovery-probe')
@@ -73,6 +78,8 @@ def _run_app():
         f'database={state_store.database_path(config_root)}; '
         f'revision={state_store.current_revision(config_root)}')
     ui = os.path.join(BASE, 'ui', 'index.html')
+    # 首屏恢复只读取一次配置，避免 WinForms loaded 线程与后台初始化争用 Api 锁。
+    initial_placement = api._cfg_get().get('window_placement') or None
     win = webview.create_window(
         WINDOW_TITLE, ui, js_api=api,
         width=1440, height=900, min_size=(1080, 680),
@@ -117,7 +124,9 @@ def _run_app():
         },
         on_open_page=open_page,
         on_action_complete=notify_desktop_action,
-        log=api.log)
+        log=api.log,
+        load_placement=lambda: initial_placement,
+        save_placement=api._save_window_placement)
     api._attach_desktop(desktop)
     initial_ui_ready = threading.Event()
 
